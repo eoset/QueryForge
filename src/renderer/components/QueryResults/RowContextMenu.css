@@ -1,0 +1,31 @@
+.row-context-menu {
+  position: fixed;
+  background-color: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  min-width: 200px;
+  padding: 0.25rem 0;
+}
+
+.context-menu-item {
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  text-align: left;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: #2a2d2e;
+}
+
+.context-menu-item:active {
+  background-color: #007acc;
+}
+

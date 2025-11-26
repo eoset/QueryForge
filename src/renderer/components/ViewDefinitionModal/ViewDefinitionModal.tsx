@@ -1,0 +1,104 @@
+import React, { useState, useEffect } from 'react';
+import './ViewDefinitionModal.css';
+
+interface ViewDefinitionModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [definition, setDefinition] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadViewDefinition = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+        setDefinition(result.definition);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load view definition');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadViewDefinition();
+  }, [datasetId, tableId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(definition);
+  };
+
+  return (
+    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
+      <div className="view-definition-modal-dialog">
+        <div className="view-definition-modal-header">
+          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
+          <button className="view-definition-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="view-definition-modal-content">
+          {isLoading && (
+            <div className="view-definition-loading">
+              <div className="view-definition-spinner"></div>
+              <div>Loading view definition...</div>
+            </div>
+          )}
+          {error && (
+            <div className="view-definition-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && definition && (
+            <>
+              <div className="view-definition-actions">
+                <button onClick={handleCopy} className="view-definition-copy-button">
+                  Copy to Clipboard
+                </button>
+              </div>
+              <pre className="view-definition-code">
+                <code>{definition}</code>
+              </pre>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+

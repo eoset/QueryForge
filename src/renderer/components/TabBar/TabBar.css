@@ -1,0 +1,131 @@
+.tab-bar {
+  display: flex;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  align-items: center;
+  height: 35px;
+}
+
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background-color: #2d2d30;
+  border-right: 1px solid #3e3e42;
+  cursor: pointer;
+  user-select: none;
+  min-width: 120px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: #cccccc;
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: #2a2d2e;
+}
+
+.tab.active {
+  background-color: #1e1e1e;
+  border-bottom: 1px solid #007acc;
+  color: #ffffff;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid #007acc;
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: #007acc;
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  margin-left: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #858585;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-close:hover {
+  background-color: #e81123;
+  color: white;
+}
+
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: #858585;
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid #3e3e42;
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: #858585;
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
