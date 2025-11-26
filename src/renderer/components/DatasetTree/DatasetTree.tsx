@@ -13,16 +13,17 @@ interface DatasetWithTables extends Dataset {
 }
 
 interface DatasetTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
 }
 
-export const DatasetTree: React.FC<DatasetTreeProps> = ({ onShowSchema }) => {
+export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema }) => {
   const connection = useConnectionStore((state) => state.connection);
   const { createTab, setTabQuery, updateTab, tabs, activeTabId } = useTabsStore();
   const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
@@ -343,7 +344,7 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ onShowSchema }) => {
         <div className="dataset-tree-header">
           <button
             className="collapse-button"
-            onClick={() => setCollapsed(!collapsed)}
+            onClick={onToggleCollapse}
             title={collapsed ? 'Expand' : 'Collapse'}
           >
             {collapsed ? '▶' : '◀'}
@@ -362,7 +363,7 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ onShowSchema }) => {
       <div className="dataset-tree-header">
         <button
           className="collapse-button"
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={onToggleCollapse}
           title={collapsed ? 'Expand' : 'Collapse'}
         >
           {collapsed ? '▶' : '◀'}

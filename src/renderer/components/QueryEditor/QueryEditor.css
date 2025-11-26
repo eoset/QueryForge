@@ -12,6 +12,7 @@
   background-color: #252526;
   border-bottom: 1px solid #3e3e42;
   align-items: center;
+  height: 35px;
 }
 
 .query-editor-toolbar button {

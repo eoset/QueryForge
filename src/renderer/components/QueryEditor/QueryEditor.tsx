@@ -6,6 +6,7 @@ import { useBigQuery } from '../../hooks/useBigQuery';
 import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
 import { useConnectionStore } from '../../stores/connection-store';
+import { registerBigQueryLanguage } from '../../utils/bigquery-completions';
 import './QueryEditor.css';
 
 export const QueryEditor: React.FC = () => {
@@ -525,6 +526,10 @@ export const QueryEditor: React.FC = () => {
             theme="vs-dark"
             value={queryText}
             onChange={handleQueryChange}
+            beforeMount={(monaco) => {
+              // Register BigQuery language support before editor mounts
+              registerBigQueryLanguage(monaco as typeof import('monaco-editor'));
+            }}
             onMount={(editor) => {
               editorRef.current = editor;
               
@@ -554,6 +559,14 @@ export const QueryEditor: React.FC = () => {
               lineNumbers: 'on',
               scrollBeyondLastLine: false,
               automaticLayout: true,
+              suggestOnTriggerCharacters: true,
+              quickSuggestions: {
+                other: true,
+                comments: false,
+                strings: false,
+              },
+              suggestSelection: 'first',
+              tabCompletion: 'on',
             }}
           />
         ) : (

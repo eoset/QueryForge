@@ -21,6 +21,8 @@ const App: React.FC = () => {
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
   const [leftSidebarWidth, setLeftSidebarWidth] = useState(250);
   const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(250); // Store the width before collapse
   const resizeStartYRef = useRef(0);
   const resizeStartHeightRef = useRef(350);
   const resizeStartXLeftRef = useRef(0);
@@ -42,6 +44,7 @@ const App: React.FC = () => {
       window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
         setLeftSidebarWidth(width);
         resizeStartWidthLeftRef.current = width;
+        savedLeftSidebarWidthRef.current = width;
       });
       window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
         setRightSidebarWidth(width);
@@ -49,6 +52,20 @@ const App: React.FC = () => {
       });
     }
   }, []);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width
+      setLeftSidebarCollapsed(false);
+      setLeftSidebarWidth(savedLeftSidebarWidthRef.current);
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = leftSidebarWidth;
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
 
   useEffect(() => {
     // Initialize tabs store (load saved tabs)
@@ -273,15 +290,21 @@ const App: React.FC = () => {
       <main className="app-main">
         <TabBar />
         <div className="app-content">
-          <div style={{ width: `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-            <DatasetTree onShowSchema={(projectId, datasetId, tableId) => {
-              setSchemaSidebar({ projectId, datasetId, tableId });
-            }} />
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: 'width 0.2s ease' }}>
+            <DatasetTree 
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onShowSchema={(projectId, datasetId, tableId) => {
+                setSchemaSidebar({ projectId, datasetId, tableId });
+              }} 
+            />
           </div>
-          <div
-            className="resize-handle-vertical"
-            onMouseDown={handleLeftSidebarResizeStart}
-          />
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
           <div className="app-editor-results" ref={editorResultsRef}>
             <div className="query-section" style={{ height: `${editorHeight}px` }}>
               <QueryEditor />
