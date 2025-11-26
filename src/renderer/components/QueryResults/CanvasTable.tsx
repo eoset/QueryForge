@@ -40,6 +40,12 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   const resizeStartWidthRef = useRef(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
+  
+  // Text selection state
+  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const selectionOverlayRef = useRef<HTMLDivElement>(null);
 
   // Calculate pagination
   const startIndex = (currentPage - 1) * rowsPerPage;
@@ -96,6 +102,39 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
     return ctx.measureText(text).width;
   }, []);
+
+  // Convert viewport coordinates to cell position
+  const getCellFromCoordinates = useCallback(
+    (x: number, y: number): { row: number; col: number } | null => {
+      // Don't allow selection in header
+      if (y < HEADER_HEIGHT) return null;
+      
+      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+      if (row < 0 || row >= paginatedRows.length) return null;
+
+      // Find column
+      let currentX = 0;
+      
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        return { row, col: -1 };
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      for (let idx = 0; idx < results.columns.length; idx++) {
+        const colWidth = getColumnWidth(idx);
+        if (x >= currentX && x < currentX + colWidth) {
+          return { row, col: idx };
+        }
+        currentX += colWidth;
+      }
+
+      return null;
+    },
+    [paginatedRows.length, getColumnWidth, results.columns]
+  );
 
   // Draw cell text with ellipsis
   const drawCellText = useCallback(
@@ -172,6 +211,13 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     if (canvasOverlay) {
       canvasOverlay.style.width = `${containerWidth}px`;
       canvasOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Update selection overlay size to match container
+    const selectionOverlay = selectionOverlayRef.current;
+    if (selectionOverlay) {
+      selectionOverlay.style.width = `${containerWidth}px`;
+      selectionOverlay.style.height = `${containerHeight}px`;
     }
     
     // Reset transform and scale for high DPI
@@ -297,6 +343,35 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       ctx.stroke();
     }
 
+    // Draw selection highlights
+    if (selectionStart && selectionEnd) {
+      const startRow = Math.min(selectionStart.row, selectionEnd.row);
+      const endRow = Math.max(selectionStart.row, selectionEnd.row);
+      const startCol = Math.min(selectionStart.col, selectionEnd.col);
+      const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+      // Only draw selection for visible rows
+      const visibleStart = Math.max(startRow, visibleStartRow);
+      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
+
+      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
+        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+        if (rowY < HEADER_HEIGHT) continue;
+
+        // Draw selection for each selected column in this row
+        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+          const colX = columnPositions[colIdx];
+          const colWidth = getColumnWidth(colIdx);
+
+          // Only draw if column is visible
+          if (colX + colWidth > 0 && colX < containerWidth) {
+            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
+            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
+          }
+        }
+      }
+    }
+
     // Draw header last so it's always on top (fixed position)
     // Draw header background
     ctx.fillStyle = headerBgColor;
@@ -397,6 +472,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     formatValue,
     startIndex,
     drawCellText,
+    selectionStart,
+    selectionEnd,
   ]);
 
   // Handle scroll
@@ -489,7 +566,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     }
   }, []);
 
-  // Handle mouse down for resizing
+  // Handle mouse down for resizing and selection
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       const container = containerRef.current;
@@ -499,8 +576,26 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       const x = e.clientX - rect.left + scrollLeft;
       const y = e.clientY - rect.top + scrollTop;
 
+      // Handle selection in data area (not header)
+      if (y >= HEADER_HEIGHT) {
+        // Check if this is a data cell click (not a scrollbar click)
+        const cell = getCellFromCoordinates(x, y);
+        if (cell) {
+          setIsSelecting(true);
+          const cellPos = { ...cell, x, y };
+          setSelectionStart(cellPos);
+          setSelectionEnd(cellPos);
+          // Don't prevent default - allow normal behavior
+          return;
+        } else {
+          // Click outside cells - clear selection
+          setSelectionStart(null);
+          setSelectionEnd(null);
+          return;
+        }
+      }
+
       // Only handle resize in header
-      if (y >= HEADER_HEIGHT) return;
 
       // Check which column
       let currentX = 0;
@@ -533,9 +628,18 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         resizeStartXRef.current = e.clientX;
         resizeStartWidthRef.current = getColumnWidth(foundColumn);
         setResizingColumn(foundColumn);
+        // Clear selection when starting resize
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      } else {
+        // Click on header but not on resize handle - clear selection
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
       }
     },
-    [scrollLeft, getColumnWidth, results.columns]
+    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
   );
 
   // Handle context menu
@@ -581,6 +685,119 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     },
     [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
   );
+
+  // Extract selected text
+  const getSelectedText = useCallback((): string => {
+    if (!selectionStart || !selectionEnd) return '';
+
+    const startRow = Math.min(selectionStart.row, selectionEnd.row);
+    const endRow = Math.max(selectionStart.row, selectionEnd.row);
+    const startCol = Math.min(selectionStart.col, selectionEnd.col);
+    const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+    const selectedCells: string[] = [];
+
+    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
+
+      const rowValues: string[] = [];
+      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+        if (colIdx === -1) {
+          // Row number
+          const actualRowNumber = startIndex + rowIdx + 1;
+          rowValues.push(actualRowNumber.toLocaleString());
+        } else {
+          const column = results.columns[colIdx];
+          const value = row.values[colIdx];
+          const formattedValue = formatValue(value, column?.type);
+          rowValues.push(formattedValue);
+        }
+      }
+      selectedCells.push(rowValues.join('\t'));
+    }
+
+    return selectedCells.join('\n');
+  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
+
+  // Handle copy to clipboard
+  useEffect(() => {
+    const handleCopy = (e: KeyboardEvent) => {
+      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectionStart && selectionEnd) {
+          const text = getSelectedText();
+          if (text) {
+            e.preventDefault();
+            navigator.clipboard.writeText(text).catch((err) => {
+              console.error('Failed to copy to clipboard:', err);
+            });
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleCopy);
+    return () => window.removeEventListener('keydown', handleCopy);
+  }, [selectionStart, selectionEnd, getSelectedText]);
+
+
+  // Handle selection mouse move
+  const handleSelectionMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isSelecting || resizingColumn !== null) return;
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const viewportX = e.clientX - rect.left;
+      const viewportY = e.clientY - rect.top;
+      const x = viewportX + scrollLeft;
+      const y = viewportY + scrollTop;
+
+      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
+      const edgeThreshold = 20;
+      const isNearTop = viewportY < edgeThreshold;
+      const isNearBottom = viewportY > rect.height - edgeThreshold;
+      const isNearLeft = viewportX < edgeThreshold;
+      const isNearRight = viewportX > rect.width - edgeThreshold;
+
+      // Update selection if we can determine a cell
+      const cell = getCellFromCoordinates(x, y);
+      if (cell && selectionStart) {
+        setSelectionEnd({ ...cell, x, y });
+      } else if (selectionStart) {
+        // If outside cells but still selecting, extend selection to edge
+        // This allows selection to continue when dragging outside viewport
+        const lastCell = selectionEnd || selectionStart;
+        setSelectionEnd(lastCell);
+      }
+    },
+    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
+  );
+
+  // Handle selection mouse up
+  const handleSelectionMouseUp = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
+  useEffect(() => {
+    if (!isSelecting) return;
+
+    const handleDocumentMouseUp = () => {
+      setIsSelecting(false);
+    };
+
+    document.addEventListener('mouseup', handleDocumentMouseUp);
+    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
+  }, [isSelecting]);
+
+  // Handle selection mouse leave
+  const handleSelectionMouseLeave = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
 
   // Handle resize mouse move
   useEffect(() => {
@@ -660,9 +877,14 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         style={{
           width: '100%',
           height: '100%',
-          overflowX: 'auto',
-          overflowY: 'auto',
+          overflowX: 'scroll',
+          overflowY: 'scroll',
           position: 'relative',
+          // Ensure scrollbars are always visible
+          scrollbarWidth: 'thin',
+          scrollbarColor: '#424242 #1e1e1e',
+          // Force scrollbars to be visible (especially on macOS)
+          WebkitOverflowScrolling: 'touch',
         }}
       >
         {/* Spacer div to create scrollable area - this scrolls */}
@@ -698,6 +920,23 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           }}
         />
       </div>
+      {/* Selection overlay - captures mouse events for text selection */}
+      {/* Only active when actively selecting to allow scrolling otherwise */}
+      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
+      <div
+        ref={selectionOverlayRef}
+        onMouseMove={handleSelectionMouseMove}
+        onMouseUp={handleSelectionMouseUp}
+        onMouseLeave={handleSelectionMouseLeave}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
+          cursor: isSelecting ? 'text' : 'default',
+          userSelect: 'none',
+        }}
+      />
     </div>
   );
 };

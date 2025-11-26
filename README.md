@@ -22,7 +22,7 @@ A desktop application for browsing and querying Google Cloud Platform BigQuery d
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd bq_browser
+cd QueryForge
 ```
 
 2. Install dependencies:
