@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata } from '../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 
 /**
@@ -53,6 +53,14 @@ export interface ElectronAPI {
     setRightSidebarWidth(width: number): Promise<void>;
   };
 
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
   // Menu events
   menu: {
     onShowHelp(callback: () => void): () => void;
@@ -97,6 +105,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
     getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
     setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
   },
   menu: {
     onShowHelp: (callback: () => void) => {

@@ -5,6 +5,7 @@ import { registerBigQueryHandlers } from './ipc/bigquery';
 import { registerConnectionHandlers } from './ipc/connection';
 import { registerQueriesHandlers } from './ipc/queries';
 import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
 
 // Set app name immediately (before any other app calls) for macOS dock
@@ -21,6 +22,7 @@ registerBigQueryHandlers();
 registerConnectionHandlers();
 registerQueriesHandlers();
 registerUISettingsHandlers();
+registerTabsHandlers();
 
 function createMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -208,7 +210,7 @@ function createWindow(): void {
   mainWindow.on('moved', saveWindowBounds);
   mainWindow.on('resized', saveWindowBounds);
 
-  // Save window bounds when window is closed
+  // Save window bounds and tabs when window is closed
   mainWindow.on('close', () => {
     const bounds = mainWindow?.getBounds();
     if (bounds) {
@@ -219,6 +221,8 @@ function createWindow(): void {
         y: bounds.y,
       });
     }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
   });
 
   // Load the HTML file from dist (webpack bundles everything)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore } from './stores/tabs-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
 import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
 import { SavedQueries } from './components/SavedQueries/SavedQueries';
 import { HelpDialog } from './components/HelpDialog/HelpDialog';
@@ -48,6 +48,11 @@ const App: React.FC = () => {
         resizeStartWidthRightRef.current = width;
       });
     }
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
   }, []);
 
   useEffect(() => {

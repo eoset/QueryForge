@@ -13,23 +13,76 @@ interface TabsState {
   setTabResults: (tabId: string, results: QueryResult) => void;
   setTabError: (tabId: string, error: string) => void;
   setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
+  loadTabs: () => Promise<void>;
+  saveTabs: () => Promise<void>;
 }
 
 function generateTabId(): string {
   return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
+// Debounce function for saving tabs
+let saveTimeout: NodeJS.Timeout | null = null;
+const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = setTimeout(() => {
+    saveFn().catch((error) => {
+      console.error('Failed to save tabs:', error);
+    });
+  }, delay);
+};
+
 export const useTabsStore = create<TabsState>((set, get) => ({
-  tabs: [
-    {
-      id: generateTabId(),
-      title: 'Query 1',
-      queryText: '',
-      isModified: false,
-      executionStatus: 'idle',
+    tabs: [
+      {
+        id: generateTabId(),
+        title: 'Query 1',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+    ],
+    activeTabId: null,
+
+    loadTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const savedTabs = await window.electronAPI.tabs.getTabs();
+        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
+        
+        if (savedTabs && savedTabs.length > 0) {
+          set({
+            tabs: savedTabs,
+            activeTabId: savedActiveTabId || savedTabs[0]?.id || null,
+          });
+        } else {
+          // No saved tabs, use default
+          const defaultTabId = get().tabs[0]?.id || null;
+          set({ activeTabId: defaultTabId });
+        }
+      } catch (error) {
+        console.error('Failed to load tabs:', error);
+        // Use default tab if loading fails
+        const defaultTabId = get().tabs[0]?.id || null;
+        set({ activeTabId: defaultTabId });
+      }
     },
-  ],
-  activeTabId: null,
+
+    saveTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const { tabs, activeTabId } = get();
+        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
+      } catch (error) {
+        console.error('Failed to save tabs:', error);
+      }
+    },
 
   createTab: () => {
     const tabs = get().tabs;
@@ -134,6 +187,65 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   },
 }));
 
-// Initialize active tab on first load
-useTabsStore.getState().activeTabId = useTabsStore.getState().tabs[0]?.id || null;
+// Subscribe to tab changes and auto-save (debounced)
+let previousTabs: QueryTab[] = [];
+let previousActiveTabId: string | null = null;
+
+useTabsStore.subscribe((state) => {
+  // Check if tabs or activeTabId actually changed
+  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
+  
+  if (tabsChanged) {
+    previousTabs = state.tabs;
+    previousActiveTabId = state.activeTabId;
+    // Auto-save when tabs or activeTabId changes
+    debouncedSave(() => useTabsStore.getState().saveTabs());
+  }
+});
+
+// Track if initialization has been done to prevent multiple calls
+let isInitialized = false;
+
+// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
+// This function can be called multiple times safely (idempotent)
+export function initializeTabsStore(): void {
+  if (isInitialized) {
+    return; // Already initialized
+  }
+
+  if (window.electronAPI?.tabs) {
+    isInitialized = true;
+    
+    useTabsStore.getState().loadTabs().then(() => {
+      // Initialize active tab after loading
+      const state = useTabsStore.getState();
+      if (!state.activeTabId && state.tabs.length > 0) {
+        useTabsStore.setState({ activeTabId: state.tabs[0].id });
+      }
+    }).catch((error) => {
+      console.error('Failed to initialize tabs:', error);
+      // Fallback: Initialize active tab on first load if loading fails
+      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+    });
+
+    // Listen for before-close event to save tabs immediately
+    window.electronAPI.tabs.onBeforeClose(() => {
+      // Clear any pending debounced save and save immediately
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+      useTabsStore.getState().saveTabs();
+    });
+  } else {
+    // Fallback: Initialize active tab on first load if electronAPI is not available
+    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+  }
+}
+
+// Try to initialize immediately if electronAPI is already available
+// Otherwise, it will be initialized from App.tsx
+if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
+  initializeTabsStore();
+}
 
