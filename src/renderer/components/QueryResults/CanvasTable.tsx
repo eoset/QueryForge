@@ -7,7 +7,7 @@ interface CanvasTableProps {
   onColumnResize: (columnIndex: number, width: number) => void;
   onRowContextMenu: (e: React.MouseEvent, rowIndex: number) => void;
   onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
-  formatValue: (value: any, columnType?: string) => string;
+  formatValue: (value: any, columnType?: string, columnName?: string) => string;
   currentPage: number;
   rowsPerPage: number;
 }
@@ -69,7 +69,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         const key = `${rowIdx}-${colIdx}`;
         // Only format if within cache size limit
         if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
-          formatted.set(key, formatValue(value, column?.type));
+          formatted.set(key, formatValue(value, column?.type, column?.name));
         }
       });
     });
@@ -87,8 +87,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   // Helper to get formatted value (with fallback for safety)
   const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
     const key = `${rowIdx}-${colIdx}`;
-    return formattedCells.get(key) ?? formatValue(value, columnType);
-  }, [formattedCells, formatValue]);
+    const column = results.columns[colIdx];
+    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
+  }, [formattedCells, formatValue, results.columns]);
 
   // Calculate column widths
   const getColumnWidth = useCallback(
@@ -207,7 +208,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       x: number,
       y: number,
       width: number,
-      color: string = '#cccccc'
+      color: string = '#cccccc',
+      align: 'left' | 'right' = 'left'
     ) => {
       ctx.fillStyle = color;
       ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -218,7 +220,11 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       // Quick check - if text fits, draw it directly
       const textWidth = measureText(text, ctx);
       if (textWidth <= maxWidth) {
-        ctx.fillText(text, x + CELL_PADDING, y + ROW_HEIGHT / 2 + 4);
+        // Calculate x position based on alignment
+        const textX = align === 'right' 
+          ? x + width - CELL_PADDING - textWidth 
+          : x + CELL_PADDING;
+        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
         return;
       }
       
@@ -241,7 +247,12 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       }
       
       const truncated = text.substring(0, bestFit);
-      ctx.fillText(truncated + ellipsis, x + CELL_PADDING, y + ROW_HEIGHT / 2 + 4);
+      const truncatedWidth = measureText(truncated + ellipsis, ctx);
+      // Calculate x position based on alignment for truncated text
+      const truncatedX = align === 'right'
+        ? x + width - CELL_PADDING - truncatedWidth
+        : x + CELL_PADDING;
+      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
     },
     [measureText]
   );
@@ -372,7 +383,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           rowNumX,
           rowY,
           getColumnWidth(-1),
-          textColor
+          textColor,
+          'right' // Right-align row numbers
         );
       }
 
@@ -406,9 +418,14 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           }
 
           // Draw cell content - use pre-formatted value
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
+          const column = results.columns[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
           ctx.fillStyle = textColor;
-          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor);
+          // Check if column is INTEGER type for right alignment
+          const columnType = (column?.type || '').toUpperCase();
+          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
+          const textAlign = isIntegerColumn ? 'right' : 'left';
+          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign);
         }
       });
 
@@ -473,8 +490,10 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
       ctx.fillStyle = headerTextColor;
       ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      // Draw header text at correct vertical position
-      ctx.fillText('Row', rowNumX + CELL_PADDING, HEADER_HEIGHT / 2 + 4);
+      // Draw header text at correct vertical position, right-aligned
+      const rowHeaderText = 'Row';
+      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
+      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
       
       // Draw resize handle
       if (resizingColumn === -1 || hoveredColumn === -1) {
@@ -521,8 +540,12 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         // Use drawCellText but adjust y position for header
         const headerTextY = HEADER_HEIGHT / 2 - ROW_HEIGHT / 2;
+        // Check if column is INTEGER type for right alignment
+        const columnType = (col.type || '').toUpperCase();
+        const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
+        const headerAlign = isIntegerColumn ? 'right' : 'left';
         // Draw text only in visible area
-        drawCellText(ctx, col.name, colX, headerTextY, colWidth, headerTextColor);
+        drawCellText(ctx, col.name, colX, headerTextY, colWidth, headerTextColor, headerAlign);
 
         // Draw resize handle
         if (resizingColumn === idx || hoveredColumn === idx) {

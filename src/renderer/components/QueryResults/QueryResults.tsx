@@ -90,6 +90,42 @@ export const QueryResults: React.FC = () => {
     window.electronAPI.resultsCache
       .getPage(activeTabId, currentPage)
       .then((pageRows) => {
+        // DEBUG: Log when loading from cache
+        if (pageRows && pageRows.length > 0) {
+          console.log(`🔍 [CACHE] Loaded page ${currentPage} from cache, ${pageRows.length} rows`);
+          const firstRow = pageRows[0];
+          if (firstRow && firstRow.values) {
+            console.log(`🔍 [CACHE] First row has ${firstRow.values.length} values`);
+            console.log(`🔍 [CACHE] Columns:`, resultsMetadata?.columns?.map(c => `${c.name} (${c.type})`));
+            firstRow.values.forEach((val: any, idx: number) => {
+              const col = resultsMetadata?.columns?.[idx];
+              console.log(`🔍 [CACHE] Value ${idx} (${col?.name || 'unknown'}, ${col?.type || 'unknown'}):`, val, `type: ${typeof val}`);
+              
+              // Check if column name suggests it's a date/time even if type is wrong
+              const colNameLower = (col?.name || '').toLowerCase();
+              const mightBeDate = col && (
+                col.type === 'DATE' || col.type === 'TIME' || col.type === 'DATETIME' || col.type === 'TIMESTAMP' ||
+                colNameLower.includes('date') || colNameLower.includes('time') || colNameLower.includes('timestamp')
+              );
+              
+              if (mightBeDate) {
+                console.log(`\n========== CACHE DATE/TIME DEBUG ==========`);
+                console.log(`[CACHE] Column: ${col.name}, Type: ${col.type}`);
+                console.log(`[CACHE] Value:`, val);
+                console.log(`[CACHE] Value type: ${typeof val}`);
+                if (typeof val === 'string' && val === '[object Object]') {
+                  console.error(`❌ [CACHE] ERROR: Value is "[object Object]" string! This is the bug!`);
+                }
+                if (typeof val === 'object' && val !== null) {
+                  console.log(`[CACHE] Object keys:`, Object.keys(val));
+                  console.log(`[CACHE] Is Date?:`, val instanceof Date);
+                  console.log(`[CACHE] String(val):`, String(val));
+                }
+                console.log('===========================================\n');
+              }
+            });
+          }
+        }
         if (pageRows) {
           setCurrentPageRows(pageRows);
         } else {
@@ -169,12 +205,13 @@ export const QueryResults: React.FC = () => {
     });
   }, []);
 
-  const formatValue = useCallback((value: any, columnType?: string): string => {
-    return formatBigQueryValue(value, columnType);
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
   }, []);
 
-  const formatCSVValue = useCallback((val: any, columnType?: string): string => {
-    const formatted = formatValue(val, columnType);
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
     // Escape commas, quotes, and newlines in values
     if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
       return `"${formatted.replace(/"/g, '""')}"`;
@@ -192,7 +229,10 @@ export const QueryResults: React.FC = () => {
     if (!row) return;
 
     const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => formatCSVValue(val, results.columns[idx]?.type));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
 
     // Format: header1,header2,header3\nvalue1,value2,value3
     const csvText = [headers.join(','), values.join(',')].join('\n');
@@ -215,7 +255,7 @@ export const QueryResults: React.FC = () => {
     const header = formatCSVValue(column.name);
     
     // Get all values for this column in current page (already loaded)
-    const values = currentPageRows.map(row => formatCSVValue(row.values[columnIndex], column.type));
+    const values = currentPageRows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
 
     // Format: header\nvalue1\nvalue2\nvalue3...
     const csvText = [header, ...values].join('\n');

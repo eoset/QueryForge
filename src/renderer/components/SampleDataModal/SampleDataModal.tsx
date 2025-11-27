@@ -121,8 +121,8 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
     return columnWidths[columnIndex];
   };
 
-  const formatValue = useCallback((value: any, columnType?: string): string => {
-    return formatBigQueryValue(value, columnType);
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    return formatBigQueryValue(value, columnType, columnName);
   }, []);
 
   // Pagination calculations
@@ -234,7 +234,7 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
                                   key={colIdx}
                                   style={{ width: width ? `${width}px` : undefined }}
                                 >
-                                  {formatValue(value, column?.type)}
+                                  {formatValue(value, column?.type, column?.name)}
                                 </td>
                               );
                             })}

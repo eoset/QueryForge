@@ -233,8 +233,12 @@ function createWindow(): void {
   // Load the HTML file from dist (webpack bundles everything)
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-  // Open DevTools in development
-  if (process.env.NODE_ENV === 'development') {
+  // Open DevTools in development (always open for debugging)
+  // Check both NODE_ENV and if we're running from source (not packaged)
+  const isDevelopment = process.env.NODE_ENV === 'development' || 
+                        !app.isPackaged || 
+                        process.argv.includes('--dev');
+  if (isDevelopment) {
     mainWindow.webContents.openDevTools();
   }
 
