@@ -28,6 +28,7 @@ export const QueryEditor: React.FC = () => {
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
   const validateHandlerRef = useRef<(() => void) | null>(null);
+  const errorDecorationsRef = useRef<string[]>([]);
   const activeTab = useTabsStore((state) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
     return tab || null;
@@ -185,6 +186,15 @@ export const QueryEditor: React.FC = () => {
       if (!trimmedQuery || trimmedQuery.length < 3) {
         // Clear markers if query is empty or too short
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
+        
+        // Clear error decorations in glyph margin
+        if (editorRef.current) {
+          errorDecorationsRef.current = editorRef.current.deltaDecorations(
+            errorDecorationsRef.current,
+            []
+          );
+        }
+        
         // Update status bar - but preserve table not found errors if they exist
         setSqlValidationStatus((prev) => {
           // Only clear if there's no table not found error
@@ -236,6 +246,35 @@ export const QueryEditor: React.FC = () => {
           },
         ];
         (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+        
+        // Add error indicator in glyph margin for multiple SELECT error
+        if (editorRef.current) {
+          const errorMsg = 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.';
+          const decorations: any[] = [
+            {
+              range: new (window as any).monaco.Range(secondSelectLine, 1, secondSelectLine, 1),
+              options: {
+                glyphMarginClassName: 'error-glyph-margin',
+                glyphMarginHoverMessage: { value: errorMsg },
+                minimap: {
+                  color: '#f48771',
+                  position: (window as any).monaco.MinimapPosition.Inline,
+                },
+                overviewRuler: {
+                  color: '#f48771',
+                  position: (window as any).monaco.OverviewRulerLane.Right,
+                },
+              },
+            },
+          ];
+          
+          // Update decorations (remove old ones, add new ones)
+          errorDecorationsRef.current = editorRef.current.deltaDecorations(
+            errorDecorationsRef.current,
+            decorations
+          );
+        }
+        
         setSqlValidationStatus({ 
           isValid: false, 
           errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.' 
@@ -252,6 +291,15 @@ export const QueryEditor: React.FC = () => {
         
         // If parsing succeeds, clear markers
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
+        
+        // Clear error decorations in glyph margin
+        if (editorRef.current) {
+          errorDecorationsRef.current = editorRef.current.deltaDecorations(
+            errorDecorationsRef.current,
+            []
+          );
+        }
+        
         // Update status bar - valid SQL syntax
         // But preserve table not found errors - they will be set by calculateExpectedQuerySize
         setSqlValidationStatus((prev) => {
@@ -265,6 +313,31 @@ export const QueryEditor: React.FC = () => {
       } catch (error: any) {
         // Parse error occurred, create marker
         const errorMessage = error.message || 'SQL syntax error';
+        
+        // First, check if there's an obvious syntax error on line 1
+        // This helps catch errors that the parser might report as being on later lines
+        const lines = textToValidate.split('\n');
+        let firstLineError: { line: number; column: number } | null = null;
+        
+        if (lines.length > 0 && lines[0].trim()) {
+          const firstLine = lines[0].trim();
+          // Check for common first-line syntax errors
+          const firstLineErrors = [
+            /sel\s+ect/i,  // SEL ECT
+            /fro\s+m/i,    // FRO M
+            /wher\s+e/i,   // WHER E
+            /orde\s+r/i,   // ORDE R
+            /grou\s+p/i,   // GROU P
+          ];
+          
+          for (const pattern of firstLineErrors) {
+            const match = firstLine.match(pattern);
+            if (match && match.index !== undefined) {
+              firstLineError = { line: 1, column: match.index + 1 };
+              break;
+            }
+          }
+        }
         
         // Try to extract line and column from error object properties first
         let lineNumber = 1;
@@ -282,7 +355,6 @@ export const QueryEditor: React.FC = () => {
           column = error.column || 1;
         } else if (error.pos !== undefined) {
           // If we have a character position, convert it to line/column
-          const lines = textToValidate.split('\n');
           let charCount = 0;
           for (let i = 0; i < lines.length; i++) {
             const lineLength = lines[i].length + 1; // +1 for newline
@@ -312,9 +384,17 @@ export const QueryEditor: React.FC = () => {
           if (columnMatch) {
             column = parseInt(columnMatch[1], 10);
           }
+        }
+        
+        // If we found an error on line 1, prioritize it over parser's reported line
+        // (parser might report where it gave up, not where the first error occurred)
+        if (firstLineError && lineNumber > 1) {
+          lineNumber = firstLineError.line;
+          column = firstLineError.column;
+        }
 
-          // If we still can't extract position, try to find it in the query text
-          if (lineNumber === 1 && column === 1) {
+        // If we still can't extract position, try to find it in the query text
+        if (lineNumber === 1 && column === 1) {
             const lines = textToValidate.split('\n');
             
             // Extract potential error tokens from error message
@@ -338,7 +418,9 @@ export const QueryEditor: React.FC = () => {
               searchTokens.push(...errorWords);
             }
             
-            // Search for these tokens in the SQL text
+            // Find the FIRST occurrence of any token across ALL lines
+            let earliestMatch: { line: number; column: number } | null = null;
+            
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i];
               const lineLower = line.toLowerCase();
@@ -358,18 +440,27 @@ export const QueryEditor: React.FC = () => {
                   }
                   
                   if (tokenIndex !== -1) {
-                    lineNumber = i + 1;
-                    column = tokenIndex + 1;
-                    break;
+                    // Found a match - check if it's earlier than previous matches
+                    if (!earliestMatch || i + 1 < earliestMatch.line || 
+                        (i + 1 === earliestMatch.line && tokenIndex + 1 < earliestMatch.column)) {
+                      earliestMatch = { line: i + 1, column: tokenIndex + 1 };
+                    }
                   }
                 }
               }
-              if (lineNumber > 1) break;
+            }
+            
+            // Use the earliest match if found
+            if (earliestMatch) {
+              lineNumber = earliestMatch.line;
+              column = earliestMatch.column;
             }
             
             // If still not found, look for lines that contain syntax errors
             // Check for common syntax error patterns like "SEL ECT" (space in keyword)
             if (lineNumber === 1 && column === 1) {
+              let earliestMalformed: { line: number; column: number } | null = null;
+              
               for (let i = 0; i < lines.length; i++) {
                 const line = lines[i].trim();
                 if (!line) continue;
@@ -387,28 +478,32 @@ export const QueryEditor: React.FC = () => {
                   if (pattern.test(line)) {
                     const match = line.match(pattern);
                     if (match && match.index !== undefined) {
-                      lineNumber = i + 1;
-                      column = match.index + 1;
-                      break;
+                      // Found a malformed keyword - check if it's earlier than previous matches
+                      if (!earliestMalformed || i + 1 < earliestMalformed.line ||
+                          (i + 1 === earliestMalformed.line && match.index + 1 < earliestMalformed.column)) {
+                        earliestMalformed = { line: i + 1, column: match.index + 1 };
+                      }
                     }
                   }
                 }
-                if (lineNumber > 1) break;
+              }
+              
+              // Use the earliest malformed keyword match if found
+              if (earliestMalformed) {
+                lineNumber = earliestMalformed.line;
+                column = earliestMalformed.column;
               }
             }
             
-            // Last resort: find the first non-empty line after the first line
-            // (often syntax errors occur on subsequent lines)
-            if (lineNumber === 1 && column === 1 && lines.length > 1) {
-              for (let i = 1; i < lines.length; i++) {
-                if (lines[i].trim()) {
-                  lineNumber = i + 1;
-                  column = 1;
-                  break;
-                }
+            // Last resort: if we still haven't found anything, default to line 1, column 1
+            // (the error is likely at the start of the query)
+            if (lineNumber === 1 && column === 1) {
+              // Check if first line has content
+              if (lines.length > 0 && lines[0].trim()) {
+                lineNumber = 1;
+                column = 1;
               }
             }
-          }
         }
 
         // Adjust line number if we're validating a selection
@@ -449,6 +544,34 @@ export const QueryEditor: React.FC = () => {
         ];
 
         (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+        
+        // Add error indicator in glyph margin
+        if (editorRef.current) {
+          const decorations: any[] = [
+            {
+              range: new (window as any).monaco.Range(actualLineNumber, 1, actualLineNumber, 1),
+              options: {
+                glyphMarginClassName: 'error-glyph-margin',
+                glyphMarginHoverMessage: { value: errorMessage },
+                minimap: {
+                  color: '#f48771',
+                  position: (window as any).monaco.MinimapPosition.Inline,
+                },
+                overviewRuler: {
+                  color: '#f48771',
+                  position: (window as any).monaco.OverviewRulerLane.Right,
+                },
+              },
+            },
+          ];
+          
+          // Update decorations (remove old ones, add new ones)
+          errorDecorationsRef.current = editorRef.current.deltaDecorations(
+            errorDecorationsRef.current,
+            decorations
+          );
+        }
+        
         // Update status bar - invalid SQL syntax (this takes precedence over table not found)
         setSqlValidationStatus({ isValid: false, errorMessage });
       }
@@ -1384,6 +1507,8 @@ export const QueryEditor: React.FC = () => {
                 },
                 // Ensure tooltips can render above the editor
                 fixedOverflowWidgets: true,
+                // Enable glyph margin for error indicators
+                glyphMargin: true,
               }}
               />
             </div>
