@@ -1030,17 +1030,15 @@ export function registerBigQueryHandlers(): void {
       };
     } catch (error: any) {
       if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'Table not found',
-          details: error.message,
-        };
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.message;
+        throw err;
       }
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to get table schema',
-        details: error.errors || error,
-      };
+      const err = new Error(error.message || 'Failed to get table schema');
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors || error;
+      throw err;
     }
   });
 
