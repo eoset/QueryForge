@@ -82,16 +82,7 @@ function toDate(value: any): Date | null {
  * @param columnType - The BigQuery column type (e.g., 'STRING', 'INTEGER', 'TIMESTAMP', etc.)
  * @returns Formatted string representation of the value
  */
-// DEBUG: Track formatter calls
-let formatterCallCount = 0;
-
 export function formatBigQueryValue(value: any, columnType?: string, columnName?: string): string {
-  // DEBUG: Always log first few calls to verify logging works
-  formatterCallCount++;
-  if (formatterCallCount <= 5) {
-    console.log(`🔍 [FORMATTER] Call #${formatterCallCount}, Column: "${columnType}" (${columnName}), Value type: ${typeof value}`);
-  }
-  
   // Handle NULL values - early return for common case
   if (value === null || value === undefined) {
     return 'NULL';
@@ -112,56 +103,15 @@ export function formatBigQueryValue(value: any, columnType?: string, columnName?
     colNameLower.includes('datetime')
   );
   const isDateType = isDateTypeByType || isDateTypeByName;
-  
-  // DEBUG: Log date type detection
-  if (normalizedType === 'RECORD' && (colNameLower.includes('date') || colNameLower.includes('time'))) {
-    console.log(`🔍 [Formatter] Date detection - Column: "${columnName}", Type: "${columnType}", isDateTypeByType: ${isDateTypeByType}, isDateTypeByName: ${isDateTypeByName}, isDateType: ${isDateType}`);
-  }
-
-  // DEBUG: Log ALL object values to see what's being passed to the formatter
-  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    console.log('\n========== FORMATTER OBJECT DEBUG ==========');
-    console.log(`[Formatter] Column type: "${columnType}" (normalized: "${normalizedType}")`);
-    console.log(`[Formatter] Is date type?: ${isDateType}`);
-    console.log(`[Formatter] Value type: ${typeof value}`);
-    console.log(`[Formatter] Value:`, value);
-    console.log(`[Formatter] Object keys:`, Object.keys(value));
-    console.log(`[Formatter] Object prototype:`, Object.getPrototypeOf(value));
-    console.log(`[Formatter] Is Date?:`, value instanceof Date);
-    console.log(`[Formatter] Has getTime?:`, typeof value.getTime === 'function');
-    console.log(`[Formatter] Has toISOString?:`, typeof value.toISOString === 'function');
-    console.log(`[Formatter] String(value):`, String(value));
-    console.log('===========================================\n');
-  }
-
-  // DEBUG: Log DATE/TIME values to see what's actually being passed to the formatter
-  if (isDateType) {
-    console.log('\n========== FORMATTER DATE/TIME DEBUG ==========');
-    console.log(`[Formatter] Column type: "${columnType}" (normalized: "${normalizedType}")`);
-    console.log(`[Formatter] Value type: ${typeof value}`);
-    console.log(`[Formatter] Value:`, value);
-    if (typeof value === 'object' && value !== null) {
-      console.log(`[Formatter] Object keys:`, Object.keys(value));
-      console.log(`[Formatter] Object prototype:`, Object.getPrototypeOf(value));
-      console.log(`[Formatter] Is Date?:`, value instanceof Date);
-      console.log(`[Formatter] Has getTime?:`, typeof value.getTime === 'function');
-      console.log(`[Formatter] Has toISOString?:`, typeof value.toISOString === 'function');
-      console.log(`[Formatter] String(value):`, String(value));
-    }
-    console.log('===============================================\n');
-  }
 
   // CRITICAL: Check if value is already the string "[object Object]"
   // This can happen if Date objects were converted to strings before reaching the formatter
   if (typeof value === 'string' && value === '[object Object]') {
     // CRITICAL: Even if column type is wrong (e.g., RECORD), check if column name suggests it's a date
     // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
-    console.log(`🔍 [Formatter] Checking "[object Object]" string - Column: "${columnName}", Type: "${columnType}", isDateType: ${isDateType}`);
     if (isDateType) {
-      console.error(`❌ [Formatter] Received "[object Object]" string for date column (${columnType}, ${columnName}) - Returning '[Invalid Date]'`);
       return '[Invalid Date]';
     }
-    console.log(`🔍 [Formatter] "[object Object]" string for non-date column, returning as-is`);
     return value; // For non-date columns, return as-is
   }
 

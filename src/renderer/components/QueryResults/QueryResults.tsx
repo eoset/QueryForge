@@ -90,42 +90,6 @@ export const QueryResults: React.FC = () => {
     window.electronAPI.resultsCache
       .getPage(activeTabId, currentPage)
       .then((pageRows) => {
-        // DEBUG: Log when loading from cache
-        if (pageRows && pageRows.length > 0) {
-          console.log(`🔍 [CACHE] Loaded page ${currentPage} from cache, ${pageRows.length} rows`);
-          const firstRow = pageRows[0];
-          if (firstRow && firstRow.values) {
-            console.log(`🔍 [CACHE] First row has ${firstRow.values.length} values`);
-            console.log(`🔍 [CACHE] Columns:`, resultsMetadata?.columns?.map(c => `${c.name} (${c.type})`));
-            firstRow.values.forEach((val: any, idx: number) => {
-              const col = resultsMetadata?.columns?.[idx];
-              console.log(`🔍 [CACHE] Value ${idx} (${col?.name || 'unknown'}, ${col?.type || 'unknown'}):`, val, `type: ${typeof val}`);
-              
-              // Check if column name suggests it's a date/time even if type is wrong
-              const colNameLower = (col?.name || '').toLowerCase();
-              const mightBeDate = col && (
-                col.type === 'DATE' || col.type === 'TIME' || col.type === 'DATETIME' || col.type === 'TIMESTAMP' ||
-                colNameLower.includes('date') || colNameLower.includes('time') || colNameLower.includes('timestamp')
-              );
-              
-              if (mightBeDate) {
-                console.log(`\n========== CACHE DATE/TIME DEBUG ==========`);
-                console.log(`[CACHE] Column: ${col.name}, Type: ${col.type}`);
-                console.log(`[CACHE] Value:`, val);
-                console.log(`[CACHE] Value type: ${typeof val}`);
-                if (typeof val === 'string' && val === '[object Object]') {
-                  console.error(`❌ [CACHE] ERROR: Value is "[object Object]" string! This is the bug!`);
-                }
-                if (typeof val === 'object' && val !== null) {
-                  console.log(`[CACHE] Object keys:`, Object.keys(val));
-                  console.log(`[CACHE] Is Date?:`, val instanceof Date);
-                  console.log(`[CACHE] String(val):`, String(val));
-                }
-                console.log('===========================================\n');
-              }
-            });
-          }
-        }
         if (pageRows) {
           setCurrentPageRows(pageRows);
         } else {

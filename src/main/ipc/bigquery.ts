@@ -33,7 +33,6 @@ function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), co
       // Verify it looks like a date/time string
       if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
           /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-        console.log(`✅ [Serialize] CRITICAL FIX: Extracted value from BigQuery date/time object: "${valueStr}"`);
         return valueStr;
       }
     }
@@ -154,15 +153,8 @@ function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), co
       // This check should be very lenient - just check if 'value' exists and is a string
       if ('value' in value) {
         const innerValue = value.value;
-        console.log(`🔍 [Serialize] Found 'value' property in date object:`, { 
-          innerValue, 
-          innerValueType: typeof innerValue,
-          objectKeys: Object.keys(value),
-          columnType: normalizedColumnType 
-        });
         // If inner value is a string, return it directly (this is the most common case)
         if (typeof innerValue === 'string') {
-          console.log(`✅ [Serialize] Extracting string value from BigQuery date object: "${innerValue}"`);
           return innerValue;
         }
         // If inner value is a Date, convert to ISO string
@@ -225,22 +217,18 @@ function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), co
       // For any other object structure for DATE/TIME, try to extract a string value
       // Check all properties for date-like strings
       const objKeys = Object.keys(value);
-      console.log(`🔍 [Serialize] Checking all properties of date object:`, objKeys);
       for (const key of objKeys) {
         const propValue = value[key];
-        console.log(`🔍 [Serialize] Property "${key}":`, propValue, `(type: ${typeof propValue})`);
         if (typeof propValue === 'string') {
           // Check if it looks like a date/time string
           if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
               /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            console.log(`✅ [Serialize] Found date-like string in property "${key}": "${propValue}"`);
             return propValue;
           }
         }
       }
       
       // If we can't extract a date string, return a placeholder instead of serializing to {}
-      console.error(`❌ [Serialize] Could not extract date string from object:`, value);
       return '[Invalid Date Object]';
     }
     
@@ -650,19 +638,11 @@ export function registerBigQueryHandlers(): void {
                    jobMetadata.statistics?.query?.schema ||
                    jobMetadata.schema;
       
-      // DEBUG: Log schema availability
-      console.log(`🔍 [SCHEMA] Schema available: ${!!schema}, Fields count: ${schema?.fields?.length || 0}`);
-      if (schema?.fields) {
-        console.log(`🔍 [SCHEMA] Schema fields:`, schema.fields.map((f: any) => `${f.name}:${f.type}`));
-      }
-      
       let columns: ColumnMetadata[] = [];
       
       if (schema?.fields && schema.fields.length > 0) {
         // Use schema from metadata
         columns = schema.fields.map((field: any) => {
-          // DEBUG: Log schema fields to see what BigQuery returns
-          console.log(`🔍 [SCHEMA] Field: ${field.name}, Type: ${field.type}, Mode: ${field.mode}`);
           return {
             name: field.name,
             type: field.type, // BigQuery returns types like 'DATE', 'TIME', 'DATETIME', 'TIMESTAMP'
@@ -672,7 +652,6 @@ export function registerBigQueryHandlers(): void {
       } else if (rows && rows.length > 0) {
         // Fallback: extract column names and types from first row
         // NOTE: This fallback should rarely be used if schema is available
-        console.warn(`⚠️ [SCHEMA] Schema not available, using fallback detection from first row`);
         const firstRow = rows[0];
         columns = Object.keys(firstRow).map((key) => {
           const value = firstRow[key];
@@ -776,7 +755,6 @@ export function registerBigQueryHandlers(): void {
             
             if (isDateLike && detectedType) {
               type = detectedType;
-              console.log(`🔍 [SCHEMA FALLBACK] Detected date-like object for ${key}, guessed type: ${type}`);
             } else {
               type = 'RECORD';
             }
@@ -793,73 +771,20 @@ export function registerBigQueryHandlers(): void {
       // BigQuery returns rows as objects with field names as keys
       // Serialize all values to ensure they can be cloned and sent through IPC
       
-      // DEBUG: Always log to verify logging works
-      console.log('\n🔍 [BIGQUERY] Query executed, processing results...');
-      console.log(`🔍 [BIGQUERY] Total rows: ${rows.length}`);
-      console.log(`🔍 [BIGQUERY] Total columns: ${columns.length}`);
-      
-      // DEBUG: Log all column types to see what BigQuery returns
-      console.log('\n========== BIGQUERY COLUMNS DEBUG ==========');
-      console.log('Total columns:', columns.length);
-      columns.forEach((col, idx) => {
-        console.log(`Column ${idx}: ${col.name}, Type: "${col.type}" (${typeof col.type})`);
-      });
-      console.log('===========================================\n');
-      
-      const transformedRows: Row[] = rows.map((row: any, rowIdx: number) => ({
-        values: columns.map((col, colIdx) => {
+      const transformedRows: Row[] = rows.map((row: any) => ({
+        values: columns.map((col) => {
           const value = row[col.name];
           
-          // DEBUG: Log ALL values for first row to see what we're getting
-          if (rowIdx === 0) {
-            const colTypeUpper = (col.type || '').toUpperCase();
-            const isDateType = colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
-                              colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP';
-            
-            console.log(`\n[Row 0, Col ${colIdx}] ${col.name}:`);
-            console.log(`  Type from schema: "${col.type}"`);
-            console.log(`  Normalized type: "${colTypeUpper}"`);
-            console.log(`  Is date type?: ${isDateType}`);
-            console.log(`  Value type: ${typeof value}`);
-            console.log(`  Value:`, value);
-            
-            if (typeof value === 'object' && value !== null) {
-              console.log(`  Object keys:`, Object.keys(value));
-              console.log(`  Is Date?:`, value instanceof Date);
-              console.log(`  String(value):`, String(value));
-            }
-          }
-          
-          // DEBUG: Log DATE/TIME values to see what BigQuery actually returns
-          const colTypeUpper = (col.type || '').toUpperCase();
-          if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
-              colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
-            console.log('\n========== BIGQUERY DATE/TIME DEBUG ==========');
-            console.log(`[BigQuery Serialize] Column: ${col.name}, Type: ${col.type} (normalized: ${colTypeUpper})`);
-            console.log(`[BigQuery Serialize] Value type: ${typeof value}`);
-            console.log(`[BigQuery Serialize] Value:`, value);
-            if (typeof value === 'object' && value !== null) {
-              console.log(`[BigQuery Serialize] Object keys:`, Object.keys(value));
-              console.log(`[BigQuery Serialize] Object prototype:`, Object.getPrototypeOf(value));
-              console.log(`[BigQuery Serialize] Is Date?:`, value instanceof Date);
-              console.log(`[BigQuery Serialize] Has getTime?:`, typeof value.getTime === 'function');
-              console.log(`[BigQuery Serialize] Has toISOString?:`, typeof value.toISOString === 'function');
-              console.log(`[BigQuery Serialize] String(value):`, String(value));
-            }
-          }
           // Pass column type to serializeValue to help with date/time serialization
           let serialized = serializeValue(value, new WeakSet(), col.type);
           
           // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
           // This prevents objects from being stored in cache and later displayed as "[object Object]"
+          const colTypeUpper = (col.type || '').toUpperCase();
           if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
               colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
             // If serialized result is still an object, convert it to a string
             if (typeof serialized === 'object' && serialized !== null) {
-              console.error(`❌ [BigQuery Serialize] ERROR: Serialized result is still an object for DATE/TIME column ${col.name} (${col.type})`);
-              console.error(`❌ [BigQuery Serialize] Serialized value:`, serialized);
-              console.error(`❌ [BigQuery Serialize] Original value:`, value);
-              
               // Try to extract a date string from the object
               const keys = Object.keys(serialized);
               for (const key of keys) {
@@ -868,7 +793,6 @@ export function registerBigQueryHandlers(): void {
                   // Check if it looks like a date/time string
                   if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
                       /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                    console.log(`✅ [BigQuery Serialize] Extracted date string from object: ${propValue}`);
                     serialized = propValue;
                     break;
                   }
@@ -883,8 +807,6 @@ export function registerBigQueryHandlers(): void {
             
             // CRITICAL: Check if serialized result is "[object Object]" string and fix it
             if (typeof serialized === 'string' && serialized === '[object Object]') {
-              console.error(`❌ [BigQuery Serialize] ERROR: Serialized to "[object Object]" string for column ${col.name} (${col.type})`);
-              console.error(`❌ [BigQuery Serialize] Original value:`, value);
               serialized = '[Invalid Date]';
             }
             
@@ -899,16 +821,6 @@ export function registerBigQueryHandlers(): void {
                   serialized = '[Invalid Date]';
                 }
               }
-            }
-            
-            console.log(`[BigQuery Serialize] Final serialized result type: ${typeof serialized}`);
-            console.log(`[BigQuery Serialize] Final serialized result:`, serialized);
-            console.log('===============================================\n');
-          } else {
-            // For non-date types, still check for "[object Object]" string
-            if (typeof serialized === 'string' && serialized === '[object Object]') {
-              console.error(`❌ [BigQuery Serialize] ERROR: Serialized to "[object Object]" for column ${col.name} (${col.type})`);
-              console.error(`❌ [BigQuery Serialize] Original value:`, value);
             }
           }
           
