@@ -6,7 +6,8 @@ import { useBigQuery } from '../../hooks/useBigQuery';
 import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
 import { useConnectionStore } from '../../stores/connection-store';
-import { registerBigQueryLanguage } from '../../utils/bigquery-completions';
+import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import './QueryEditor.css';
 
 export const QueryEditor: React.FC = () => {
@@ -145,7 +146,6 @@ export const QueryEditor: React.FC = () => {
     const currentTab = useTabsStore.getState().tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
     if (!currentTab) return;
 
-    const currentQueryText = currentTab.queryText || '';
     const currentIsConnected = useConnectionStore.getState().connection !== null;
 
     if (!currentIsConnected) {
@@ -153,8 +153,27 @@ export const QueryEditor: React.FC = () => {
       return;
     }
 
-    if (!currentQueryText.trim()) {
-      setTabError(currentTab.id, 'Please enter a query');
+    // Get the query text to execute - use selection if available, otherwise use entire query
+    let queryTextToExecute = '';
+    
+    if (editorRef.current) {
+      const selection = editorRef.current.getSelection();
+      const model = editorRef.current.getModel();
+      
+      // Check if there's a non-empty selection
+      if (selection && !selection.isEmpty() && model) {
+        queryTextToExecute = model.getValueInRange(selection);
+      } else {
+        // No selection, use entire query text
+        queryTextToExecute = currentTab.queryText || '';
+      }
+    } else {
+      // Editor not available, use entire query text
+      queryTextToExecute = currentTab.queryText || '';
+    }
+
+    if (!queryTextToExecute.trim()) {
+      setTabError(currentTab.id, 'Please enter a query or select text to execute');
       return;
     }
 
@@ -173,7 +192,7 @@ export const QueryEditor: React.FC = () => {
     }
 
     try {
-      const result = await executeQuery(currentQueryText);
+      const result = await executeQuery(queryTextToExecute);
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
       
       // Save results to cache for this tab BEFORE updating tab state
@@ -543,7 +562,19 @@ export const QueryEditor: React.FC = () => {
             onChange={handleQueryChange}
             beforeMount={(monaco) => {
               // Register BigQuery language support before editor mounts
-              registerBigQueryLanguage(monaco as typeof import('monaco-editor'));
+              // Provide a function to get the current project ID
+              const getProjectId = () => {
+                const currentConnection = useConnectionStore.getState().connection;
+                return currentConnection?.projectId || null;
+              };
+              
+              // Store project ID getter on window for completion provider
+              (window as any).__bigqueryGetProjectId = getProjectId;
+              
+              // Set metadata store getter for completion provider
+              setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
+              
+              registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
             }}
             onMount={(editor) => {
               editorRef.current = editor;

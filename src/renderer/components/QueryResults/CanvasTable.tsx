@@ -538,14 +538,40 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
         ctx.fillStyle = headerTextColor;
         ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        // Use drawCellText but adjust y position for header
-        const headerTextY = HEADER_HEIGHT / 2 - ROW_HEIGHT / 2;
         // Check if column is INTEGER type for right alignment
+        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
         const columnType = (col.type || '').toUpperCase();
         const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
         const headerAlign = isIntegerColumn ? 'right' : 'left';
-        // Draw text only in visible area
-        drawCellText(ctx, col.name, colX, headerTextY, colWidth, headerTextColor, headerAlign);
+        
+        // Draw header text directly with proper alignment and truncation
+        const textWidth = measureText(col.name, ctx);
+        const maxWidth = colWidth - CELL_PADDING * 2;
+        
+        if (textWidth <= maxWidth) {
+          // Text fits - draw with proper alignment
+          const textX = headerAlign === 'right'
+            ? colX + colWidth - CELL_PADDING - textWidth
+            : colX + CELL_PADDING;
+          ctx.fillText(col.name, textX, headerTextY);
+        } else {
+          // Truncate with ellipsis
+          const ellipsis = '...';
+          const ellipsisWidth = measureText(ellipsis, ctx);
+          let truncated = col.name;
+          let truncatedWidth = textWidth;
+          
+          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
+            truncated = truncated.slice(0, -1);
+            truncatedWidth = measureText(truncated, ctx);
+          }
+          
+          const finalWidth = truncatedWidth + ellipsisWidth;
+          const textX = headerAlign === 'right'
+            ? colX + colWidth - CELL_PADDING - finalWidth
+            : colX + CELL_PADDING;
+          ctx.fillText(truncated + ellipsis, textX, headerTextY);
+        }
 
         // Draw resize handle
         if (resizingColumn === idx || hoveredColumn === idx) {
@@ -825,12 +851,25 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
         if (selectionStart && selectionEnd) {
-          const text = getSelectedText();
-          if (text) {
-            e.preventDefault();
-            navigator.clipboard.writeText(text).catch((err) => {
-              console.error('Failed to copy to clipboard:', err);
-            });
+          // Check if user is trying to copy from an input field or Monaco editor
+          const target = e.target as HTMLElement;
+          const isInputField = 
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' || 
+            target.isContentEditable ||
+            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
+            target.closest('.monaco-editor') !== null ||
+            target.closest('.editor-container') !== null;
+          
+          // Only handle copy from canvas if not copying from an input/editor
+          if (!isInputField) {
+            const text = getSelectedText();
+            if (text) {
+              e.preventDefault();
+              navigator.clipboard.writeText(text).catch((err) => {
+                console.error('Failed to copy to clipboard:', err);
+              });
+            }
           }
         }
       }
