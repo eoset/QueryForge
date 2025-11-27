@@ -108,6 +108,57 @@
 .editor-container {
   flex: 1;
   border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.editor-status-bar {
+  background-color: #252526;
+  border-top: 1px solid #3e3e42;
+  padding: 0.25rem 0.75rem;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 0.75rem;
+  color: #858585;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: #4ec9b0;
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: #f48771;
+}
+
+.editor-status-bar .status-valid {
+  color: #4ec9b0;
+}
+
+.editor-status-bar .status-invalid {
+  color: #f48771;
 }
 
 .no-tab-message {

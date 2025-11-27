@@ -14,7 +14,13 @@ export const QueryEditor: React.FC = () => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
+  const [sqlValidationStatus, setSqlValidationStatus] = useState<{
+    isValid: boolean | null;
+    errorMessage: string | null;
+  }>({ isValid: null, errorMessage: null });
   const editorRef = useRef<any>(null);
+  const editorWrapperRef = useRef<HTMLDivElement>(null);
+  const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
   const activeTab = useTabsStore((state) => {
@@ -42,6 +48,29 @@ export const QueryEditor: React.FC = () => {
     parserRef.current = new Parser();
   }, []);
 
+  // Calculate editor height based on container size
+  useEffect(() => {
+    if (!editorWrapperRef.current) return;
+
+    const updateHeight = () => {
+      if (editorWrapperRef.current) {
+        const height = editorWrapperRef.current.clientHeight;
+        setEditorHeight(height);
+      }
+    };
+
+    // Initial height calculation
+    updateHeight();
+
+    // Use ResizeObserver to update height when container resizes
+    const resizeObserver = new ResizeObserver(updateHeight);
+    resizeObserver.observe(editorWrapperRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [activeTab]);
+
   // Validate SQL syntax and set markers in Monaco Editor
   useEffect(() => {
     if (!editorRef.current || !parserRef.current) {
@@ -56,6 +85,8 @@ export const QueryEditor: React.FC = () => {
       if (model && (window as any).monaco) {
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
       }
+      // Update status bar
+      setSqlValidationStatus({ isValid: null, errorMessage: null });
       return;
     }
 
@@ -71,6 +102,8 @@ export const QueryEditor: React.FC = () => {
         
         // If parsing succeeds, clear markers
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
+        // Update status bar - valid SQL
+        setSqlValidationStatus({ isValid: true, errorMessage: null });
       } catch (error: any) {
         // Parse error occurred, create marker
         const errorMessage = error.message || 'SQL syntax error';
@@ -134,6 +167,8 @@ export const QueryEditor: React.FC = () => {
         ];
 
         (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+        // Update status bar - invalid SQL
+        setSqlValidationStatus({ isValid: false, errorMessage });
       }
     };
 
@@ -554,67 +589,86 @@ export const QueryEditor: React.FC = () => {
       )}
       <div className="editor-container">
         {activeTab ? (
-          <Editor
-            height="300px"
-            defaultLanguage="sql"
-            theme="vs-dark"
-            value={queryText}
-            onChange={handleQueryChange}
-            beforeMount={(monaco) => {
-              // Register BigQuery language support before editor mounts
-              // Provide a function to get the current project ID
-              const getProjectId = () => {
-                const currentConnection = useConnectionStore.getState().connection;
-                return currentConnection?.projectId || null;
-              };
-              
-              // Store project ID getter on window for completion provider
-              (window as any).__bigqueryGetProjectId = getProjectId;
-              
-              // Set metadata store getter for completion provider
-              setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
-              
-              registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
-            }}
-            onMount={(editor) => {
-              editorRef.current = editor;
-              
-              // Add keyboard shortcut for running query (Cmd+Enter on Mac, Ctrl+Enter on Windows/Linux)
-              editor.addCommand(
-                (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.Enter,
-                () => {
-                  if (executeHandlerRef.current) {
-                    executeHandlerRef.current();
+          <>
+            <div className="editor-wrapper" ref={editorWrapperRef}>
+              <Editor
+                height={`${editorHeight}px`}
+                defaultLanguage="sql"
+                theme="vs-dark"
+                value={queryText}
+                onChange={handleQueryChange}
+              beforeMount={(monaco) => {
+                // Register BigQuery language support before editor mounts
+                // Provide a function to get the current project ID
+                const getProjectId = () => {
+                  const currentConnection = useConnectionStore.getState().connection;
+                  return currentConnection?.projectId || null;
+                };
+                
+                // Store project ID getter on window for completion provider
+                (window as any).__bigqueryGetProjectId = getProjectId;
+                
+                // Set metadata store getter for completion provider
+                setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
+                
+                registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
+              }}
+              onMount={(editor) => {
+                editorRef.current = editor;
+                
+                // Add keyboard shortcut for running query (Cmd+Enter on Mac, Ctrl+Enter on Windows/Linux)
+                editor.addCommand(
+                  (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.Enter,
+                  () => {
+                    if (executeHandlerRef.current) {
+                      executeHandlerRef.current();
+                    }
                   }
-                }
-              );
+                );
 
-              // Add keyboard shortcut for expanding SELECT * (Cmd+B on Mac, Ctrl+B on Windows/Linux)
-              editor.addCommand(
-                (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.KeyB,
-                () => {
-                  if (expandSelectStarHandlerRef.current) {
-                    expandSelectStarHandlerRef.current();
+                // Add keyboard shortcut for expanding SELECT * (Cmd+B on Mac, Ctrl+B on Windows/Linux)
+                editor.addCommand(
+                  (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.KeyB,
+                  () => {
+                    if (expandSelectStarHandlerRef.current) {
+                      expandSelectStarHandlerRef.current();
+                    }
                   }
-                }
-              );
-            }}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 12,
-              lineNumbers: 'on',
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              suggestOnTriggerCharacters: true,
-              quickSuggestions: {
-                other: true,
-                comments: false,
-                strings: false,
-              },
-              suggestSelection: 'first',
-              tabCompletion: 'on',
-            }}
-          />
+                );
+              }}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 12,
+                lineNumbers: 'on',
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                suggestOnTriggerCharacters: true,
+                quickSuggestions: {
+                  other: true,
+                  comments: false,
+                  strings: false,
+                },
+                suggestSelection: 'first',
+                tabCompletion: 'on',
+              }}
+              />
+            </div>
+            <div className="editor-status-bar">
+              {sqlValidationStatus.isValid === null ? (
+                <span className="status-text">Ready</span>
+              ) : sqlValidationStatus.isValid ? (
+                <span className="status-text status-valid">
+                  <span className="status-indicator status-indicator-valid"></span>
+                  SQL Syntax is valid
+                </span>
+              ) : (
+                <span className="status-text status-invalid">
+                  <span className="status-indicator status-indicator-invalid"></span>
+                  {sqlValidationStatus.errorMessage || 'SQL syntax error'}
+                </span>
+              )}
+            </div>
+          </>
         ) : (
           <div className="no-tab-message">No active tab</div>
         )}
