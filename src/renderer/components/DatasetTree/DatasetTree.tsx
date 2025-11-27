@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useConnectionStore } from '../../stores/connection-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import { useTabsStore } from '../../stores/tabs-store';
 import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
 import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
@@ -44,6 +45,8 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onT
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
+  const { setDatasets: setMetadataDatasets, setDatasetTables } = useBigQueryMetadataStore();
+
   const loadDatasets = useCallback(async () => {
     if (!connection || !window.electronAPI) {
       return;
@@ -54,20 +57,34 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onT
 
     try {
       const datasetList = await window.electronAPI.bigquery.listDatasets();
-      setDatasets(
-        datasetList.map((ds) => ({
-          ...ds,
-          expanded: false,
-          loading: false,
-        }))
-      );
+      const datasetsWithState = datasetList.map((ds) => ({
+        ...ds,
+        expanded: false,
+        loading: false,
+      }));
+      setDatasets(datasetsWithState);
+      
+      // Also store in metadata store for completion provider
+      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
+      
+      // Preload tables for all datasets in the background
+      datasetList.forEach((dataset) => {
+        window.electronAPI!.bigquery
+          .listTables(dataset.id)
+          .then((tables) => {
+            setDatasetTables(dataset.id, tables);
+          })
+          .catch((err) => {
+            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
+          });
+      });
     } catch (err: any) {
       setError(err.message || 'Failed to load datasets');
       console.error('Failed to load datasets:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [connection]);
+  }, [connection, setMetadataDatasets, setDatasetTables]);
 
   useEffect(() => {
     if (connection) {
@@ -103,6 +120,8 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onT
                         : d
                     )
                   );
+                  // Also store in metadata store
+                  setDatasetTables(datasetId, tables);
                 })
                 .catch((err) => {
                   console.error('Failed to load tables:', err);

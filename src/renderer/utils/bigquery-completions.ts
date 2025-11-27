@@ -2,10 +2,20 @@
  * BigQuery IntelliSense and code completion provider for Monaco Editor
  */
 
+// Import metadata store - use dynamic import to avoid circular dependencies
+let metadataStoreGetter: (() => any) | null = null;
+
+export function setMetadataStoreGetter(getter: () => any) {
+  metadataStoreGetter = getter;
+}
+
 // Monaco CompletionItemKind enum values (using numeric constants to avoid importing monaco-editor)
 const CompletionItemKind = {
   Function: 1,
   Keyword: 14,
+  Class: 7, // Use Class for tables
+  Module: 9, // Use Module for datasets
+  Property: 10, // Use Property for projects
 } as const;
 
 const CompletionItemInsertTextRule = {
@@ -503,12 +513,220 @@ const createKeywordCompletions = () => {
 };
 
 /**
+ * Parses table reference pattern from text
+ * Returns { project, dataset, table, prefix } or null if not a table reference
+ */
+function parseTableReference(text: string): {
+  project?: string;
+  dataset?: string;
+  table?: string;
+  prefix: string;
+} | null {
+  if (!text) return null;
+  
+  // Remove backticks for parsing
+  const cleanText = text.replace(/`/g, '').trim();
+  
+  // Handle case where text ends with a dot (e.g., "project.dataset.")
+  const endsWithDot = cleanText.endsWith('.');
+  const textToParse = endsWithDot ? cleanText.slice(0, -1) : cleanText;
+  
+  // Match patterns like: project.dataset.table, dataset.table, or just table
+  // Also handle partial matches like project.dataset. or dataset.
+  const parts = textToParse.split('.').filter(p => p.length > 0);
+  
+  if (parts.length === 0) {
+    return null;
+  } else if (parts.length === 1) {
+    // Just a table name or partial table name, or dataset name if ends with dot
+    if (endsWithDot) {
+      return { dataset: parts[0], table: '', prefix: '' };
+    }
+    return { table: parts[0], prefix: parts[0] };
+  } else if (parts.length === 2) {
+    // dataset.table or partial, or project.dataset if ends with dot
+    if (endsWithDot) {
+      return { project: parts[0], dataset: parts[1], table: '', prefix: '' };
+    }
+    return { dataset: parts[0], table: parts[1] || '', prefix: parts[1] || '' };
+  } else if (parts.length === 3) {
+    // project.dataset.table or partial
+    return { project: parts[0], dataset: parts[1], table: parts[2] || '', prefix: parts[2] || '' };
+  }
+  
+  return null;
+}
+
+/**
+ * Gets text before cursor that might be a table reference
+ */
+function getTableReferenceText(model: any, position: any): string | null {
+  const lineText = model.getLineContent(position.lineNumber);
+  const textBeforeCursor = lineText.substring(0, position.column - 1);
+  
+  // Check if we're right after a dot FIRST (e.g., "project.dataset." or "dataset.")
+  // This handles the case where user types "project.dataset." and expects table suggestions
+  // This must be checked before the general dot check to catch trailing dots
+  const dotMatch = textBeforeCursor.match(/([a-zA-Z0-9_`-]+(?:\.[a-zA-Z0-9_`-]+)*)\.$/);
+  if (dotMatch) {
+    return dotMatch[1] + '.';
+  }
+  
+  // Look backwards from cursor to find the start of a potential table reference
+  // Stop at whitespace, operators, or keywords like FROM, JOIN, etc.
+  // Note: Don't stop at hyphens or dots as they're part of identifiers
+  const stopPattern = /[\s,;()\[\]+*/=<>!|&]/;
+  let end = textBeforeCursor.length;
+  let start = end;
+  
+  // Find the end of the current word/identifier
+  // Allow dots and hyphens in identifiers (for project.dataset.table and project-dataset-table)
+  while (start > 0) {
+    const char = textBeforeCursor[start - 1];
+    if (stopPattern.test(char)) {
+      break;
+    }
+    // Allow dots, hyphens, backticks, and alphanumeric characters
+    if (!/[a-zA-Z0-9_`.\-]/.test(char)) {
+      break;
+    }
+    start--;
+  }
+  
+  // Get the text that might be a table reference
+  const potentialRef = textBeforeCursor.substring(start, end).trim();
+  
+  // Always check if it contains dots (indicating project.dataset.table pattern)
+  // This is the most reliable indicator of a table reference
+  if (potentialRef.includes('.')) {
+    return potentialRef;
+  }
+  
+  // If no dots, check if we're in a context where table names are expected
+  // Look for FROM, JOIN keywords before the cursor
+  const fromMatch = textBeforeCursor.match(/\b(FROM|JOIN)\s+([^,\s;()]+)$/i);
+  if (fromMatch) {
+    return fromMatch[2];
+  }
+  
+  // If we have a partial identifier and we're in a FROM/JOIN context, return it
+  if (potentialRef && /[a-zA-Z0-9_`-]/.test(potentialRef)) {
+    // Check if there's a FROM or JOIN keyword nearby
+    const contextMatch = textBeforeCursor.match(/\b(FROM|JOIN)\s+[^,\s;()]*$/i);
+    if (contextMatch) {
+      return potentialRef;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Gets matching tables from cache (synchronous)
+ */
+function getMatchingTablesFromCache(
+  projectId: string,
+  parsedRef: { project?: string; dataset?: string; table?: string; prefix: string },
+  getMetadataStore: () => { getDatasetTables: (datasetId: string) => any[] | undefined; getAllTables: () => Array<{ dataset: string; table: any }>; datasets: any[] }
+): any[] {
+  const suggestions: any[] = [];
+  const metadataStore = getMetadataStore();
+  
+  try {
+    // If we have a project and dataset, search for tables in that dataset
+    if (parsedRef.project && parsedRef.dataset) {
+      const tables = metadataStore.getDatasetTables(parsedRef.dataset);
+      if (tables) {
+        const prefix = parsedRef.prefix.toLowerCase();
+        const filtered = tables.filter((table: any) => !prefix || table.name.toLowerCase().startsWith(prefix));
+        
+        filtered.forEach((table: any) => {
+          // When we have project.dataset, only insert the table name (not the full path)
+          // The user has already typed project.dataset, so we just complete with the table name
+          const fullName = `${parsedRef.project}.${parsedRef.dataset}.${table.name}`;
+          suggestions.push({
+            label: table.name,
+            kind: CompletionItemKind.Class,
+            insertText: table.name, // Only table name since project.dataset is already typed
+            detail: `Table: ${fullName}`,
+            documentation: `Table in ${parsedRef.project}.${parsedRef.dataset}`,
+          });
+        });
+      }
+    }
+    // If we only have a dataset, search for tables in that dataset
+    else if (parsedRef.dataset) {
+      const tables = metadataStore.getDatasetTables(parsedRef.dataset);
+      if (tables && tables.length > 0) {
+        const prefix = parsedRef.prefix.toLowerCase();
+        // If prefix is empty (e.g., after typing "Bricks."), show all tables
+        const filtered = prefix 
+          ? tables.filter((table: any) => table.name.toLowerCase().startsWith(prefix))
+          : tables; // Show all tables if no prefix
+        
+        filtered.forEach((table: any) => {
+          // When we have a dataset, only insert the table name (not the full path)
+          // The user has already typed the dataset, so we just complete with the table name
+          const insertText = table.name; // Just the table name
+          const fullName = projectId 
+            ? `${projectId}.${parsedRef.dataset}.${table.name}`
+            : `${parsedRef.dataset}.${table.name}`;
+          suggestions.push({
+            label: table.name,
+            kind: CompletionItemKind.Class,
+            insertText: insertText, // Only table name, not full path
+            detail: `Table: ${fullName}`,
+            documentation: projectId 
+              ? `Table in ${projectId}.${parsedRef.dataset}`
+              : `Table in ${parsedRef.dataset}`,
+          });
+        });
+      }
+    }
+    // If we only have a prefix, search across all datasets
+    else if (parsedRef.prefix) {
+      const prefix = parsedRef.prefix.toLowerCase();
+      const allTables = metadataStore.getAllTables();
+      
+      // Filter tables that match the prefix
+      const filtered = allTables.filter(({ table }) => table.name.toLowerCase().startsWith(prefix));
+      
+      filtered
+        .slice(0, 50) // Limit to 50 suggestions
+        .forEach(({ dataset, table }) => {
+          // Always include project ID in the full path if available
+          const fullName = projectId
+            ? `${projectId}.${dataset}.${table.name}`
+            : `${dataset}.${table.name}`;
+          suggestions.push({
+            label: `${dataset}.${table.name}`, // Show dataset.table in label for clarity
+            kind: CompletionItemKind.Class,
+            insertText: fullName, // Insert full project.dataset.table path if projectId available
+            detail: `Table: ${fullName}`,
+            documentation: projectId 
+              ? `Table in ${projectId}.${dataset}`
+              : `Table in ${dataset}`,
+          });
+        });
+    }
+    
+    return suggestions;
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
  * Creates a completion provider for BigQuery SQL
  */
-export function createBigQueryCompletionProvider(monaco: Monaco): any {
+export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: () => string | null): any {
   return {
-    provideCompletionItems: (model: any, position: any) => {
+    triggerCharacters: ['.'], // Trigger on dot to show table suggestions
+    provideCompletionItems: async (model: any, position: any, context: any) => {
       const word = model.getWordUntilPosition(position);
+      const lineText = model.getLineContent(position.lineNumber);
+      const textBeforeCursor = lineText.substring(0, position.column - 1);
+      
       const range = {
         startLineNumber: position.lineNumber,
         endLineNumber: position.lineNumber,
@@ -516,18 +734,144 @@ export function createBigQueryCompletionProvider(monaco: Monaco): any {
         endColumn: word.endColumn,
       };
 
-      // Get all completions
-      const keywordCompletions = createKeywordCompletions();
-      const suggestions: any[] = [
-        ...keywordCompletions.map((item) => ({
-          ...item,
-          range,
-        })),
-        ...ALL_FUNCTIONS.map((item) => ({
-          ...item,
-          range,
-        })),
-      ];
+      // Try to get table suggestions first
+      const projectId = getProjectId();
+      const tableRefText = getTableReferenceText(model, position);
+      let tableSuggestions: any[] = [];
+      let hasTableContext = false;
+      
+      if (tableRefText && projectId) {
+        const parsedRef = parseTableReference(tableRefText);
+        
+        if (parsedRef) {
+          try {
+            // Use cached data from metadata store (synchronous)
+            const getMetadataStore = metadataStoreGetter || (() => {
+              // Fallback: try to get from window if available
+              if (typeof window !== 'undefined' && (window as any).__bigqueryMetadataStore) {
+                return (window as any).__bigqueryMetadataStore;
+              }
+              return { getDatasetTables: () => undefined, getAllTables: () => [], datasets: [] };
+            });
+            
+            const metadataStore = getMetadataStore();
+            tableSuggestions = getMatchingTablesFromCache(projectId, parsedRef, getMetadataStore);
+            
+            // If we have table suggestions, we're in a table context
+            hasTableContext = tableSuggestions.length > 0;
+            
+            // Update range for table suggestions
+            if (tableSuggestions.length > 0) {
+              // Calculate the actual range for the table reference
+              const lineText = model.getLineContent(position.lineNumber);
+              const textBeforeCursor = lineText.substring(0, position.column - 1);
+              
+              // Check if we're right after a dot (e.g., "Bricks.")
+              const endsWithDot = textBeforeCursor.endsWith('.');
+              
+              let startColumn: number;
+              let endColumn: number;
+              
+              if (endsWithDot) {
+                // When cursor is right after a dot, we want to insert the table name
+                // The range should start at the cursor position (after the dot)
+                // and end at the cursor position (replacing nothing, just inserting)
+                startColumn = position.column;
+                endColumn = position.column;
+              } else {
+                // When typing a partial table name (e.g., "Bricks.B1"), replace from after the last dot
+                // Find the position right after the last dot
+                const lastDotIndex = textBeforeCursor.lastIndexOf('.');
+                
+                if (lastDotIndex >= 0) {
+                  // We have a dot, so replace everything after it
+                  startColumn = lastDotIndex + 2; // +1 for 0-index, +1 to be after the dot
+                  endColumn = position.column;
+                } else {
+                  // No dot found, find the start of the current identifier
+                  // Look backwards from cursor to find the start, stopping at spaces or operators
+                  const stopPattern = /[\s,;()\[\]+*/=<>!|&]/;
+                  let start = textBeforeCursor.length;
+                  
+                  // Find the start of the current word/identifier
+                  while (start > 0) {
+                    const char = textBeforeCursor[start - 1];
+                    if (stopPattern.test(char)) {
+                      break;
+                    }
+                    // Allow dots, hyphens, backticks, and alphanumeric characters
+                    if (!/[a-zA-Z0-9_`.\-]/.test(char)) {
+                      break;
+                    }
+                    start--;
+                  }
+                  
+                  startColumn = start + 1;
+                  endColumn = position.column;
+                }
+              }
+              
+              const tableRange = {
+                startLineNumber: position.lineNumber,
+                endLineNumber: position.lineNumber,
+                startColumn,
+                endColumn,
+              };
+              
+              tableSuggestions = tableSuggestions.map((item) => ({
+                ...item,
+                range: tableRange,
+              }));
+            }
+          } catch (error) {
+            // Silently handle errors
+          }
+        }
+      }
+
+      // If we're in a table context (have table suggestions), prioritize them and exclude keywords
+      // Otherwise, include all standard completions
+      const suggestions: any[] = [];
+      
+      // Check if we have a table reference with a trailing dot - this is a strong signal for table context
+      const hasTrailingDot = tableRefText?.endsWith('.');
+      
+      if (hasTableContext || (hasTrailingDot && tableRefText)) {
+        // In table context or after a dot, only show table suggestions
+        suggestions.push(...tableSuggestions);
+      } else if (tableRefText) {
+        // We detected a table reference but no suggestions found - still show table suggestions first
+        suggestions.push(...tableSuggestions);
+        
+        // Add keywords/functions only if we have no table suggestions
+        if (tableSuggestions.length === 0) {
+          const keywordCompletions = createKeywordCompletions();
+          suggestions.push(
+            ...keywordCompletions.map((item) => ({
+              ...item,
+              range,
+            })),
+            ...ALL_FUNCTIONS.map((item) => ({
+              ...item,
+              range,
+            }))
+          );
+        }
+      } else {
+        // Not in table context, show standard completions
+        const keywordCompletions = createKeywordCompletions();
+        suggestions.push(
+          ...keywordCompletions.map((item) => ({
+            ...item,
+            range,
+          })),
+          ...ALL_FUNCTIONS.map((item) => ({
+            ...item,
+            range,
+          })),
+          ...tableSuggestions // Still include table suggestions if any (for prefix-only searches)
+        );
+      }
 
       return { suggestions };
     },
@@ -537,7 +881,10 @@ export function createBigQueryCompletionProvider(monaco: Monaco): any {
 /**
  * Registers BigQuery language support with Monaco Editor
  */
-export function registerBigQueryLanguage(monaco?: typeof import('monaco-editor')): void {
+export function registerBigQueryLanguage(
+  monaco?: typeof import('monaco-editor'),
+  getProjectId?: () => string | null
+): void {
   // Use provided monaco instance or try to get from window
   const monacoInstance = monaco || (typeof window !== 'undefined' ? (window as any).monaco : null);
   
@@ -545,13 +892,29 @@ export function registerBigQueryLanguage(monaco?: typeof import('monaco-editor')
     return;
   }
 
+  // Default getProjectId function that tries to get from connection store
+  const defaultGetProjectId = getProjectId || (() => {
+    if (typeof window !== 'undefined') {
+      // Try to get from the function set by QueryEditor component
+      try {
+        const getter = (window as any).__bigqueryGetProjectId;
+        if (typeof getter === 'function') {
+          return getter();
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+    return null;
+  });
+
   // Register completion provider for SQL language
   // Check if already registered to avoid duplicate registrations
   const providers = monacoInstance.languages.getLanguages();
   const sqlLanguage = providers.find((lang: { id: string }) => lang.id === 'sql');
   
   if (sqlLanguage) {
-    monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance));
+    monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
   }
 }
 
