@@ -27,6 +27,9 @@
   ],
   "author": "",
   "license": "MIT",
+  "overrides": {
+    "inflight": "npm:inflight-lru@^1.0.0"
+  },
   "dependencies": {
     "@google-cloud/bigquery": "^7.0.0",
     "@monaco-editor/react": "^4.6.0",
