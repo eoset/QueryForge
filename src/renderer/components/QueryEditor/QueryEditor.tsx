@@ -258,11 +258,10 @@ export const QueryEditor: React.FC = () => {
                 glyphMarginHoverMessage: { value: errorMsg },
                 minimap: {
                   color: '#f48771',
-                  position: (window as any).monaco.MinimapPosition.Inline,
                 },
                 overviewRuler: {
                   color: '#f48771',
-                  position: (window as any).monaco.OverviewRulerLane.Right,
+                  position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
                 },
               },
             },
@@ -555,11 +554,10 @@ export const QueryEditor: React.FC = () => {
                 glyphMarginHoverMessage: { value: errorMessage },
                 minimap: {
                   color: '#f48771',
-                  position: (window as any).monaco.MinimapPosition.Inline,
                 },
                 overviewRuler: {
                   color: '#f48771',
-                  position: (window as any).monaco.OverviewRulerLane.Right,
+                  position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
                 },
               },
             },
@@ -1520,7 +1518,7 @@ export const QueryEditor: React.FC = () => {
                     Query completed{completedQueryExecutionTime !== null ? ` in ${formatExecutionTime(completedQueryExecutionTime)}` : ''}
                   </span>
                 ) : sqlValidationStatus.isValid === null ? (
-                  <span className="status-text">Ready</span>
+                  <span className="status-text">✦ Type a query to get started</span>
                 ) : sqlValidationStatus.isValid ? (
                   <span className="status-text status-valid">
                     <span className="status-indicator status-indicator-valid"></span>

@@ -317,7 +317,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
     // Colors
     const bgColor = '#1e1e1e';
-    const headerBgColor = '#252526';
+    const headerBgColor = '#1a1a1a';
     const borderColor = '#3e3e42';
     const textColor = '#cccccc';
     const headerTextColor = '#cccccc';
