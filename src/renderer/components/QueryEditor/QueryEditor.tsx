@@ -27,6 +27,7 @@ export const QueryEditor: React.FC = () => {
   const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
+  const validateHandlerRef = useRef<(() => void) | null>(null);
   const activeTab = useTabsStore((state) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
     return tab || null;
@@ -80,6 +81,32 @@ export const QueryEditor: React.FC = () => {
     parserRef.current = new Parser();
   }, []);
 
+  // Ensure Monaco editor tooltips render above toolbar
+  useEffect(() => {
+    // Add global style to ensure Monaco hover tooltips have high z-index
+    const styleId = 'monaco-tooltip-z-index-fix';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        .monaco-editor .monaco-hover,
+        .monaco-editor .monaco-editor-hover,
+        .monaco-editor .monaco-editor-overlaymessage {
+          z-index: 1000 !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    return () => {
+      // Cleanup: remove style when component unmounts
+      const style = document.getElementById(styleId);
+      if (style) {
+        document.head.removeChild(style);
+      }
+    };
+  }, []);
+
   // Reset completion status when tab changes
   useEffect(() => {
     setCompletedQueryText(null);
@@ -109,28 +136,32 @@ export const QueryEditor: React.FC = () => {
     };
   }, [activeTab]);
 
+  // Helper function to count SELECT statements in SQL text (ignoring comments and strings)
+  const countSelectStatements = (sql: string): number => {
+    // Remove comments and string literals to avoid false positives
+    let cleanedSql = sql;
+    
+    // Remove single-line comments (--)
+    cleanedSql = cleanedSql.replace(/--.*$/gm, '');
+    
+    // Remove multi-line comments (/* */)
+    cleanedSql = cleanedSql.replace(/\/\*[\s\S]*?\*\//g, '');
+    
+    // Remove string literals (single quotes, double quotes, backticks)
+    // This is a simplified approach - handle escaped quotes
+    cleanedSql = cleanedSql.replace(/'([^'\\]|\\.)*'/g, "''");
+    cleanedSql = cleanedSql.replace(/"([^"\\]|\\.)*"/g, '""');
+    cleanedSql = cleanedSql.replace(/`([^`\\]|\\.)*`/g, '``');
+    
+    // Count SELECT statements (case-insensitive, whole word)
+    const selectRegex = /\bSELECT\b/gi;
+    const matches = cleanedSql.match(selectRegex);
+    return matches ? matches.length : 0;
+  };
+
   // Validate SQL syntax and set markers in Monaco Editor
   useEffect(() => {
     if (!editorRef.current || !parserRef.current) {
-      return;
-    }
-
-    // Skip validation for empty or very short queries to avoid false positives
-    const trimmedQuery = queryText.trim();
-    if (!trimmedQuery || trimmedQuery.length < 3) {
-      // Clear markers if query is empty or too short
-      const model = editorRef.current.getModel();
-      if (model && (window as any).monaco) {
-        (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
-      }
-      // Update status bar - but preserve table not found errors if they exist
-      setSqlValidationStatus((prev) => {
-        // Only clear if there's no table not found error
-        if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-          return prev;
-        }
-        return { isValid: null, errorMessage: null };
-      });
       return;
     }
 
@@ -138,6 +169,81 @@ export const QueryEditor: React.FC = () => {
       const model = editorRef.current?.getModel();
       if (!model || !(window as any).monaco) return;
 
+      // Get current selection
+      const selection = editorRef.current?.getSelection();
+      const hasSelection = selection && !selection.isEmpty();
+      
+      // Determine which text to validate
+      let textToValidate = queryText;
+      if (hasSelection && selection && model) {
+        textToValidate = model.getValueInRange(selection);
+      }
+      
+      const trimmedQuery = textToValidate.trim();
+      
+      // Skip validation for empty or very short queries to avoid false positives
+      if (!trimmedQuery || trimmedQuery.length < 3) {
+        // Clear markers if query is empty or too short
+        (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
+        // Update status bar - but preserve table not found errors if they exist
+        setSqlValidationStatus((prev) => {
+          // Only clear if there's no table not found error
+          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+            return prev;
+          }
+          return { isValid: null, errorMessage: null };
+        });
+        return;
+      }
+
+      // Check for multiple SELECT statements when no selection is active
+      // Only check full query text, not selected text
+      const selectCount = countSelectStatements(queryText);
+      
+      if (selectCount > 1 && !hasSelection) {
+        // Multiple SELECT statements detected without selection - show error
+        // Find the position of the second SELECT statement
+        const lines = queryText.split('\n');
+        let secondSelectLine = 1;
+        let secondSelectColumn = 1;
+        let selectFound = 0;
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Remove comments and strings for matching
+          let cleanedLine = line.replace(/--.*$/, '').replace(/\/\*.*?\*\//g, '');
+          cleanedLine = cleanedLine.replace(/'([^'\\]|\\.)*'/g, "''").replace(/"([^"\\]|\\.)*"/g, '""').replace(/`([^`\\]|\\.)*`/g, '``');
+          
+          const selectMatch = cleanedLine.match(/\bSELECT\b/i);
+          if (selectMatch) {
+            selectFound++;
+            if (selectFound === 2) {
+              secondSelectLine = i + 1;
+              secondSelectColumn = (selectMatch.index || 0) + 1;
+              break;
+            }
+          }
+        }
+        
+        const markers: any[] = [
+          {
+            severity: (window as any).monaco.MarkerSeverity.Error,
+            startLineNumber: secondSelectLine,
+            startColumn: secondSelectColumn,
+            endLineNumber: secondSelectLine,
+            endColumn: Math.min(secondSelectColumn + 6, model.getLineLength(secondSelectLine) + 1), // Highlight "SELECT"
+            message: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.',
+          },
+        ];
+        (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+        setSqlValidationStatus({ 
+          isValid: false, 
+          errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.' 
+        });
+        return;
+      }
+
+      // Validate the text (either selected or full query)
       try {
         // Try to parse the SQL
         parserRef.current!.astify(trimmedQuery, {
@@ -160,45 +266,169 @@ export const QueryEditor: React.FC = () => {
         // Parse error occurred, create marker
         const errorMessage = error.message || 'SQL syntax error';
         
-        // Try to extract line and column from error message
+        // Try to extract line and column from error object properties first
         let lineNumber = 1;
         let column = 1;
         
-        // Common error message patterns from node-sql-parser
-        const lineMatch = errorMessage.match(/line (\d+)/i) || errorMessage.match(/at line (\d+)/i);
-        const columnMatch = errorMessage.match(/column (\d+)/i) || errorMessage.match(/at column (\d+)/i);
-        
-        if (lineMatch) {
-          lineNumber = parseInt(lineMatch[1], 10);
-        }
-        if (columnMatch) {
-          column = parseInt(columnMatch[1], 10);
-        }
-
-        // If we can't extract position, try to find it in the query text
-        if (lineNumber === 1 && column === 1) {
-          // Try to find the position of common error patterns
-          const lines = queryText.split('\n');
+        // Check error object for position properties (node-sql-parser may provide these)
+        if (error.loc) {
+          lineNumber = error.loc.line || error.loc.start?.line || 1;
+          column = error.loc.column || error.loc.start?.column || error.loc.start?.character || 1;
+        } else if (error.location) {
+          lineNumber = error.location.line || error.location.start?.line || 1;
+          column = error.location.column || error.location.start?.column || error.location.start?.character || 1;
+        } else if (error.line !== undefined) {
+          lineNumber = error.line;
+          column = error.column || 1;
+        } else if (error.pos !== undefined) {
+          // If we have a character position, convert it to line/column
+          const lines = textToValidate.split('\n');
+          let charCount = 0;
           for (let i = 0; i < lines.length; i++) {
-            if (lines[i].trim() && errorMessage.toLowerCase().includes(lines[i].trim().toLowerCase())) {
+            const lineLength = lines[i].length + 1; // +1 for newline
+            if (charCount + lineLength > error.pos) {
               lineNumber = i + 1;
-              column = lines[i].length + 1;
+              column = error.pos - charCount + 1;
               break;
+            }
+            charCount += lineLength;
+          }
+        } else {
+          // Try to extract line and column from error message string
+          // Common error message patterns from node-sql-parser
+          const lineMatch = errorMessage.match(/line (\d+)/i) || 
+                           errorMessage.match(/at line (\d+)/i) ||
+                           errorMessage.match(/line: (\d+)/i) ||
+                           errorMessage.match(/Line (\d+)/i);
+          const columnMatch = errorMessage.match(/column (\d+)/i) || 
+                             errorMessage.match(/at column (\d+)/i) ||
+                             errorMessage.match(/column: (\d+)/i) ||
+                             errorMessage.match(/Column (\d+)/i) ||
+                             errorMessage.match(/col (\d+)/i);
+          
+          if (lineMatch) {
+            lineNumber = parseInt(lineMatch[1], 10);
+          }
+          if (columnMatch) {
+            column = parseInt(columnMatch[1], 10);
+          }
+
+          // If we still can't extract position, try to find it in the query text
+          if (lineNumber === 1 && column === 1) {
+            const lines = textToValidate.split('\n');
+            
+            // Extract potential error tokens from error message
+            // Common patterns: "Unexpected token X", "Syntax error near X", etc.
+            const errorLower = errorMessage.toLowerCase();
+            
+            // Try to find tokens mentioned in the error message
+            // Look for quoted strings or specific keywords in the error
+            const quotedMatch = errorMessage.match(/['"`]([^'"`]+)['"`]/);
+            const unexpectedMatch = errorMessage.match(/unexpected\s+(\w+)/i);
+            const nearMatch = errorMessage.match(/near\s+['"`]?(\w+)['"`]?/i);
+            
+            const searchTokens: string[] = [];
+            if (quotedMatch) searchTokens.push(quotedMatch[1]);
+            if (unexpectedMatch) searchTokens.push(unexpectedMatch[1]);
+            if (nearMatch) searchTokens.push(nearMatch[1]);
+            
+            // Also try to extract meaningful words from error message
+            const errorWords = errorLower.match(/\b(select|from|where|join|insert|update|delete|create|alter|drop|table|view|index|syntax|error|unexpected|token)\b/g);
+            if (errorWords) {
+              searchTokens.push(...errorWords);
+            }
+            
+            // Search for these tokens in the SQL text
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              const lineLower = line.toLowerCase();
+              
+              // Check each search token
+              for (const token of searchTokens) {
+                if (token && token.length > 1) {
+                  const tokenLower = token.toLowerCase();
+                  // Look for the token in the line
+                  // Try exact word match first (with word boundaries)
+                  const wordBoundaryRegex = new RegExp(`\\b${tokenLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                  let tokenIndex = lineLower.search(wordBoundaryRegex);
+                  
+                  // If not found as whole word, try substring match
+                  if (tokenIndex === -1) {
+                    tokenIndex = lineLower.indexOf(tokenLower);
+                  }
+                  
+                  if (tokenIndex !== -1) {
+                    lineNumber = i + 1;
+                    column = tokenIndex + 1;
+                    break;
+                  }
+                }
+              }
+              if (lineNumber > 1) break;
+            }
+            
+            // If still not found, look for lines that contain syntax errors
+            // Check for common syntax error patterns like "SEL ECT" (space in keyword)
+            if (lineNumber === 1 && column === 1) {
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                
+                // Check for malformed SQL keywords (space in the middle)
+                const malformedKeywords = [
+                  /sel\s+ect/i,  // SEL ECT
+                  /fro\s+m/i,    // FRO M
+                  /wher\s+e/i,   // WHER E
+                  /orde\s+r/i,   // ORDE R
+                  /grou\s+p/i,   // GROU P
+                ];
+                
+                for (const pattern of malformedKeywords) {
+                  if (pattern.test(line)) {
+                    const match = line.match(pattern);
+                    if (match && match.index !== undefined) {
+                      lineNumber = i + 1;
+                      column = match.index + 1;
+                      break;
+                    }
+                  }
+                }
+                if (lineNumber > 1) break;
+              }
+            }
+            
+            // Last resort: find the first non-empty line after the first line
+            // (often syntax errors occur on subsequent lines)
+            if (lineNumber === 1 && column === 1 && lines.length > 1) {
+              for (let i = 1; i < lines.length; i++) {
+                if (lines[i].trim()) {
+                  lineNumber = i + 1;
+                  column = 1;
+                  break;
+                }
+              }
             }
           }
         }
 
+        // Adjust line number if we're validating a selection
+        let actualLineNumber = lineNumber;
+        if (hasSelection && selection) {
+          // Error line numbers are relative to the selected text, adjust to document line numbers
+          actualLineNumber = selection.startLineNumber + lineNumber - 1;
+        }
+
         // Ensure line number is within bounds
         const totalLines = model.getLineCount();
-        if (lineNumber > totalLines) {
-          lineNumber = totalLines;
+        if (actualLineNumber > totalLines) {
+          actualLineNumber = totalLines;
         }
-        if (lineNumber < 1) {
-          lineNumber = 1;
+        if (actualLineNumber < 1) {
+          actualLineNumber = 1;
         }
 
         // Get line length to ensure column is within bounds
-        const lineLength = model.getLineLength(lineNumber);
+        const lineLength = model.getLineLength(actualLineNumber);
         if (column > lineLength) {
           column = Math.max(1, lineLength);
         }
@@ -210,9 +440,9 @@ export const QueryEditor: React.FC = () => {
         const markers: any[] = [
           {
             severity: (window as any).monaco.MarkerSeverity.Error,
-            startLineNumber: lineNumber,
+            startLineNumber: actualLineNumber,
             startColumn: column,
-            endLineNumber: lineNumber,
+            endLineNumber: actualLineNumber,
             endColumn: Math.min(column + 10, lineLength + 1),
             message: errorMessage,
           },
@@ -223,6 +453,9 @@ export const QueryEditor: React.FC = () => {
         setSqlValidationStatus({ isValid: false, errorMessage });
       }
     };
+
+    // Store validation function in ref so it can be called from selection change listener
+    validateHandlerRef.current = validateSQL;
 
     // Debounce validation to avoid excessive parsing
     const timeoutId = setTimeout(validateSQL, 300);
@@ -1117,6 +1350,18 @@ export const QueryEditor: React.FC = () => {
                     }
                   }
                 );
+
+                // Listen for selection changes to re-validate
+                editor.onDidChangeCursorSelection(() => {
+                  // Debounce selection change validation
+                  if (validateHandlerRef.current) {
+                    setTimeout(() => {
+                      if (validateHandlerRef.current) {
+                        validateHandlerRef.current();
+                      }
+                    }, 100);
+                  }
+                });
               }}
               options={{
                 minimap: { enabled: false },
@@ -1132,6 +1377,13 @@ export const QueryEditor: React.FC = () => {
                 },
                 suggestSelection: 'first',
                 tabCompletion: 'on',
+                hover: {
+                  enabled: true,
+                  delay: 300,
+                  sticky: true,
+                },
+                // Ensure tooltips can render above the editor
+                fixedOverflowWidgets: true,
               }}
               />
             </div>
@@ -1152,7 +1404,7 @@ export const QueryEditor: React.FC = () => {
                 ) : (
                   <span className="status-text status-invalid">
                     <span className="status-indicator status-indicator-invalid"></span>
-                    {sqlValidationStatus.errorMessage || 'SQL syntax error'}
+                    <span className="status-error-message">{sqlValidationStatus.errorMessage || 'SQL syntax error'}</span>
                   </span>
                 )}
               </div>

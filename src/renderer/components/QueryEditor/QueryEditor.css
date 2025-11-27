@@ -13,6 +13,8 @@
   border-bottom: 1px solid #3e3e42;
   align-items: center;
   height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
 }
 
 .query-editor-toolbar button {
@@ -112,19 +114,36 @@
   flex-direction: column;
   position: relative;
   min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
 }
 
 .editor-wrapper {
   flex: 1;
   min-height: 0;
   position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
 }
 
 .editor-status-bar {
   background-color: #252526;
   border-top: 1px solid #3e3e42;
   padding: 0.25rem 0.75rem;
-  height: 22px;
+  min-height: 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -136,6 +155,9 @@
 .editor-status-bar .status-left {
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .editor-status-bar .status-right {
@@ -148,6 +170,12 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.4;
+  flex: 1;
+  min-width: 0;
 }
 
 .editor-status-bar .status-indicator {
@@ -171,6 +199,17 @@
 
 .editor-status-bar .status-invalid {
   color: #f48771;
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
 }
 
 .no-tab-message {
