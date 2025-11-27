@@ -442,10 +442,26 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
         ctx.fillStyle = headerTextColor;
         ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        // Use drawCellText but adjust y position for header
-        const headerTextY = HEADER_HEIGHT / 2 - ROW_HEIGHT / 2;
-        // Draw text only in visible area
-        drawCellText(ctx, col.name, colX, headerTextY, colWidth, headerTextColor);
+        // Draw header text directly (don't use drawCellText as it sets its own font)
+        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
+        const textWidth = measureText(col.name, ctx);
+        
+        if (textWidth <= colWidth - CELL_PADDING * 2) {
+          ctx.fillText(col.name, colX + CELL_PADDING, headerTextY);
+        } else {
+          // Truncate with ellipsis
+          let truncated = col.name;
+          let truncatedWidth = textWidth;
+          const ellipsis = '...';
+          const ellipsisWidth = measureText(ellipsis, ctx);
+          
+          while (truncatedWidth + ellipsisWidth > colWidth - CELL_PADDING * 2 && truncated.length > 0) {
+            truncated = truncated.slice(0, -1);
+            truncatedWidth = measureText(truncated, ctx);
+          }
+          
+          ctx.fillText(truncated + ellipsis, colX + CELL_PADDING, headerTextY);
+        }
 
         // Draw resize handle
         if (resizingColumn === idx || hoveredColumn === idx) {
@@ -726,12 +742,25 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
         if (selectionStart && selectionEnd) {
-          const text = getSelectedText();
-          if (text) {
-            e.preventDefault();
-            navigator.clipboard.writeText(text).catch((err) => {
-              console.error('Failed to copy to clipboard:', err);
-            });
+          // Check if user is trying to copy from an input field or Monaco editor
+          const target = e.target as HTMLElement;
+          const isInputField = 
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' || 
+            target.isContentEditable ||
+            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
+            target.closest('.monaco-editor') !== null ||
+            target.closest('.editor-container') !== null;
+          
+          // Only handle copy from canvas if not copying from an input/editor
+          if (!isInputField) {
+            const text = getSelectedText();
+            if (text) {
+              e.preventDefault();
+              navigator.clipboard.writeText(text).catch((err) => {
+                console.error('Failed to copy to clipboard:', err);
+              });
+            }
           }
         }
       }
