@@ -115,6 +115,14 @@ npm run package:win    # Windows
 npm run package:linux  # Linux
 ```
 
+## Donate
+
+If you find QueryForge useful, please consider supporting its development:
+
+![Donation QR Code](donation_qr.png)
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
+
 ## License
 
 MIT
