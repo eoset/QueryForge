@@ -183,10 +183,25 @@ export const QueryEditor: React.FC = () => {
       error: '',
       results: undefined,
     });
+    
+    // Clear cache for this tab when starting a new query
+    if (window.electronAPI?.resultsCache) {
+      await window.electronAPI.resultsCache.delete(currentTab.id).catch((err) => {
+        console.error('Failed to clear cache:', err);
+      });
+    }
 
     try {
       const result = await executeQuery(queryTextToExecute);
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
+      
+      // Save results to cache for this tab BEFORE updating tab state
+      // This ensures cache is ready when QueryResults component reloads
+      if (window.electronAPI?.resultsCache) {
+        await window.electronAPI.resultsCache.save(currentTab.id, result);
+      }
+      
+      // Update tab state after cache is saved
       setTabResults(currentTab.id, result);
     } catch (err: any) {
       // Extract error message from various possible error formats

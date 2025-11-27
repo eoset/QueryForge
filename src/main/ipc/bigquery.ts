@@ -3,6 +3,602 @@ import { getBigQueryClient, getActiveConnection } from './connection';
 import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
 import { BigQueryErrorCode } from '../../shared/types/bigquery';
 
+/**
+ * Serializes a value to ensure it can be cloned and sent through IPC.
+ * Handles Date objects, BigNumber objects, Buffers, and nested structures.
+ * Uses a WeakSet to track visited objects to prevent circular reference issues.
+ * @param value - The value to serialize
+ * @param visited - WeakSet to track visited objects (for circular reference detection)
+ * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
+ */
+function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
+  // Normalize column type early so it's available throughout the function
+  const normalizedColumnType = columnType?.toUpperCase() || '';
+  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
+  
+  // Handle null and undefined
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
+  // These objects have a 'value' property containing the string representation
+  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it's a BigQuery date/time object with a 'value' property
+    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
+    if ('value' in value && typeof value.value === 'string') {
+      const valueStr = value.value;
+      // Verify it looks like a date/time string
+      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
+          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+        return valueStr;
+      }
+    }
+  }
+
+  // Handle Date objects - convert to ISO string
+  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
+  if (value instanceof Date) {
+    // Check if it's a valid date
+    if (isNaN(value.getTime())) {
+      return null; // Invalid dates become null
+    }
+    // Format based on column type if available
+    if (normalizedColumnType === 'DATE') {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (normalizedColumnType === 'TIME') {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (normalizedColumnType === 'DATETIME') {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    // Default: ISO string for TIMESTAMP or unknown
+    return value.toISOString();
+  }
+  
+  // CRITICAL: Check for Date-like objects BEFORE general object handling
+  // BigQuery might return Date objects that aren't instanceof Date
+  // Check for objects with Date-like methods or properties
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
+    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+      try {
+        // Try to convert to Date
+        let date: Date | null = null;
+        if (typeof value.getTime === 'function') {
+          const time = value.getTime();
+          if (typeof time === 'number' && !isNaN(time)) {
+            date = new Date(time);
+          }
+        } else if (typeof value.toISOString === 'function') {
+          const isoStr = value.toISOString();
+          date = new Date(isoStr);
+        }
+        
+        if (date && !isNaN(date.getTime())) {
+          // Format based on column type
+          if (normalizedColumnType === 'DATE') {
+            return date.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+            const ms = date.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return date.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return date.toISOString();
+        }
+      } catch {
+        // If conversion fails, continue with normal handling
+      }
+    }
+  }
+
+  // Handle Buffer objects - convert to base64 string
+  if (Buffer.isBuffer(value)) {
+    return value.toString('base64');
+  }
+
+  // Handle BigNumber-like objects (from @google-cloud/bigquery)
+  // Check for common BigNumber properties
+  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
+    // Check if it's a BigNumber by looking for valueOf or toNumber methods
+    if ('valueOf' in value || 'toNumber' in value) {
+      try {
+        // Try to convert to number first, fallback to string
+        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
+        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
+          return numValue;
+        }
+        return String(value);
+      } catch {
+        return String(value);
+      }
+    }
+  }
+
+  // Handle arrays - recursively serialize each element
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeValue(item, visited, columnType));
+  }
+
+  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
+  // BigQuery may return these as objects with special properties or methods
+  // This must come after array check but before general object handling
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
+    // BigQuery might return DATE as objects in various formats
+    if (isDateType) {
+      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
+      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
+      // This check should be very lenient - just check if 'value' exists and is a string
+      if ('value' in value) {
+        const innerValue = value.value;
+        // If inner value is a string, return it directly (this is the most common case)
+        if (typeof innerValue === 'string') {
+          return innerValue;
+        }
+        // If inner value is a Date, convert to ISO string
+        if (innerValue instanceof Date) {
+          if (normalizedColumnType === 'DATE') {
+            return innerValue.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
+            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
+            const ms = innerValue.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return innerValue.toISOString();
+        }
+        // Recursively serialize the inner value
+        return serializeValue(innerValue, visited, columnType);
+      }
+      
+      // Check for BigQuery Date object structure - might have year, month, day properties
+      if ('year' in value || 'month' in value || 'day' in value) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        if (normalizedColumnType === 'DATE') {
+          return `${year}-${month}-${day}`;
+        }
+        // For DATETIME/TIMESTAMP, check for time components
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        if (normalizedColumnType === 'DATETIME') {
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      
+      // Check for TIME object structure
+      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      
+      // For any other object structure for DATE/TIME, try to extract a string value
+      // Check all properties for date-like strings
+      const objKeys = Object.keys(value);
+      for (const key of objKeys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+      
+      // If we can't extract a date string, return a placeholder instead of serializing to {}
+      return '[Invalid Date Object]';
+    }
+    
+    // For non-date types, check if it's a BigQuery date object with a value property
+    if ('value' in value && Object.keys(value).length === 1) {
+      const innerValue = value.value;
+      // If inner value is a string that looks like a date, return it
+      if (typeof innerValue === 'string') {
+        return innerValue;
+      }
+      // If inner value is a Date, convert to ISO string
+      if (innerValue instanceof Date) {
+        return innerValue.toISOString();
+      }
+      // Recursively serialize the inner value
+      return serializeValue(innerValue, visited, columnType);
+    }
+    
+    // For DATE/TIME columns, try toString() first before checking properties
+    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Continue with property checking if toString fails
+      }
+      
+      // Also check if any property value is a date-like string
+      const keys = Object.keys(value);
+      for (const key of keys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+    }
+    
+    // Check for date-like objects with year/month/day properties
+    if ('year' in value && 'month' in value && 'day' in value) {
+      const year = value.year;
+      const month = String(value.month ?? 1).padStart(2, '0');
+      const day = String(value.day ?? 1).padStart(2, '0');
+      // Check if it also has time components (DATETIME/TIMESTAMP)
+      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Just date components (DATE)
+      return `${year}-${month}-${day}`;
+    }
+    
+    // Check for time-only objects (TIME)
+    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
+        !('year' in value || 'month' in value || 'day' in value)) {
+      const hours = String(value.hours ?? 0).padStart(2, '0');
+      const minutes = String(value.minutes ?? 0).padStart(2, '0');
+      const seconds = String(value.seconds ?? 0).padStart(2, '0');
+      const ms = value.milliseconds ?? 0;
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    
+    // Try to call toString() if it exists and might give us a useful string
+    // (Only if we haven't already tried it above for date types)
+    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        // If toString gives us something useful (not [object Object]), use it
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Ignore toString errors
+      }
+    }
+  }
+
+  // Handle objects - recursively serialize each property
+  if (typeof value === 'object') {
+    // Check for circular references
+    if (visited.has(value)) {
+      return '[Circular]';
+    }
+    visited.add(value);
+
+    try {
+      // Check if it's a plain object (not a class instance)
+      const proto = Object.getPrototypeOf(value);
+      if (proto === null || proto === Object.prototype) {
+        // For DATE/TIME columns, be very aggressive about converting objects to strings
+        if (isDateType) {
+          // Try toString() first
+          if ('toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with property checking if toString fails
+            }
+          }
+          
+          // Check all properties for date-like strings
+          const keys = Object.keys(value);
+          for (const key of keys) {
+            const propValue = value[key];
+            if (typeof propValue === 'string') {
+              // Check if it looks like a date/time string
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                return propValue;
+              }
+            }
+            // If property is a Date, convert it
+            if (propValue instanceof Date) {
+              if (normalizedColumnType === 'DATE') {
+                return propValue.toISOString().split('T')[0];
+              }
+              return propValue.toISOString();
+            }
+          }
+          
+          // If we still haven't found a date string, try JSON.stringify to extract it
+          try {
+            const jsonStr = JSON.stringify(value);
+            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
+            if (dateMatch) {
+              const dateStr = dateMatch[1];
+              if (normalizedColumnType === 'DATE') {
+                return dateStr.split('T')[0]; // Just the date part
+              }
+              return dateStr.replace('T', ' ').replace(/Z$/, '');
+            }
+            // Also try to find any date-like string in the JSON
+            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
+            for (const match of allDateMatches) {
+              const dateStr = match[1];
+              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
+                return dateStr;
+              }
+              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
+                return dateStr.replace('T', ' ').replace(/Z$/, '');
+              }
+            }
+          } catch {
+            // JSON.stringify failed, continue with normal serialization
+          }
+          
+          // Last resort for DATE columns: convert object to string representation
+          // This prevents [object Object] from being sent through IPC
+          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+              normalizedColumnType === 'TIMESTAMP') {
+            // Try to create a meaningful string from the object
+            const keys = Object.keys(value);
+            if (keys.length === 0) {
+              return '[Empty Date Object]';
+            }
+            // Return first property value if it's a string or number
+            const firstKey = keys[0];
+            const firstValue = value[firstKey];
+            if (typeof firstValue === 'string') {
+              return firstValue;
+            }
+            if (typeof firstValue === 'number') {
+              // Try to interpret as date
+              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
+              if (!isNaN(date.getTime())) {
+                if (normalizedColumnType === 'DATE') {
+                  return date.toISOString().split('T')[0];
+                }
+                return date.toISOString();
+              }
+            }
+            // Return object structure as string
+            return `{${keys.slice(0, 2).join(', ')}}`;
+          }
+        } else {
+          // For non-date types, check if this might be a date-like object
+          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
+          const keys = Object.keys(value);
+          // If object has very few keys and one looks date-like, try toString first
+          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with normal serialization if toString fails
+            }
+          }
+        }
+        
+        const serialized: any = {};
+        for (const key in value) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            serialized[key] = serializeValue(value[key], visited, columnType);
+          }
+        }
+        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
+        // This prevents empty objects from being stored and later displayed as "[object Object]"
+        if (Object.keys(serialized).length === 0 && isDateType) {
+          return '[Invalid Date]';
+        }
+        return serialized;
+      } else {
+        // For non-plain objects (class instances), try to serialize
+        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
+        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
+        if (value instanceof Date) {
+          if (isNaN(value.getTime())) {
+            return null;
+          }
+          if (normalizedColumnType === 'DATE') {
+            return value.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(value.getUTCHours()).padStart(2, '0');
+            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+            const ms = value.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return value.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return value.toISOString();
+        }
+        
+        // Check for Date-like objects (objects with Date methods)
+        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+          try {
+            let date: Date | null = null;
+            if (typeof value.getTime === 'function') {
+              const time = value.getTime();
+              if (typeof time === 'number' && !isNaN(time)) {
+                date = new Date(time);
+              }
+            } else if (typeof value.toISOString === 'function') {
+              const isoStr = value.toISOString();
+              date = new Date(isoStr);
+            }
+            
+            if (date && !isNaN(date.getTime())) {
+              if (normalizedColumnType === 'DATE') {
+                return date.toISOString().split('T')[0];
+              }
+              if (normalizedColumnType === 'TIME') {
+                const hours = String(date.getUTCHours()).padStart(2, '0');
+                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+                const ms = date.getUTCMilliseconds();
+                if (ms > 0) {
+                  const msStr = String(ms).padStart(3, '0');
+                  return `${hours}:${minutes}:${seconds}.${msStr}`;
+                }
+                return `${hours}:${minutes}:${seconds}`;
+              }
+              if (normalizedColumnType === 'DATETIME') {
+                return date.toISOString().replace('T', ' ').slice(0, 19);
+              }
+              return date.toISOString();
+            }
+          } catch {
+            // If conversion fails, continue with normal serialization
+          }
+        }
+        
+        // First try JSON.stringify/parse which handles most cases
+        // BUT: This will convert Date objects to {}, so we check for Dates above
+        try {
+          const jsonStr = JSON.stringify(value);
+          // Check if JSON.stringify produced an empty object for a date type
+          // This happens when Date objects are stringified
+          if (jsonStr === '{}' && isDateType) {
+            // This is likely a Date object that was stringified to {}
+            return '[Invalid Date]';
+          }
+          return JSON.parse(jsonStr);
+        } catch {
+          // If JSON serialization fails (e.g., circular refs, functions),
+          // try to extract enumerable properties
+          const serialized: any = {};
+          for (const key in value) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+              serialized[key] = serializeValue(value[key], visited, columnType);
+            }
+          }
+          // If we got nothing, check if it's a date type before converting to string
+          if (Object.keys(serialized).length === 0 && isDateType) {
+            return '[Invalid Date]';
+          }
+          // If we got nothing, convert to string as last resort
+          return Object.keys(serialized).length > 0 ? serialized : String(value);
+        }
+      }
+    } catch (error) {
+      // If anything goes wrong, check if it's a Date object before converting to string
+      // This prevents [object Object] from being returned for Date objects
+      if (value instanceof Date) {
+        if (isNaN(value.getTime())) {
+          return null;
+        }
+        if (normalizedColumnType === 'DATE') {
+          return value.toISOString().split('T')[0];
+        }
+        if (normalizedColumnType === 'TIME') {
+          const hours = String(value.getUTCHours()).padStart(2, '0');
+          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+          const ms = value.getUTCMilliseconds();
+          if (ms > 0) {
+            const msStr = String(ms).padStart(3, '0');
+            return `${hours}:${minutes}:${seconds}.${msStr}`;
+          }
+          return `${hours}:${minutes}:${seconds}`;
+        }
+        if (normalizedColumnType === 'DATETIME') {
+          return value.toISOString().replace('T', ' ').slice(0, 19);
+        }
+        return value.toISOString();
+      }
+      // For date types, return a placeholder instead of [object Object]
+      if (isDateType && typeof value === 'object' && value !== null) {
+        return '[Invalid Date]';
+      }
+      // Last resort: convert to string
+      return String(value);
+    }
+  }
+
+  // For primitives (string, number, boolean), return as-is
+  return value;
+}
+
 export function registerBigQueryHandlers(): void {
   ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string) => {
     const client = getBigQueryClient();
@@ -46,13 +642,16 @@ export function registerBigQueryHandlers(): void {
       
       if (schema?.fields && schema.fields.length > 0) {
         // Use schema from metadata
-        columns = schema.fields.map((field: any) => ({
-          name: field.name,
-          type: field.type,
-          mode: field.mode,
-        }));
+        columns = schema.fields.map((field: any) => {
+          return {
+            name: field.name,
+            type: field.type, // BigQuery returns types like 'DATE', 'TIME', 'DATETIME', 'TIMESTAMP'
+            mode: field.mode,
+          };
+        });
       } else if (rows && rows.length > 0) {
         // Fallback: extract column names and types from first row
+        // NOTE: This fallback should rarely be used if schema is available
         const firstRow = rows[0];
         columns = Object.keys(firstRow).map((key) => {
           const value = firstRow[key];
@@ -66,7 +665,99 @@ export function registerBigQueryHandlers(): void {
           } else if (Array.isArray(value)) {
             type = 'ARRAY';
           } else if (value && typeof value === 'object') {
-            type = 'RECORD';
+            // CRITICAL: Check if it's a Date-like object before defaulting to RECORD
+            // BigQuery DATE/TIME objects might not be instanceof Date
+            const keyLower = key.toLowerCase();
+            let isDateLike = false;
+            let detectedType: string | null = null;
+            
+            // Check 1: Date instance or Date-like object with methods
+            if (value instanceof Date || typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+              isDateLike = true;
+              // Try to guess based on column name
+              if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
+                detectedType = 'DATE';
+              } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
+                detectedType = 'TIME';
+              } else if (keyLower.includes('datetime')) {
+                detectedType = 'DATETIME';
+              } else {
+                detectedType = 'TIMESTAMP';
+              }
+            }
+            
+            // Check 2: Object with 'value' property containing date-like string
+            if (!isDateLike && 'value' in value && typeof value.value === 'string') {
+              const valueStr = value.value;
+              if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+                isDateLike = true;
+                if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
+                  detectedType = 'DATE';
+                } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
+                  detectedType = 'TIME';
+                } else if (keyLower.includes('datetime')) {
+                  detectedType = 'DATETIME';
+                } else if (/^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+                  detectedType = 'TIMESTAMP';
+                } else if (/^\d{4}-\d{2}-\d{2}/.test(valueStr)) {
+                  detectedType = 'DATE';
+                } else if (/^\d{2}:\d{2}:\d{2}/.test(valueStr)) {
+                  detectedType = 'TIME';
+                } else {
+                  detectedType = 'TIMESTAMP';
+                }
+              }
+            }
+            
+            // Check 3: Object with year/month/day properties (DATE or DATETIME)
+            if (!isDateLike && ('year' in value || 'month' in value || 'day' in value)) {
+              isDateLike = true;
+              if (keyLower.includes('datetime') || ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+                detectedType = 'DATETIME';
+              } else {
+                detectedType = 'DATE';
+              }
+            }
+            
+            // Check 4: Object with hours/minutes/seconds but no year/month/day (TIME)
+            if (!isDateLike && ('hours' in value || 'minutes' in value || 'seconds' in value) &&
+                !('year' in value || 'month' in value || 'day' in value)) {
+              isDateLike = true;
+              detectedType = 'TIME';
+            }
+            
+            // Check 5: Column name suggests DATE/TIME even if object structure is unclear
+            if (!isDateLike && (keyLower.includes('date') || keyLower.includes('time') || 
+                                keyLower.includes('timestamp') || keyLower.includes('datetime'))) {
+              // Check if object has any string properties that look like dates
+              const keys = Object.keys(value);
+              for (const objKey of keys) {
+                const propValue = value[objKey];
+                if (typeof propValue === 'string') {
+                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                    isDateLike = true;
+                    if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
+                      detectedType = 'DATE';
+                    } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
+                      detectedType = 'TIME';
+                    } else if (keyLower.includes('datetime')) {
+                      detectedType = 'DATETIME';
+                    } else {
+                      detectedType = 'TIMESTAMP';
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+            
+            if (isDateLike && detectedType) {
+              type = detectedType;
+            } else {
+              type = 'RECORD';
+            }
           }
           return {
             name: key,
@@ -78,10 +769,62 @@ export function registerBigQueryHandlers(): void {
 
       // Transform rows to Row format
       // BigQuery returns rows as objects with field names as keys
+      // Serialize all values to ensure they can be cloned and sent through IPC
+      
       const transformedRows: Row[] = rows.map((row: any) => ({
         values: columns.map((col) => {
           const value = row[col.name];
-          return value !== null && value !== undefined ? value : null;
+          
+          // Pass column type to serializeValue to help with date/time serialization
+          let serialized = serializeValue(value, new WeakSet(), col.type);
+          
+          // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
+          // This prevents objects from being stored in cache and later displayed as "[object Object]"
+          const colTypeUpper = (col.type || '').toUpperCase();
+          if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
+              colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
+            // If serialized result is still an object, convert it to a string
+            if (typeof serialized === 'object' && serialized !== null) {
+              // Try to extract a date string from the object
+              const keys = Object.keys(serialized);
+              for (const key of keys) {
+                const propValue = serialized[key];
+                if (typeof propValue === 'string') {
+                  // Check if it looks like a date/time string
+                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                    serialized = propValue;
+                    break;
+                  }
+                }
+              }
+              
+              // If we still have an object, convert to placeholder string
+              if (typeof serialized === 'object' && serialized !== null) {
+                serialized = '[Invalid Date]';
+              }
+            }
+            
+            // CRITICAL: Check if serialized result is "[object Object]" string and fix it
+            if (typeof serialized === 'string' && serialized === '[object Object]') {
+              serialized = '[Invalid Date]';
+            }
+            
+            // Ensure final result is a string (not object, not null, not undefined)
+            if (typeof serialized !== 'string') {
+              if (serialized === null || serialized === undefined) {
+                serialized = '[Invalid Date]';
+              } else {
+                serialized = String(serialized);
+                // If string conversion produced "[object Object]", use placeholder
+                if (serialized === '[object Object]') {
+                  serialized = '[Invalid Date]';
+                }
+              }
+            }
+          }
+          
+          return serialized;
         }),
       }));
 

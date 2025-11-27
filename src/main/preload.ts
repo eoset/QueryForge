@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab } from '../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 
 /**
@@ -61,6 +61,24 @@ export interface ElectronAPI {
     onBeforeClose(callback: () => void): () => void;
   };
 
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
   // Menu events
   menu: {
     onShowHelp(callback: () => void): () => void;
@@ -116,6 +134,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('app:before-close', handler);
       return () => ipcRenderer.removeListener('app:before-close', handler);
     },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
   },
   menu: {
     onShowHelp: (callback: () => void) => {

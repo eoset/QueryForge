@@ -2,7 +2,8 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useTabsStore } from '../../stores/tabs-store';
 import { RowContextMenu } from './RowContextMenu';
 import { CanvasTable } from './CanvasTable';
-import type { QueryTab } from '../../../shared/types/query';
+import type { QueryTab, QueryResult } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
 import './QueryResults.css';
 
 const ROWS_PER_PAGE = 200;
@@ -15,10 +16,6 @@ export const QueryResults: React.FC = () => {
     return state.tabs.find((t) => t.id === activeTabId) || null;
   });
   
-  const results = activeTab?.results || null;
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  
   // All hooks must be called before any conditional returns
   const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
   const [currentPage, setCurrentPage] = useState(1);
@@ -28,10 +25,125 @@ export const QueryResults: React.FC = () => {
     rowIndex?: number;
     columnIndex?: number;
   } | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const error = activeTab?.error;
+  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!activeTabId || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(activeTabId)
+      .then((metadata) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [activeTabId, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(activeTabId, currentPage)
+      .then((pageRows) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: currentPageRows,
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
 
   // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = results?.jobId;
-  const resultsColumnCount = results?.columns?.length;
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
   
   useEffect(() => {
     if (resultsJobId !== undefined) {
@@ -57,102 +169,13 @@ export const QueryResults: React.FC = () => {
     });
   }, []);
 
-  const formatValue = useCallback((value: any, columnType?: string): string => {
-    if (value === null || value === undefined) {
-      return 'NULL';
-    }
-
-    // Handle Date objects
-    if (value instanceof Date) {
-      // Format based on column type
-      if (columnType === 'DATE') {
-        return value.toISOString().split('T')[0]; // YYYY-MM-DD
-      } else if (columnType === 'TIME') {
-        return value.toTimeString().split(' ')[0]; // HH:mm:ss
-      } else if (columnType === 'DATETIME') {
-        return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-      } else {
-        // TIMESTAMP - show full datetime with timezone
-        return value.toISOString();
-      }
-    }
-
-    // Handle date-related types
-    if (columnType && ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].includes(columnType)) {
-      // BigQuery might return date values as strings in various formats
-      if (typeof value === 'string') {
-        // If it's already in a good format, return as-is (for DATE which is YYYY-MM-DD)
-        if (columnType === 'DATE' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-          return value;
-        }
-        // Try to parse and format
-        const date = new Date(value);
-        if (!isNaN(date.getTime())) {
-          if (columnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          } else if (columnType === 'TIME') {
-            // TIME format: HH:mm:ss
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            return `${hours}:${minutes}:${seconds}`;
-          } else if (columnType === 'DATETIME') {
-            // DATETIME format: YYYY-MM-DD HH:mm:ss
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          } else {
-            // TIMESTAMP - show full datetime with timezone
-            return date.toISOString();
-          }
-        }
-        // If parsing failed, return the string as-is
-        return value;
-      }
-      // Handle numeric timestamps (milliseconds since epoch)
-      if (typeof value === 'number') {
-        const date = new Date(value);
-        if (!isNaN(date.getTime())) {
-          if (columnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          } else if (columnType === 'TIME') {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            return `${hours}:${minutes}:${seconds}`;
-          } else if (columnType === 'DATETIME') {
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          } else {
-            return date.toISOString();
-          }
-        }
-      }
-    }
-
-    // Handle objects (arrays, records, etc.)
-    if (typeof value === 'object' && !(value instanceof Date)) {
-      if (Array.isArray(value)) {
-        return JSON.stringify(value);
-      }
-      // Check if it's a BigQuery date object with a value property
-      if (value.value !== undefined) {
-        // Recursively format the inner value (but avoid infinite recursion)
-        const innerValue = value.value;
-        if (innerValue !== value) {
-          return formatValue(innerValue, columnType);
-        }
-      }
-      // For other objects, try JSON.stringify
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return String(value);
-      }
-    }
-
-    return String(value);
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
   }, []);
 
-  const formatCSVValue = useCallback((val: any, columnType?: string): string => {
-    const formatted = formatValue(val, columnType);
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
     // Escape commas, quotes, and newlines in values
     if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
       return `"${formatted.replace(/"/g, '""')}"`;
@@ -163,16 +186,17 @@ export const QueryResults: React.FC = () => {
   const handleCopyRowValues = useCallback(() => {
     if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
 
-    // Calculate pagination to get the correct row
-    const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-    const paginatedRows = results.rows?.slice(startIndex, startIndex + ROWS_PER_PAGE) || [];
+    // Current page rows are already loaded
     const rowIndex = contextMenu.rowIndex;
-    const row = paginatedRows[rowIndex];
+    const row = currentPageRows[rowIndex];
     
     if (!row) return;
 
-    const headers = results.columns.map(col => formatCSVValue(col.name));
-    const values = row.values.map((val, idx) => formatCSVValue(val, results.columns[idx]?.type));
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
 
     // Format: header1,header2,header3\nvalue1,value2,value3
     const csvText = [headers.join(','), values.join(',')].join('\n');
@@ -181,7 +205,7 @@ export const QueryResults: React.FC = () => {
     navigator.clipboard.writeText(csvText).catch((err) => {
       console.error('Failed to copy to clipboard:', err);
     });
-  }, [results, contextMenu, currentPage, formatCSVValue]);
+  }, [results, contextMenu, currentPageRows, formatCSVValue]);
 
   const handleCopyColumnValues = useCallback(() => {
     if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
@@ -191,15 +215,11 @@ export const QueryResults: React.FC = () => {
     
     if (!column) return;
 
-    // Calculate pagination to get rows for current page
-    const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-    const paginatedRows = results.rows?.slice(startIndex, startIndex + ROWS_PER_PAGE) || [];
-
     // Get header
     const header = formatCSVValue(column.name);
     
-    // Get all values for this column in current page
-    const values = paginatedRows.map(row => formatCSVValue(row.values[columnIndex], column.type));
+    // Get all values for this column in current page (already loaded)
+    const values = currentPageRows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
 
     // Format: header\nvalue1\nvalue2\nvalue3...
     const csvText = [header, ...values].join('\n');
@@ -208,7 +228,7 @@ export const QueryResults: React.FC = () => {
     navigator.clipboard.writeText(csvText).catch((err) => {
       console.error('Failed to copy to clipboard:', err);
     });
-  }, [results, contextMenu, currentPage, formatCSVValue]);
+  }, [results, contextMenu, currentPageRows, formatCSVValue]);
 
   const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
     e.preventDefault();
@@ -220,12 +240,11 @@ export const QueryResults: React.FC = () => {
     });
   }, []);
 
-  // Pagination calculations
-  const totalRows = results?.rows?.length || 0;
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
   const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
   const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + ROWS_PER_PAGE, totalRows);
-  const paginatedRows = results?.rows?.slice(startIndex, endIndex) || [];
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
 
   const handlePreviousPage = () => {
     if (currentPage > 1) {
@@ -250,17 +269,19 @@ export const QueryResults: React.FC = () => {
     );
   }
 
-  if (!results) {
+  if (!resultsMetadata) {
     // Show "Executing query..." when status is running, otherwise show default message
     const message = executionStatus === 'running' 
       ? 'Executing query...' 
+      : isLoadingCache
+      ? 'Loading results...'
       : 'Execute a query to see results here.';
     
     return (
       <div className="query-results">
         <div className="no-results">
           <div>{message}</div>
-          {executionStatus === 'running' && (
+          {(executionStatus === 'running' || isLoadingCache) && (
             <div className="query-spinner-container">
               <div className="query-spinner"></div>
             </div>
@@ -269,23 +290,37 @@ export const QueryResults: React.FC = () => {
       </div>
     );
   }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Check if we have columns and rows to display
-  const hasColumns = results.columns && results.columns.length > 0;
-  const hasRows = results.rows && results.rows.length > 0;
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
 
   if (!hasColumns && !hasRows) {
     return (
       <div className="query-results">
         <div className="results-header">
           <div className="results-info">
-            <span>{results.rowsReturned.toLocaleString()} rows</span>
-            {results.totalRows > results.rowsReturned && (
-              <span> of {results.totalRows.toLocaleString()} total</span>
+            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
             )}
-            <span> • {results.executionTimeMs}ms</span>
-            {results.bytesProcessed && (
-              <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
             )}
           </div>
         </div>
@@ -299,13 +334,13 @@ export const QueryResults: React.FC = () => {
       <div className="query-results">
         <div className="results-header">
           <div className="results-info">
-            <span>{results.rowsReturned.toLocaleString()} rows</span>
-            {results.totalRows > results.rowsReturned && (
-              <span> of {results.totalRows.toLocaleString()} total</span>
+            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
             )}
-            <span> • {results.executionTimeMs}ms</span>
-            {results.bytesProcessed && (
-              <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
             )}
           </div>
         </div>
@@ -318,18 +353,18 @@ export const QueryResults: React.FC = () => {
     <div className="query-results">
       <div className="results-header">
         <div className="results-info">
-          <span>{results.rowsReturned.toLocaleString()} rows</span>
-          {results.totalRows > results.rowsReturned && (
-            <span> of {results.totalRows.toLocaleString()} total</span>
+          <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+          {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+            <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
           )}
-          <span> • {results.executionTimeMs}ms</span>
-          {results.bytesProcessed && (
-            <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
           )}
         </div>
       </div>
       <div className="results-table-container">
-        {hasRows ? (
+        {hasRows && results ? (
           <CanvasTable
             results={results}
             columnWidths={columnWidths}

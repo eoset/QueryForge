@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useBigQuery } from '../../hooks/useBigQuery';
 import type { QueryResult } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
 import './SampleDataModal.css';
 
 interface SampleDataModalProps {
@@ -120,82 +121,8 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
     return columnWidths[columnIndex];
   };
 
-  const formatValue = useCallback((value: any, columnType?: string): string => {
-    if (value === null || value === undefined) {
-      return 'NULL';
-    }
-
-    if (value instanceof Date) {
-      if (columnType === 'DATE') {
-        return value.toISOString().split('T')[0];
-      } else if (columnType === 'TIME') {
-        return value.toTimeString().split(' ')[0];
-      } else if (columnType === 'DATETIME') {
-        return value.toISOString().replace('T', ' ').slice(0, 19);
-      } else {
-        return value.toISOString();
-      }
-    }
-
-    if (columnType && ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].includes(columnType)) {
-      if (typeof value === 'string') {
-        if (columnType === 'DATE' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-          return value;
-        }
-        const date = new Date(value);
-        if (!isNaN(date.getTime())) {
-          if (columnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          } else if (columnType === 'TIME') {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            return `${hours}:${minutes}:${seconds}`;
-          } else if (columnType === 'DATETIME') {
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          } else {
-            return date.toISOString();
-          }
-        }
-        return value;
-      }
-      if (typeof value === 'number') {
-        const date = new Date(value);
-        if (!isNaN(date.getTime())) {
-          if (columnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          } else if (columnType === 'TIME') {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            return `${hours}:${minutes}:${seconds}`;
-          } else if (columnType === 'DATETIME') {
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          } else {
-            return date.toISOString();
-          }
-        }
-      }
-    }
-
-    if (typeof value === 'object' && !(value instanceof Date)) {
-      if (Array.isArray(value)) {
-        return JSON.stringify(value);
-      }
-      if (value.value !== undefined) {
-        const innerValue = value.value;
-        if (innerValue !== value) {
-          return formatValue(innerValue, columnType);
-        }
-      }
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return String(value);
-      }
-    }
-
-    return String(value);
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    return formatBigQueryValue(value, columnType, columnName);
   }, []);
 
   // Pagination calculations
@@ -307,7 +234,7 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
                                   key={colIdx}
                                   style={{ width: width ? `${width}px` : undefined }}
                                 >
-                                  {formatValue(value, column?.type)}
+                                  {formatValue(value, column?.type, column?.name)}
                                 </td>
                               );
                             })}
