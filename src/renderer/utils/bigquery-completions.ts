@@ -9,6 +9,38 @@ export function setMetadataStoreGetter(getter: () => any) {
   metadataStoreGetter = getter;
 }
 
+// Schema cache to avoid repeated API calls
+const schemaCache = new Map<string, Promise<any[]>>();
+
+// Get table schema (with caching)
+async function getTableSchema(
+  projectId: string,
+  datasetId: string,
+  tableId: string
+): Promise<any[]> {
+  const cacheKey = `${projectId}.${datasetId}.${tableId}`;
+  
+  if (schemaCache.has(cacheKey)) {
+    return schemaCache.get(cacheKey)!;
+  }
+  
+  const schemaPromise = (async () => {
+    try {
+      if (typeof window !== 'undefined' && window.electronAPI) {
+        const result = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
+        return result.fields || [];
+      }
+      return [];
+    } catch (error) {
+      // Return empty array on error, don't cache errors
+      return [];
+    }
+  })();
+  
+  schemaCache.set(cacheKey, schemaPromise);
+  return schemaPromise;
+}
+
 // Monaco CompletionItemKind enum values (using numeric constants to avoid importing monaco-editor)
 const CompletionItemKind = {
   Function: 1,
@@ -622,6 +654,453 @@ function getTableReferenceText(model: any, position: any): string | null {
 }
 
 /**
+ * Parses JOIN statements from SQL to extract table references and aliases
+ * Returns array of { tableRef, alias, joinType } for each JOIN
+ */
+function parseJoinStatements(sql: string): Array<{
+  tableRef: string;
+  alias: string | null;
+  joinType: string;
+  position: number;
+}> {
+  const joins: Array<{ tableRef: string; alias: string | null; joinType: string; position: number }> = [];
+  
+  // Strip comments to avoid matching inside comments
+  const stripComments = (text: string): string => {
+    let result = '';
+    let i = 0;
+    const len = text.length;
+    let inSingleQuote = false;
+    let inDoubleQuote = false;
+    let inBacktick = false;
+
+    while (i < len) {
+      const char = text[i];
+      const nextChar = i + 1 < len ? text[i + 1] : '';
+
+      if (char === "'" && !inDoubleQuote && !inBacktick) {
+        inSingleQuote = !inSingleQuote;
+        result += char;
+        i++;
+        continue;
+      }
+      if (char === '"' && !inSingleQuote && !inBacktick) {
+        inDoubleQuote = !inDoubleQuote;
+        result += char;
+        i++;
+        continue;
+      }
+      if (char === '`' && !inSingleQuote && !inDoubleQuote) {
+        inBacktick = !inBacktick;
+        result += char;
+        i++;
+        continue;
+      }
+
+      if (inSingleQuote || inDoubleQuote || inBacktick) {
+        result += char;
+        i++;
+        continue;
+      }
+
+      if (char === '-' && nextChar === '-') {
+        while (i < len && text[i] !== '\n' && text[i] !== '\r') {
+          i++;
+        }
+        if (i < len && text[i] === '\n') {
+          result += '\n';
+          i++;
+        } else if (i < len && text[i] === '\r') {
+          result += '\r';
+          i++;
+          if (i < len && text[i] === '\n') {
+            result += '\n';
+            i++;
+          }
+        }
+        continue;
+      }
+
+      if (char === '/' && nextChar === '*') {
+        i += 2;
+        while (i < len) {
+          if (text[i] === '*' && i + 1 < len && text[i + 1] === '/') {
+            i += 2;
+            break;
+          }
+          i++;
+        }
+        result += ' ';
+        continue;
+      }
+
+      result += char;
+      i++;
+    }
+
+    return result;
+  };
+  
+  const sqlWithoutComments = stripComments(sql);
+  
+  // Match JOIN patterns: [LEFT|RIGHT|INNER|OUTER|FULL|CROSS] JOIN table_ref [AS alias] or table_ref alias
+  // First try to match with explicit AS
+  const joinPatternWithAs = /\b((?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)\s+)?JOIN\s+((?:`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))\s+AS\s+([\w\-]+)/gi;
+  const matchesWithAs = Array.from(sqlWithoutComments.matchAll(joinPatternWithAs));
+  
+  for (const match of matchesWithAs) {
+    const joinType = (match[1] || '').trim().toUpperCase() || 'INNER';
+    const tableRef = match[2].trim();
+    const alias = match[3] || null;
+    const position = match.index || 0;
+    joins.push({ tableRef, alias, joinType, position });
+  }
+  
+  // Then match without AS - look for JOIN table_ref followed by a word that could be an alias
+  const joinPatternWithoutAs = /\b((?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)\s+)?JOIN\s+((?:`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))\s+([\w\-]+)(?=\s+ON|\s+WHERE|\s+ORDER|\s+GROUP|\s+HAVING|\s+LIMIT|$)/gi;
+  const matchesWithoutAs = Array.from(sqlWithoutComments.matchAll(joinPatternWithoutAs));
+  
+  for (const match of matchesWithoutAs) {
+    const joinType = (match[1] || '').trim().toUpperCase() || 'INNER';
+    const tableRef = match[2].trim();
+    const potentialAlias = match[3] || null;
+    
+    // Only add if we haven't already added this JOIN (from the AS pattern)
+    const alreadyAdded = joins.some(j => 
+      j.position === (match.index || 0) && 
+      j.tableRef === tableRef
+    );
+    
+    if (!alreadyAdded && potentialAlias) {
+      // Verify it's likely an alias (not a keyword or part of table name)
+      const isKeyword = /^(ON|WHERE|ORDER|GROUP|HAVING|LIMIT|SELECT|FROM|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS)$/i.test(potentialAlias);
+      if (!isKeyword && !potentialAlias.includes('.')) {
+        joins.push({ tableRef, alias: potentialAlias, joinType, position: match.index || 0 });
+      }
+    }
+  }
+  
+  // Sort joins by position to maintain order
+  joins.sort((a, b) => a.position - b.position);
+  
+  return joins;
+}
+
+/**
+ * Parses FROM clause to extract the first table reference and alias
+ */
+function parseFromClause(sql: string): { tableRef: string; alias: string | null } | null {
+  const stripComments = (text: string): string => {
+    let result = '';
+    let i = 0;
+    const len = text.length;
+    let inSingleQuote = false;
+    let inDoubleQuote = false;
+    let inBacktick = false;
+
+    while (i < len) {
+      const char = text[i];
+      const nextChar = i + 1 < len ? text[i + 1] : '';
+
+      if (char === "'" && !inDoubleQuote && !inBacktick) {
+        inSingleQuote = !inSingleQuote;
+        result += char;
+        i++;
+        continue;
+      }
+      if (char === '"' && !inSingleQuote && !inBacktick) {
+        inDoubleQuote = !inDoubleQuote;
+        result += char;
+        i++;
+        continue;
+      }
+      if (char === '`' && !inSingleQuote && !inDoubleQuote) {
+        inBacktick = !inBacktick;
+        result += char;
+        i++;
+        continue;
+      }
+
+      if (inSingleQuote || inDoubleQuote || inBacktick) {
+        result += char;
+        i++;
+        continue;
+      }
+
+      if (char === '-' && nextChar === '-') {
+        while (i < len && text[i] !== '\n' && text[i] !== '\r') {
+          i++;
+        }
+        if (i < len && text[i] === '\n') {
+          result += '\n';
+          i++;
+        } else if (i < len && text[i] === '\r') {
+          result += '\r';
+          i++;
+          if (i < len && text[i] === '\n') {
+            result += '\n';
+            i++;
+          }
+        }
+        continue;
+      }
+
+      if (char === '/' && nextChar === '*') {
+        i += 2;
+        while (i < len) {
+          if (text[i] === '*' && i + 1 < len && text[i + 1] === '/') {
+            i += 2;
+            break;
+          }
+          i++;
+        }
+        result += ' ';
+        continue;
+      }
+
+      result += char;
+      i++;
+    }
+
+    return result;
+  };
+  
+  const sqlWithoutComments = stripComments(sql);
+  
+  // Match FROM table_ref [AS alias] or table_ref alias
+  // First try with explicit AS
+  const fromPatternWithAs = /\bFROM\s+((?:`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))\s+AS\s+([\w\-]+)/i;
+  const matchWithAs = sqlWithoutComments.match(fromPatternWithAs);
+  
+  if (matchWithAs) {
+    return { tableRef: matchWithAs[1].trim(), alias: matchWithAs[2] || null };
+  }
+  
+  // Then try without AS
+  const fromPatternWithoutAs = /\bFROM\s+((?:`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))\s+([\w\-]+)(?=\s+JOIN|\s+WHERE|\s+ORDER|\s+GROUP|\s+HAVING|\s+LIMIT|$)/i;
+  const matchWithoutAs = sqlWithoutComments.match(fromPatternWithoutAs);
+  
+  if (matchWithoutAs) {
+    const tableRef = matchWithoutAs[1].trim();
+    const potentialAlias = matchWithoutAs[2];
+    
+    // Verify it's likely an alias (not a keyword)
+    const isKeyword = /^(JOIN|WHERE|ORDER|GROUP|HAVING|LIMIT|SELECT)$/i.test(potentialAlias);
+    if (!isKeyword && !potentialAlias.includes('.')) {
+      return { tableRef, alias: potentialAlias };
+    }
+  }
+  
+  // Fallback: just the table reference without alias
+  const fromPatternNoAlias = /\bFROM\s+((?:`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))(?=\s+JOIN|\s+WHERE|\s+ORDER|\s+GROUP|\s+HAVING|\s+LIMIT|$)/i;
+  const matchNoAlias = sqlWithoutComments.match(fromPatternNoAlias);
+  
+  if (matchNoAlias) {
+    return { tableRef: matchNoAlias[1].trim(), alias: null };
+  }
+  
+  return null;
+}
+
+/**
+ * Detects if we're in a SELECT clause and returns all available table references with aliases
+ */
+function detectSelectContext(
+  model: any,
+  position: any
+): Array<{ tableRef: string; alias: string | null }> | null {
+  const fullText = model.getValue();
+  const cursorOffset = model.getOffsetAt(position);
+  const textUpToCursor = fullText.substring(0, cursorOffset);
+  
+  // Check if we're in a SELECT clause (between SELECT and FROM)
+  const selectMatch = textUpToCursor.match(/\bSELECT\s+/i);
+  if (!selectMatch) {
+    return null;
+  }
+  
+  const selectIndex = selectMatch.index || 0;
+  
+  // Find the FROM keyword after SELECT
+  const textAfterSelect = textUpToCursor.substring(selectIndex);
+  const fromMatch = textAfterSelect.match(/\bFROM\s+/i);
+  
+  // If we haven't reached FROM yet, or cursor is before FROM, we're in SELECT clause
+  if (!fromMatch || cursorOffset <= selectIndex + (fromMatch.index || 0)) {
+    // Parse FROM clause to get the main table
+    const fromClause = parseFromClause(fullText);
+    
+    // Parse JOIN statements to get all joined tables
+    const joins = parseJoinStatements(fullText);
+    
+    const tables: Array<{ tableRef: string; alias: string | null }> = [];
+    
+    if (fromClause) {
+      tables.push(fromClause);
+    }
+    
+    for (const join of joins) {
+      tables.push({
+        tableRef: join.tableRef,
+        alias: join.alias,
+      });
+    }
+    
+    return tables.length > 0 ? tables : null;
+  }
+  
+  return null;
+}
+
+/**
+ * Detects if we're in a JOIN ON clause and returns the relevant table references
+ */
+function detectJoinOnContext(
+  model: any,
+  position: any
+): { leftTable: { tableRef: string; alias: string | null } | null; rightTable: { tableRef: string; alias: string | null } | null } | null {
+  const fullText = model.getValue();
+  const cursorOffset = model.getOffsetAt(position);
+  const textUpToCursor = fullText.substring(0, cursorOffset);
+  
+  // Check if we're after an ON keyword that follows a JOIN
+  // Look backwards from cursor to find the most recent ON keyword
+  // Then check if there's a JOIN before it
+  const onMatches = Array.from(textUpToCursor.matchAll(/\bON\s+/gi)) as RegExpMatchArray[];
+  if (onMatches.length === 0) {
+    return null;
+  }
+  
+  // Use the last (most recent) ON match
+  const lastOnMatch = onMatches[onMatches.length - 1];
+  const onIndex = lastOnMatch.index || 0;
+  const onMatchText = lastOnMatch[0];
+  
+  // Check if there's a JOIN before this ON
+  const textBeforeOn = textUpToCursor.substring(0, onIndex);
+  const joinMatch = textBeforeOn.match(/\b(?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)?\s+JOIN\s+/i);
+  if (!joinMatch) {
+    return null;
+  }
+  
+  // Make sure cursor is after the ON keyword (not before it)
+  // This allows detection even when typing column names after ON
+  const textAfterOn = textUpToCursor.substring(onIndex + onMatchText.length);
+  // Always allow if cursor is after ON (even if there's already text like "dp.ProdKey =")
+  // This enables column suggestions when typing anywhere in the ON clause
+  
+  // Parse FROM clause
+  const fromClause = parseFromClause(textUpToCursor);
+  if (!fromClause) {
+    return null;
+  }
+  
+  // Parse JOIN statements
+  const joins = parseJoinStatements(textUpToCursor);
+  
+  if (joins.length === 0) {
+    return null;
+  }
+  
+  // Find the most recent JOIN that has an ON clause before or at our position
+  // We'll use the last JOIN found, as it's the most recent one
+  const activeJoin = joins[joins.length - 1];
+  
+  if (!activeJoin) {
+    return null;
+  }
+  
+  // Left table is the FROM table
+  // Right table is the current JOIN's table
+  const leftTable = fromClause;
+  const rightTable = {
+    tableRef: activeJoin.tableRef,
+    alias: activeJoin.alias,
+  };
+  
+  // Return both tables - the FROM table and the JOINed table
+  // This allows matching aliases from either table
+  return { leftTable, rightTable };
+}
+
+/**
+ * Gets column suggestions for JOIN ON clause
+ */
+async function getJoinColumnSuggestions(
+  projectId: string,
+  leftTable: { tableRef: string; alias: string | null },
+  rightTable: { tableRef: string; alias: string | null },
+  prefix: string = ''
+): Promise<any[]> {
+  const suggestions: any[] = [];
+  
+  try {
+    // Parse table references to get dataset and table IDs
+    const parseTableRef = (tableRef: string): { datasetId: string; tableId: string } | null => {
+      const cleanRef = tableRef.replace(/[`"']/g, '');
+      const parts = cleanRef.split('.').filter(p => p.length > 0);
+      
+      if (parts.length === 2) {
+        return { datasetId: parts[0], tableId: parts[1] };
+      } else if (parts.length === 3) {
+        return { datasetId: parts[1], tableId: parts[2] };
+      }
+      
+      return null;
+    };
+    
+    const leftParsed = parseTableRef(leftTable.tableRef);
+    const rightParsed = parseTableRef(rightTable.tableRef);
+    
+    if (!leftParsed || !rightParsed) {
+      return [];
+    }
+    
+    // Get schemas for both tables
+    const [leftSchema, rightSchema] = await Promise.all([
+      getTableSchema(projectId, leftParsed.datasetId, leftParsed.tableId),
+      getTableSchema(projectId, rightParsed.datasetId, rightParsed.tableId),
+    ]);
+    
+    const prefixLower = prefix.toLowerCase();
+    
+    // Add columns from left table
+    const leftAlias = leftTable.alias || leftParsed.tableId;
+    for (const field of leftSchema) {
+      const fieldName = field.name;
+      if (!prefixLower || fieldName.toLowerCase().startsWith(prefixLower)) {
+        suggestions.push({
+          label: `${leftAlias}.${fieldName}`,
+          kind: CompletionItemKind.Property,
+          insertText: `${leftAlias}.${fieldName}`,
+          detail: `Column: ${fieldName} (${field.type || 'unknown'})`,
+          documentation: `Column from ${leftTable.tableRef}`,
+        });
+      }
+    }
+    
+    // Add columns from right table
+    const rightAlias = rightTable.alias || rightParsed.tableId;
+    for (const field of rightSchema) {
+      const fieldName = field.name;
+      if (!prefixLower || fieldName.toLowerCase().startsWith(prefixLower)) {
+        suggestions.push({
+          label: `${rightAlias}.${fieldName}`,
+          kind: CompletionItemKind.Property,
+          insertText: `${rightAlias}.${fieldName}`,
+          detail: `Column: ${fieldName} (${field.type || 'unknown'})`,
+          documentation: `Column from ${rightTable.tableRef}`,
+        });
+      }
+    }
+  } catch (error) {
+    // Silently handle errors
+  }
+  
+  return suggestions;
+}
+
+/**
  * Gets matching tables from cache (synchronous)
  */
 function getMatchingTablesFromCache(
@@ -734,13 +1213,217 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
         endColumn: word.endColumn,
       };
 
-      // Try to get table suggestions first
+      // Check if we're in a SELECT clause first (for column suggestions)
       const projectId = getProjectId();
+      let selectColumnSuggestions: any[] = [];
+      let isSelectContext = false;
+      let joinColumnSuggestions: any[] = [];
+      let isJoinOnContext = false;
+      
+      if (projectId) {
+        // Check for SELECT clause context
+        const selectTables = detectSelectContext(model, position);
+        if (selectTables && selectTables.length > 0) {
+          // Check if we're typing after a table alias dot (e.g., "da." or "dp.id")
+          const aliasDotMatch = textBeforeCursor.match(/([\w\-]+)\.([\w\-]*)$/);
+          
+          if (aliasDotMatch) {
+            const typedAlias = aliasDotMatch[1];
+            const partialColumn = aliasDotMatch[2] || '';
+            
+            // Find matching table by alias
+            const getTableAlias = (table: { tableRef: string; alias: string | null }): string => {
+              if (table.alias) {
+                return table.alias;
+              }
+              const cleanRef = table.tableRef.replace(/[`"']/g, '');
+              const parts = cleanRef.split('.').filter(p => p.length > 0);
+              return parts[parts.length - 1] || '';
+            };
+            
+            for (const table of selectTables) {
+              const tableAlias = getTableAlias(table);
+              if (typedAlias.toLowerCase() === tableAlias.toLowerCase()) {
+                isSelectContext = true;
+                
+                // Parse table reference
+                const cleanRef = table.tableRef.replace(/[`"']/g, '');
+                const parts = cleanRef.split('.').filter(p => p.length > 0);
+                let datasetId: string | null = null;
+                let tableId: string | null = null;
+                
+                if (parts.length === 2) {
+                  datasetId = parts[0];
+                  tableId = parts[1];
+                } else if (parts.length === 3) {
+                  datasetId = parts[1];
+                  tableId = parts[2];
+                }
+                
+                if (datasetId && tableId) {
+                  try {
+                    const schema = await getTableSchema(projectId, datasetId, tableId);
+                    const prefixLower = partialColumn.toLowerCase();
+                    
+                    // Calculate proper range
+                    const dotPosition = textBeforeCursor.lastIndexOf('.');
+                    const rangeStartColumn = partialColumn 
+                      ? (dotPosition + 2)
+                      : position.column;
+                    const rangeEndColumn = position.column;
+                    
+                    for (const field of schema) {
+                      if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                        selectColumnSuggestions.push({
+                          label: field.name,
+                          kind: CompletionItemKind.Property,
+                          insertText: field.name,
+                          detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                          documentation: `Column from ${table.tableRef}`,
+                          range: {
+                            startLineNumber: position.lineNumber,
+                            endLineNumber: position.lineNumber,
+                            startColumn: rangeStartColumn,
+                            endColumn: rangeEndColumn,
+                          },
+                        });
+                      }
+                    }
+                  } catch (error) {
+                    // Silently handle errors
+                  }
+                }
+                break;
+              }
+            }
+          }
+        }
+        
+        // Check if we're in a JOIN ON clause
+        const joinContext = detectJoinOnContext(model, position);
+        if (joinContext && joinContext.leftTable && joinContext.rightTable) {
+          isJoinOnContext = true;
+          
+          // Get the current word/prefix for filtering
+          const currentWord = word.word || '';
+          
+          // Check if we're typing after a table alias dot (e.g., "dp." or "da.id")
+          const textBeforeCursor = lineText.substring(0, position.column - 1);
+          // Match alias followed by dot, optionally followed by a partial column name
+          const aliasDotMatch = textBeforeCursor.match(/([\w\-]+)\.([\w\-]*)$/);
+          
+          if (aliasDotMatch) {
+            // User typed an alias and dot, possibly with a partial column name
+            const typedAlias = aliasDotMatch[1];
+            const partialColumn = aliasDotMatch[2] || '';
+            
+            // Get aliases for both tables
+            const getTableAlias = (table: { tableRef: string; alias: string | null }): string => {
+              if (table.alias) {
+                return table.alias;
+              }
+              // Extract table name from tableRef
+              const cleanRef = table.tableRef.replace(/[`"']/g, '');
+              const parts = cleanRef.split('.').filter(p => p.length > 0);
+              return parts[parts.length - 1] || '';
+            };
+            
+            const leftAlias = getTableAlias(joinContext.leftTable);
+            const rightAlias = getTableAlias(joinContext.rightTable);
+            
+            // Determine which table's columns to show
+            let targetTable: { tableRef: string; alias: string | null } | null = null;
+            if (typedAlias.toLowerCase() === leftAlias.toLowerCase()) {
+              targetTable = joinContext.leftTable;
+            } else if (typedAlias.toLowerCase() === rightAlias.toLowerCase()) {
+              targetTable = joinContext.rightTable;
+            }
+            
+            if (targetTable) {
+              // Parse table reference
+              const cleanRef = targetTable.tableRef.replace(/[`"']/g, '');
+              const parts = cleanRef.split('.').filter(p => p.length > 0);
+              let datasetId: string | null = null;
+              let tableId: string | null = null;
+              
+              if (parts.length === 2) {
+                datasetId = parts[0];
+                tableId = parts[1];
+              } else if (parts.length === 3) {
+                datasetId = parts[1];
+                tableId = parts[2];
+              }
+              
+              if (datasetId && tableId) {
+                try {
+                  const schema = await getTableSchema(projectId, datasetId, tableId);
+                  const prefixLower = partialColumn.toLowerCase();
+                  
+                  // Calculate proper range - if we're right after the dot, start at cursor position
+                  // Otherwise, replace the partial column name
+                  const dotPosition = textBeforeCursor.lastIndexOf('.');
+                  const rangeStartColumn = partialColumn 
+                    ? (dotPosition + 2) // After the dot, replace partial column
+                    : position.column;   // Right after dot, insert at cursor
+                  const rangeEndColumn = position.column;
+                  
+                  for (const field of schema) {
+                    // Filter by partial column name if provided
+                    if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                      joinColumnSuggestions.push({
+                        label: field.name,
+                        kind: CompletionItemKind.Property,
+                        insertText: field.name,
+                        detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                        documentation: `Column from ${targetTable.tableRef}`,
+                        range: {
+                          startLineNumber: position.lineNumber,
+                          endLineNumber: position.lineNumber,
+                          startColumn: rangeStartColumn,
+                          endColumn: rangeEndColumn,
+                        },
+                      });
+                    }
+                  }
+                } catch (error) {
+                  // Silently handle errors
+                }
+              }
+            }
+          } else {
+            // Not after a dot, show columns from both tables with aliases
+            try {
+              joinColumnSuggestions = await getJoinColumnSuggestions(
+                projectId,
+                joinContext.leftTable,
+                joinContext.rightTable,
+                currentWord
+              );
+              
+              // Update range for column suggestions
+              joinColumnSuggestions = joinColumnSuggestions.map((item) => ({
+                ...item,
+                range: {
+                  startLineNumber: position.lineNumber,
+                  endLineNumber: position.lineNumber,
+                  startColumn: word.startColumn,
+                  endColumn: word.endColumn,
+                },
+              }));
+            } catch (error) {
+              // Silently handle errors
+            }
+          }
+        }
+      }
+      
+      // Try to get table suggestions
       const tableRefText = getTableReferenceText(model, position);
       let tableSuggestions: any[] = [];
       let hasTableContext = false;
       
-      if (tableRefText && projectId) {
+      // Skip table suggestions if we're in SELECT or JOIN ON context (unless we're typing a table reference)
+      if (!isSelectContext && !isJoinOnContext && tableRefText && projectId) {
         const parsedRef = parseTableReference(tableRefText);
         
         if (parsedRef) {
@@ -829,22 +1512,50 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
         }
       }
 
-      // If we're in a table context (have table suggestions), prioritize them and exclude keywords
-      // Otherwise, include all standard completions
+      // Prioritize column suggestions based on context
+      // SELECT context takes precedence, then JOIN ON context
       const suggestions: any[] = [];
       
-      // Check if we have a table reference with a trailing dot - this is a strong signal for table context
-      const hasTrailingDot = tableRefText?.endsWith('.');
-      
-      if (hasTableContext || (hasTrailingDot && tableRefText)) {
-        // In table context or after a dot, only show table suggestions
-        suggestions.push(...tableSuggestions);
-      } else if (tableRefText) {
-        // We detected a table reference but no suggestions found - still show table suggestions first
-        suggestions.push(...tableSuggestions);
+      if (isSelectContext && selectColumnSuggestions.length > 0) {
+        // In SELECT context, show column suggestions from the selected table
+        selectColumnSuggestions.sort((a, b) => a.label.localeCompare(b.label));
+        suggestions.push(...selectColumnSuggestions);
+      } else if (isJoinOnContext) {
+        // In JOIN ON context, show column suggestions from both tables
+        if (joinColumnSuggestions.length > 0) {
+          // Sort suggestions by label for better UX
+          joinColumnSuggestions.sort((a, b) => a.label.localeCompare(b.label));
+          suggestions.push(...joinColumnSuggestions);
+        }
+        // If no column suggestions but we're in JOIN context, don't show other suggestions
+        // (this prevents showing keywords/functions when user expects columns)
+      } else {
+        // Check if we have a table reference with a trailing dot - this is a strong signal for table context
+        const hasTrailingDot = tableRefText?.endsWith('.');
         
-        // Add keywords/functions only if we have no table suggestions
-        if (tableSuggestions.length === 0) {
+        if (hasTableContext || (hasTrailingDot && tableRefText)) {
+          // In table context or after a dot, only show table suggestions
+          suggestions.push(...tableSuggestions);
+        } else if (tableRefText) {
+          // We detected a table reference but no suggestions found - still show table suggestions first
+          suggestions.push(...tableSuggestions);
+          
+          // Add keywords/functions only if we have no table suggestions
+          if (tableSuggestions.length === 0) {
+            const keywordCompletions = createKeywordCompletions();
+            suggestions.push(
+              ...keywordCompletions.map((item) => ({
+                ...item,
+                range,
+              })),
+              ...ALL_FUNCTIONS.map((item) => ({
+                ...item,
+                range,
+              }))
+            );
+          }
+        } else {
+          // Not in table context, show standard completions
           const keywordCompletions = createKeywordCompletions();
           suggestions.push(
             ...keywordCompletions.map((item) => ({
@@ -854,23 +1565,10 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
             ...ALL_FUNCTIONS.map((item) => ({
               ...item,
               range,
-            }))
+            })),
+            ...tableSuggestions // Still include table suggestions if any (for prefix-only searches)
           );
         }
-      } else {
-        // Not in table context, show standard completions
-        const keywordCompletions = createKeywordCompletions();
-        suggestions.push(
-          ...keywordCompletions.map((item) => ({
-            ...item,
-            range,
-          })),
-          ...ALL_FUNCTIONS.map((item) => ({
-            ...item,
-            range,
-          })),
-          ...tableSuggestions // Still include table suggestions if any (for prefix-only searches)
-        );
       }
 
       return { suggestions };

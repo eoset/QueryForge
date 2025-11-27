@@ -161,7 +161,7 @@
 .editor-status-bar {
   background-color: #252526;
   border-top: 1px solid #3e3e42;
-  padding: 0.25rem 0.75rem;
+  padding: 0.375rem 0.75rem;
   min-height: 22px;
   display: flex;
   align-items: center;
@@ -192,9 +192,10 @@
   word-wrap: break-word;
   overflow-wrap: break-word;
   max-width: 100%;
-  line-height: 1.4;
+  line-height: 1.5;
   flex: 1;
   min-width: 0;
+  margin-top: 5px;
 }
 
 .editor-status-bar .status-indicator {
