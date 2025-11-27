@@ -45,7 +45,7 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onT
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
-  const { setDatasets: setMetadataDatasets, setDatasetTables } = useBigQueryMetadataStore();
+  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
 
   const loadDatasets = useCallback(async () => {
     if (!connection || !window.electronAPI) {
@@ -336,26 +336,51 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onT
     return datasets
       .filter((dataset) => {
         const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        const matchingTables = dataset.tables?.filter((table) =>
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
           table.name.toLowerCase().includes(searchLower)
-        ) || [];
+        );
         return datasetMatches || matchingTables.length > 0;
       })
       .map((dataset) => {
         const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        const matchingTables = dataset.tables?.filter((table) =>
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
           table.name.toLowerCase().includes(searchLower)
-        ) || [];
+        );
 
         return {
           ...dataset,
           // Auto-expand if searching and there are matching tables or dataset matches
           expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
           // Show all tables if dataset name matches, otherwise show only matching tables
-          tables: datasetMatches ? dataset.tables : matchingTables.length > 0 ? matchingTables : dataset.tables,
+          // Prefer local tables if available, otherwise use metadata tables
+          tables: datasetMatches 
+            ? (localTables.length > 0 ? localTables : allTables)
+            : matchingTables.length > 0 
+              ? matchingTables 
+              : (localTables.length > 0 ? localTables : allTables),
         };
       });
-  }, [datasets, searchTerm]);
+  }, [datasets, searchTerm, getDatasetTables]);
 
   if (!connection) {
     return (

@@ -186,7 +186,7 @@ export const QueryEditor: React.FC = () => {
     
     // Clear cache for this tab when starting a new query
     if (window.electronAPI?.resultsCache) {
-      await window.electronAPI.resultsCache.delete(currentTab.id).catch((err) => {
+      await window.electronAPI.resultsCache.delete(currentTab.id).catch((err: unknown) => {
         console.error('Failed to clear cache:', err);
       });
     }
