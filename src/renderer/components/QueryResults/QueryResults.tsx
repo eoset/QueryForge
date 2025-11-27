@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useTabsStore } from '../../stores/tabs-store';
 import { RowContextMenu } from './RowContextMenu';
 import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult } from '../../../shared/types/query';
+import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
 import { formatBigQueryValue } from '../../utils/bigquery-formatter';
 import './QueryResults.css';
 
@@ -61,7 +61,15 @@ export const QueryResults: React.FC = () => {
     setIsLoadingCache(true);
     window.electronAPI.resultsCache
       .getMetadata(activeTabId)
-      .then((metadata) => {
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
         if (metadata) {
           setResultsMetadata(metadata);
           setIsLoadingCache(false);
@@ -71,7 +79,7 @@ export const QueryResults: React.FC = () => {
           setIsLoadingCache(false);
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error('Failed to load results metadata from cache:', err);
         setResultsMetadata(null);
         setCurrentPageRows([]);
@@ -89,7 +97,7 @@ export const QueryResults: React.FC = () => {
     setIsLoadingPage(true);
     window.electronAPI.resultsCache
       .getPage(activeTabId, currentPage)
-      .then((pageRows) => {
+      .then((pageRows: Row[] | null) => {
         if (pageRows) {
           setCurrentPageRows(pageRows);
         } else {
@@ -97,7 +105,7 @@ export const QueryResults: React.FC = () => {
         }
         setIsLoadingPage(false);
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error('Failed to load page from cache:', err);
         setCurrentPageRows([]);
         setIsLoadingPage(false);
