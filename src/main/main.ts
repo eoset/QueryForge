@@ -6,7 +6,9 @@ import { registerConnectionHandlers } from './ipc/connection';
 import { registerQueriesHandlers } from './ipc/queries';
 import { registerUISettingsHandlers } from './ipc/ui-settings';
 import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers } from './ipc/results-cache';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-store';
 
 // Set app name immediately (before any other app calls) for macOS dock
 // This must be called before app.whenReady() to ensure the dock shows the correct name
@@ -23,6 +25,7 @@ registerConnectionHandlers();
 registerQueriesHandlers();
 registerUISettingsHandlers();
 registerTabsHandlers();
+registerResultsCacheHandlers();
 
 function createMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -223,6 +226,8 @@ function createWindow(): void {
     }
     // Request tabs to be saved from renderer process
     mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
   });
 
   // Load the HTML file from dist (webpack bundles everything)
@@ -311,8 +316,15 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+// Clear cache on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
 });
 

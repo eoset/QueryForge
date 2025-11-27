@@ -47,11 +47,48 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   const [isSelecting, setIsSelecting] = useState(false);
   const selectionOverlayRef = useRef<HTMLDivElement>(null);
 
-  // Calculate pagination
+  // Results already contain only the current page rows (loaded from cache)
+  // Calculate startIndex for row numbering
   const startIndex = (currentPage - 1) * rowsPerPage;
   const paginatedRows = useMemo(() => {
-    return results.rows?.slice(startIndex, startIndex + rowsPerPage) || [];
-  }, [results.rows, startIndex, rowsPerPage]);
+    // Results.rows already contains only the current page, so use it directly
+    return results.rows || [];
+  }, [results.rows]);
+
+  // Memory management: Limit cache size and clear when data changes significantly
+  const formattedCellsRef = useRef<Map<string, string>>(new Map());
+  const MAX_FORMATTED_CACHE_SIZE = 10000; // Limit to 10k cells to prevent memory issues
+  
+  // Pre-format all cell values to avoid expensive formatting during render
+  // This is the key optimization - format values once when data changes, not on every render
+  const formattedCells = useMemo(() => {
+    const formatted = new Map<string, string>();
+    paginatedRows.forEach((row, rowIdx) => {
+      row.values.forEach((value, colIdx) => {
+        const column = results.columns[colIdx];
+        const key = `${rowIdx}-${colIdx}`;
+        // Only format if within cache size limit
+        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
+          formatted.set(key, formatValue(value, column?.type));
+        }
+      });
+    });
+    // Update ref for cleanup tracking
+    formattedCellsRef.current = formatted;
+    return formatted;
+  }, [paginatedRows, results.columns, formatValue]);
+  
+  // Clear caches when results change significantly (new jobId)
+  useEffect(() => {
+    formattedCellsRef.current.clear();
+    textMeasurementCache.current.clear();
+  }, [results.jobId]);
+
+  // Helper to get formatted value (with fallback for safety)
+  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
+    const key = `${rowIdx}-${colIdx}`;
+    return formattedCells.get(key) ?? formatValue(value, columnType);
+  }, [formattedCells, formatValue]);
 
   // Calculate column widths
   const getColumnWidth = useCallback(
@@ -98,9 +135,35 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     return () => resizeObserver.disconnect();
   }, []);
 
-  // Measure text width
+  // Cache for text measurements to avoid repeated measureText calls
+  const textMeasurementCache = useRef<Map<string, number>>(new Map());
+  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  // Measure text width with caching
   const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
-    return ctx.measureText(text).width;
+    // Update context ref if changed
+    if (measureTextContextRef.current !== ctx) {
+      measureTextContextRef.current = ctx;
+      // Clear cache when context changes (e.g., font changes)
+      textMeasurementCache.current.clear();
+    }
+
+    // Use cache key based on text content
+    const cacheKey = text;
+    if (textMeasurementCache.current.has(cacheKey)) {
+      return textMeasurementCache.current.get(cacheKey)!;
+    }
+
+    const width = ctx.measureText(text).width;
+    // Limit cache size to prevent memory issues (keep last 1000 measurements)
+    if (textMeasurementCache.current.size > 1000) {
+      const firstKey = textMeasurementCache.current.keys().next().value;
+      if (firstKey !== undefined) {
+        textMeasurementCache.current.delete(firstKey);
+      }
+    }
+    textMeasurementCache.current.set(cacheKey, width);
+    return width;
   }, []);
 
   // Convert viewport coordinates to cell position
@@ -136,7 +199,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     [paginatedRows.length, getColumnWidth, results.columns]
   );
 
-  // Draw cell text with ellipsis
+  // Draw cell text with ellipsis - optimized with binary search for truncation
   const drawCellText = useCallback(
     (
       ctx: CanvasRenderingContext2D,
@@ -148,24 +211,37 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     ) => {
       ctx.fillStyle = color;
       ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      const textWidth = measureText(text, ctx);
+      const maxWidth = width - CELL_PADDING * 2;
+      const ellipsis = '...';
+      const ellipsisWidth = measureText(ellipsis, ctx);
       
-      if (textWidth <= width - CELL_PADDING * 2) {
+      // Quick check - if text fits, draw it directly
+      const textWidth = measureText(text, ctx);
+      if (textWidth <= maxWidth) {
         ctx.fillText(text, x + CELL_PADDING, y + ROW_HEIGHT / 2 + 4);
-      } else {
-        // Truncate with ellipsis
-        let truncated = text;
-        let truncatedWidth = textWidth;
-        const ellipsis = '...';
-        const ellipsisWidth = measureText(ellipsis, ctx);
-        
-        while (truncatedWidth + ellipsisWidth > width - CELL_PADDING * 2 && truncated.length > 0) {
-          truncated = truncated.slice(0, -1);
-          truncatedWidth = measureText(truncated, ctx);
-        }
-        
-        ctx.fillText(truncated + ellipsis, x + CELL_PADDING, y + ROW_HEIGHT / 2 + 4);
+        return;
       }
+      
+      // Binary search for optimal truncation point (much faster than linear character-by-character)
+      let left = 0;
+      let right = text.length;
+      let bestFit = 0;
+      
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        const testText = text.substring(0, mid);
+        const testWidth = measureText(testText, ctx);
+        
+        if (testWidth + ellipsisWidth <= maxWidth) {
+          bestFit = mid;
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
+      }
+      
+      const truncated = text.substring(0, bestFit);
+      ctx.fillText(truncated + ellipsis, x + CELL_PADDING, y + ROW_HEIGHT / 2 + 4);
     },
     [measureText]
   );
@@ -240,10 +316,12 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
     // Calculate visible area - account for header height
     // Only rows that would be visible below the header should be considered
+    // Add small buffer (2 rows) for smoother scrolling
     const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
-    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT));
+    const bufferRows = 2;
+    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
     const visibleEndRow = Math.min(
-      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + 1,
+      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
       paginatedRows.length
     );
 
@@ -327,9 +405,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
             ctx.stroke();
           }
 
-          // Draw cell content
-          const column = results.columns[colIdx];
-          const formattedValue = formatValue(value, column?.type);
+          // Draw cell content - use pre-formatted value
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
           ctx.fillStyle = textColor;
           drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor);
         }
@@ -469,7 +546,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     hoveredColumn,
     resizingColumn,
     getColumnWidth,
-    formatValue,
+    getFormattedValue,
     startIndex,
     drawCellText,
     selectionStart,
@@ -708,9 +785,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           const actualRowNumber = startIndex + rowIdx + 1;
           rowValues.push(actualRowNumber.toLocaleString());
         } else {
-          const column = results.columns[colIdx];
           const value = row.values[colIdx];
-          const formattedValue = formatValue(value, column?.type);
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
           rowValues.push(formattedValue);
         }
       }
@@ -836,13 +912,27 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     return () => clearTimeout(timer);
   }, []);
 
-  // Render on changes (including scroll)
+  // Render on changes (including scroll) with throttling to reduce CPU usage
+  const renderTimeoutRef = useRef<number | null>(null);
   useEffect(() => {
-    // Use requestAnimationFrame to ensure smooth rendering
-    const rafId = requestAnimationFrame(() => {
+    // Clear any pending render
+    if (renderTimeoutRef.current !== null) {
+      cancelAnimationFrame(renderTimeoutRef.current);
+    }
+
+    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
+    // but batch rapid scroll events
+    renderTimeoutRef.current = requestAnimationFrame(() => {
       render();
+      renderTimeoutRef.current = null;
     });
-    return () => cancelAnimationFrame(rafId);
+
+    return () => {
+      if (renderTimeoutRef.current !== null) {
+        cancelAnimationFrame(renderTimeoutRef.current);
+        renderTimeoutRef.current = null;
+      }
+    };
   }, [render, scrollTop, scrollLeft]);
 
   // Handle window resize

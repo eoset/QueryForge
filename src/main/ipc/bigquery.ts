@@ -3,6 +3,97 @@ import { getBigQueryClient, getActiveConnection } from './connection';
 import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
 import { BigQueryErrorCode } from '../../shared/types/bigquery';
 
+/**
+ * Serializes a value to ensure it can be cloned and sent through IPC.
+ * Handles Date objects, BigNumber objects, Buffers, and nested structures.
+ * Uses a WeakSet to track visited objects to prevent circular reference issues.
+ */
+function serializeValue(value: any, visited: WeakSet<object> = new WeakSet()): any {
+  // Handle null and undefined
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  // Handle Date objects - convert to ISO string
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  // Handle Buffer objects - convert to base64 string
+  if (Buffer.isBuffer(value)) {
+    return value.toString('base64');
+  }
+
+  // Handle BigNumber-like objects (from @google-cloud/bigquery)
+  // Check for common BigNumber properties
+  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
+    // Check if it's a BigNumber by looking for valueOf or toNumber methods
+    if ('valueOf' in value || 'toNumber' in value) {
+      try {
+        // Try to convert to number first, fallback to string
+        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
+        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
+          return numValue;
+        }
+        return String(value);
+      } catch {
+        return String(value);
+      }
+    }
+  }
+
+  // Handle arrays - recursively serialize each element
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeValue(item, visited));
+  }
+
+  // Handle objects - recursively serialize each property
+  if (typeof value === 'object') {
+    // Check for circular references
+    if (visited.has(value)) {
+      return '[Circular]';
+    }
+    visited.add(value);
+
+    try {
+      // Check if it's a plain object (not a class instance)
+      const proto = Object.getPrototypeOf(value);
+      if (proto === null || proto === Object.prototype) {
+        const serialized: any = {};
+        for (const key in value) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            serialized[key] = serializeValue(value[key], visited);
+          }
+        }
+        return serialized;
+      } else {
+        // For non-plain objects (class instances), try to serialize
+        // First try JSON.stringify/parse which handles most cases
+        try {
+          return JSON.parse(JSON.stringify(value));
+        } catch {
+          // If JSON serialization fails (e.g., circular refs, functions),
+          // try to extract enumerable properties
+          const serialized: any = {};
+          for (const key in value) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+              serialized[key] = serializeValue(value[key], visited);
+            }
+          }
+          // If we got nothing, convert to string as last resort
+          return Object.keys(serialized).length > 0 ? serialized : String(value);
+        }
+      }
+    } catch (error) {
+      // If anything goes wrong, convert to string
+      return String(value);
+    }
+  }
+
+  // For primitives (string, number, boolean), return as-is
+  return value;
+}
+
 export function registerBigQueryHandlers(): void {
   ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string) => {
     const client = getBigQueryClient();
@@ -78,10 +169,11 @@ export function registerBigQueryHandlers(): void {
 
       // Transform rows to Row format
       // BigQuery returns rows as objects with field names as keys
+      // Serialize all values to ensure they can be cloned and sent through IPC
       const transformedRows: Row[] = rows.map((row: any) => ({
         values: columns.map((col) => {
           const value = row[col.name];
-          return value !== null && value !== undefined ? value : null;
+          return serializeValue(value);
         }),
       }));
 
