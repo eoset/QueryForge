@@ -10,6 +10,25 @@ import { registerResultsCacheHandlers } from './ipc/results-cache';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
 import { clearAllResults } from './storage/results-cache-store';
 
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
 // Set app name immediately (before any other app calls) for macOS dock
 // This must be called before app.whenReady() to ensure the dock shows the correct name
 if (process.platform === 'darwin') {
@@ -233,12 +252,9 @@ function createWindow(): void {
   // Load the HTML file from dist (webpack bundles everything)
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-  // Open DevTools in development (always open for debugging)
-  // Check both NODE_ENV and if we're running from source (not packaged)
-  const isDevelopment = process.env.NODE_ENV === 'development' || 
-                        !app.isPackaged || 
-                        process.argv.includes('--dev');
-  if (isDevelopment) {
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
     mainWindow.webContents.openDevTools();
   }
 
@@ -308,6 +324,23 @@ app.whenReady().then(() => {
     app.setName('QueryForge');
     console.log('App name set to:', app.getName());
   }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
   
   createMenu();
   createWindow();

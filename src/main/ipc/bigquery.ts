@@ -960,87 +960,109 @@ export function registerBigQueryHandlers(): void {
     }
   });
 
+  // Wrap handler to suppress error logging for table not found errors
   ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
     try {
-      const table = client.dataset(datasetId).table(tableId);
-      const [metadata] = await table.getMetadata();
-      
-      // Extract schema fields
-      const schema = metadata.schema;
-      if (!schema || !schema.fields) {
-        return {
-          fields: [],
-        };
-      }
-
-      // Recursively transform fields to include nested structures
-      const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
-        const result: ColumnMetadata & { fields?: any[] } = {
-          name: field.name,
-          type: field.type,
-          mode: field.mode || 'NULLABLE',
-        };
-        
-        if (field.fields && field.fields.length > 0) {
-          result.fields = field.fields.map(transformField);
+      return await (async () => {
+        const client = getBigQueryClient();
+        if (!client) {
+          throw {
+            code: BigQueryErrorCode.CONNECTION_FAILED,
+            message: 'No active BigQuery connection',
+          };
         }
-        
-        return result;
-      };
 
-      // Extract table metadata
-      // BigQuery timestamps are in milliseconds, can be string or number
-      const creationTime = metadata.creationTime 
-        ? (typeof metadata.creationTime === 'string' 
-            ? parseInt(metadata.creationTime, 10) 
-            : metadata.creationTime)
-        : undefined;
-      const lastModifiedTime = metadata.lastModifiedTime
-        ? (typeof metadata.lastModifiedTime === 'string'
-            ? parseInt(metadata.lastModifiedTime, 10)
-            : metadata.lastModifiedTime)
-        : undefined;
-      const numRows = metadata.numRows
-        ? (typeof metadata.numRows === 'string'
-            ? parseInt(metadata.numRows, 10)
-            : metadata.numRows)
-        : undefined;
-      const numBytes = metadata.numBytes
-        ? (typeof metadata.numBytes === 'string'
-            ? parseInt(metadata.numBytes, 10)
-            : metadata.numBytes)
-        : undefined;
+        try {
+          const table = client.dataset(datasetId).table(tableId);
+          const [metadata] = await table.getMetadata();
+          
+          // Extract schema fields
+          const schema = metadata.schema;
+          if (!schema || !schema.fields) {
+            return {
+              fields: [],
+            };
+          }
 
-      return {
-        fields: schema.fields.map(transformField),
-        metadata: {
-          creationTime,
-          lastModifiedTime,
-          numRows,
-          numBytes,
-        },
-      };
+          // Recursively transform fields to include nested structures
+          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
+            const result: ColumnMetadata & { fields?: any[] } = {
+              name: field.name,
+              type: field.type,
+              mode: field.mode || 'NULLABLE',
+            };
+            
+            if (field.fields && field.fields.length > 0) {
+              result.fields = field.fields.map(transformField);
+            }
+            
+            return result;
+          };
+
+          // Extract table metadata
+          // BigQuery timestamps are in milliseconds, can be string or number
+          const creationTime = metadata.creationTime 
+            ? (typeof metadata.creationTime === 'string' 
+                ? parseInt(metadata.creationTime, 10) 
+                : metadata.creationTime)
+            : undefined;
+          const lastModifiedTime = metadata.lastModifiedTime
+            ? (typeof metadata.lastModifiedTime === 'string'
+                ? parseInt(metadata.lastModifiedTime, 10)
+                : metadata.lastModifiedTime)
+            : undefined;
+          const numRows = metadata.numRows
+            ? (typeof metadata.numRows === 'string'
+                ? parseInt(metadata.numRows, 10)
+                : metadata.numRows)
+            : undefined;
+          const numBytes = metadata.numBytes
+            ? (typeof metadata.numBytes === 'string'
+                ? parseInt(metadata.numBytes, 10)
+                : metadata.numBytes)
+            : undefined;
+
+          return {
+            fields: schema.fields.map(transformField),
+            metadata: {
+              creationTime,
+              lastModifiedTime,
+              numRows,
+              numBytes,
+            },
+          };
+        } catch (error: any) {
+          if (error.code === 404) {
+            // Create error but suppress Electron's automatic logging for table not found errors
+            // These errors are handled in the UI and don't need to be logged
+            const err = new Error('Table not found');
+            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+            (err as any).details = error.message;
+            // Mark error to suppress logging
+            (err as any).suppressLogging = true;
+            throw err;
+          }
+          const err = new Error(error.message || 'Failed to get table schema');
+          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+          (err as any).details = error.errors || error;
+          throw err;
+        }
+      })();
     } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'Table not found',
-          details: error.message,
-        };
+      // Suppress Electron's automatic error logging for table not found errors
+      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
+          error?.message === 'Table not found') {
+        // Re-throw without Electron logging by using a custom error handler
+        // Electron will still pass the error to the renderer, but won't log it
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.details || error.message;
+        // Use a custom property to signal this shouldn't be logged
+        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
+        throw err;
       }
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to get table schema',
-        details: error.errors || error,
-      };
+      // Re-throw other errors normally
+      throw error;
     }
   });
 
