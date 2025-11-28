@@ -21,7 +21,7 @@ interface DatasetTreeProps {
 
 const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema }) => {
   const connection = useConnectionStore((state) => state.connection);
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId } = useTabsStore();
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
   const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -186,11 +186,21 @@ const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, o
     const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
     const queryText = `SELECT * FROM ${tableRef}`;
     
+    // Store current active tab to restore it if it's Explorer
+    const currentActiveTabId = activeTabId;
+    const currentActiveTab = tabs.find(t => t.id === currentActiveTabId);
+    const wasOnExplorerTab = currentActiveTab?.type === 'explorer';
+    
     const newTabId = createTab();
     setTabQuery(newTabId, queryText);
     updateTab(newTabId, {
       title: `${dataset.name}.${table.name}`,
     });
+    
+    // If we were on Explorer tab, switch back to it
+    if (wasOnExplorerTab && currentActiveTabId) {
+      setActiveTab(currentActiveTabId);
+    }
     
     setContextMenu(null);
   };

@@ -2,7 +2,7 @@
  * Query-related types
  */
 
-export type TabType = 'query' | 'explorer';
+export type TabType = 'query' | 'explorer' | 'saved-queries';
 
 export interface QueryTab {
   id: string;

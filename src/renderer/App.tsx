@@ -9,6 +9,7 @@ import { TabBar } from './components/TabBar/TabBar';
 import { QueryEditor } from './components/QueryEditor/QueryEditor';
 import { QueryResults } from './components/QueryResults/QueryResults';
 import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import './App.css';
 
@@ -36,6 +37,7 @@ const App: React.FC = () => {
   const { tabs, setActiveTab, activeTabId } = useTabsStore();
   const activeTab = tabs.find(t => t.id === activeTabId);
   const isExplorerTabActive = activeTab?.type === 'explorer';
+  const isSavedQueriesTabActive = activeTab?.type === 'saved-queries';
   const [schemaSidebar, setSchemaSidebar] = useState<{
     projectId: string;
     datasetId: string;
@@ -332,11 +334,18 @@ const App: React.FC = () => {
         <TabBar />
         <div className="app-content">
           <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease' }}>
-            <DatasetTree 
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onShowSchema={handleShowSchema} 
-            />
+            {isSavedQueriesTabActive ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema} 
+              />
+            )}
           </div>
           {!leftSidebarCollapsed && (
             <div
@@ -344,25 +353,18 @@ const App: React.FC = () => {
               onMouseDown={handleLeftSidebarResizeStart}
             />
           )}
-          {!isExplorerTabActive && (
-            <div className="app-editor-results" ref={editorResultsRef}>
-              <div className="query-section" style={{ height: `${editorHeight}px` }}>
-                <QueryEditor />
-              </div>
-              <div
-                className="resize-handle-horizontal"
-                onMouseDown={handleResizeStart}
-              />
-              <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-                <QueryResults />
-              </div>
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor />
             </div>
-          )}
-          {isExplorerTabActive && (
-            <div className="app-explorer-content" style={{ flex: 1, overflow: 'hidden' }}>
-              {/* Explorer content is shown in the left sidebar */}
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
             </div>
-          )}
+          </div>
           {schemaSidebar && (
             <>
               <div
