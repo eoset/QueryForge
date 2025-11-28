@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import { useConnectionStore } from '../../stores/connection-store';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import { useTabsStore } from '../../stores/tabs-store';
@@ -19,7 +19,7 @@ interface DatasetTreeProps {
   onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
 }
 
-export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema }) => {
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema }) => {
   const connection = useConnectionStore((state) => state.connection);
   const { createTab, setTabQuery, updateTab, tabs, activeTabId } = useTabsStore();
   const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
@@ -553,4 +553,13 @@ export const DatasetTree: React.FC<DatasetTreeProps> = ({ collapsed = false, onT
     </div>
   );
 };
+
+export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
+    prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
 
