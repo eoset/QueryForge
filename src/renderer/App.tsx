@@ -69,6 +69,10 @@ const App: React.FC = () => {
     }
   }, [leftSidebarCollapsed, leftSidebarWidth]);
 
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
   useEffect(() => {
     // Initialize tabs store (load saved tabs)
     initializeTabsStore();
@@ -176,18 +180,44 @@ const App: React.FC = () => {
     if (!isResizingLeftSidebar) return;
 
     let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
 
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - resizeStartXLeftRef.current;
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 150px, max 600px
-      setLeftSidebarWidth(currentWidth);
+      const newWidth = Math.max(150, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 150px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
     };
 
     const handleMouseUp = () => {
       setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
       // Save the final width
       if (window.electronAPI) {
         window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
       }
     };
 
@@ -201,6 +231,9 @@ const App: React.FC = () => {
       document.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
     };
   }, [isResizingLeftSidebar]);
 
@@ -296,13 +329,11 @@ const App: React.FC = () => {
       <main className="app-main">
         <TabBar />
         <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: 'width 0.2s ease' }}>
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease' }}>
             <DatasetTree 
               collapsed={leftSidebarCollapsed}
               onToggleCollapse={handleLeftSidebarToggle}
-              onShowSchema={(projectId, datasetId, tableId) => {
-                setSchemaSidebar({ projectId, datasetId, tableId });
-              }} 
+              onShowSchema={handleShowSchema} 
             />
           </div>
           {!leftSidebarCollapsed && (
