@@ -4,6 +4,7 @@ import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
 import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
 import { SavedQueries } from './components/SavedQueries/SavedQueries';
 import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
 import { TabBar } from './components/TabBar/TabBar';
 import { QueryEditor } from './components/QueryEditor/QueryEditor';
 import { QueryResults } from './components/QueryResults/QueryResults';
@@ -15,6 +16,7 @@ const App: React.FC = () => {
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [showSavedQueries, setShowSavedQueries] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
   const [editorHeight, setEditorHeight] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
@@ -106,12 +108,16 @@ const App: React.FC = () => {
       const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
         setShowHelpDialog(true);
       });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
       const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
         useTabsStore.getState().createTab();
       });
 
       return () => {
         removeHelpListener();
+        removeAboutListener();
         removeNewTabListener();
       };
     }
@@ -343,6 +349,9 @@ const App: React.FC = () => {
       )}
       {showHelpDialog && (
         <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
       )}
     </div>
   );

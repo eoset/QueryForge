@@ -83,6 +83,12 @@ export interface ElectronAPI {
   menu: {
     onShowHelp(callback: () => void): () => void;
     onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
   };
 }
 
@@ -156,6 +162,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('menu:new-tab', handler);
       return () => ipcRenderer.removeListener('menu:new-tab', handler);
     },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
   },
 } as ElectronAPI);
 

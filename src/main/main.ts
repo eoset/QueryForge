@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { registerBigQueryHandlers } from './ipc/bigquery';
@@ -45,6 +45,11 @@ registerQueriesHandlers();
 registerUISettingsHandlers();
 registerTabsHandlers();
 registerResultsCacheHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
 
 function createMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -96,6 +101,13 @@ function createMenu(): void {
     {
       label: 'Help',
       submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
         {
           label: 'Keyboard Shortcuts',
           accelerator: 'CmdOrCtrl+?',
