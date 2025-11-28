@@ -2,9 +2,12 @@
  * Query-related types
  */
 
+export type TabType = 'query' | 'explorer';
+
 export interface QueryTab {
   id: string;
   title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
   queryText: string;
   isModified: boolean;
   executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';

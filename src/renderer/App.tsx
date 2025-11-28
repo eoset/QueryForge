@@ -33,7 +33,9 @@ const App: React.FC = () => {
   const resizeStartWidthRightRef = useRef(300);
   const editorResultsRef = useRef<HTMLDivElement>(null);
   const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab } = useTabsStore();
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const isExplorerTabActive = activeTab?.type === 'explorer';
   const [schemaSidebar, setSchemaSidebar] = useState<{
     projectId: string;
     datasetId: string;
@@ -342,18 +344,25 @@ const App: React.FC = () => {
               onMouseDown={handleLeftSidebarResizeStart}
             />
           )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor />
+          {!isExplorerTabActive && (
+            <div className="app-editor-results" ref={editorResultsRef}>
+              <div className="query-section" style={{ height: `${editorHeight}px` }}>
+                <QueryEditor />
+              </div>
+              <div
+                className="resize-handle-horizontal"
+                onMouseDown={handleResizeStart}
+              />
+              <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+                <QueryResults />
+              </div>
             </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
+          )}
+          {isExplorerTabActive && (
+            <div className="app-explorer-content" style={{ flex: 1, overflow: 'hidden' }}>
+              {/* Explorer content is shown in the left sidebar */}
             </div>
-          </div>
+          )}
           {schemaSidebar && (
             <>
               <div

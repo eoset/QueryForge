@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { QueryTab, QueryResult } from '../../shared/types/query';
+import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
 
 interface TabsState {
   tabs: QueryTab[];
@@ -34,11 +34,47 @@ const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
   }, delay);
 };
 
-export const useTabsStore = create<TabsState>((set, get) => ({
+// Explorer tab ID - constant so it can be referenced
+export const EXPLORER_TAB_ID = 'explorer-tab';
+
+// Helper function to create Explorer tab
+function createExplorerTab(): QueryTab {
+  return {
+    id: EXPLORER_TAB_ID,
+    title: 'Explorer',
+    type: 'explorer',
+    queryText: '',
+    isModified: false,
+    executionStatus: 'idle',
+  };
+}
+
+// Helper function to ensure Explorer tab is always first
+function ensureExplorerTabFirst(tabs: QueryTab[]): QueryTab[] {
+  const explorerTab = tabs.find(t => t.id === EXPLORER_TAB_ID) || createExplorerTab();
+  const queryTabs = tabs.filter(t => t.id !== EXPLORER_TAB_ID);
+  return [explorerTab, ...queryTabs];
+}
+
+export const useTabsStore = create<TabsState>((set, get) => {
+  // Create Explorer tab
+  const explorerTab = createExplorerTab();
+
+  return {
     tabs: [
+      explorerTab,
       {
         id: generateTabId(),
         title: 'Query 1',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+      {
+        id: generateTabId(),
+        title: 'Query 2',
+        type: 'query',
         queryText: '',
         isModified: false,
         executionStatus: 'idle',
@@ -54,10 +90,19 @@ export const useTabsStore = create<TabsState>((set, get) => ({
         const savedTabs = await window.electronAPI.tabs.getTabs();
         const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
         
-        if (savedTabs && savedTabs.length > 0) {
+        // Ensure Explorer tab exists and is first
+        let tabsWithExplorer = savedTabs || [];
+        tabsWithExplorer = ensureExplorerTabFirst(tabsWithExplorer);
+        
+        if (tabsWithExplorer.length === 0) {
+          // No saved tabs, use default tabs (which already include Explorer)
+          tabsWithExplorer = get().tabs;
+        }
+        
+        if (tabsWithExplorer.length > 0) {
           set({
-            tabs: savedTabs,
-            activeTabId: savedActiveTabId || savedTabs[0]?.id || null,
+            tabs: tabsWithExplorer,
+            activeTabId: savedActiveTabId || tabsWithExplorer[0]?.id || null,
           });
         } else {
           // No saved tabs, use default
@@ -84,114 +129,166 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       }
     },
 
-  createTab: () => {
-    const tabs = get().tabs;
-    const newTabId = generateTabId();
-    const newTab: QueryTab = {
-      id: newTabId,
-      title: `Query ${tabs.length + 1}`,
-      queryText: '',
-      isModified: false,
-      executionStatus: 'idle',
-    };
-    set({
-      tabs: [...tabs, newTab],
-      activeTabId: newTabId,
-    });
-    return newTabId;
-  },
-
-  closeTab: (tabId: string) => {
-    const { tabs, activeTabId } = get();
-    const tabIndex = tabs.findIndex((t) => t.id === tabId);
-    if (tabIndex === -1) return;
-
-    const newTabs = tabs.filter((t) => t.id !== tabId);
-    
-    // If closing the active tab, switch to another tab
-    let newActiveTabId = activeTabId;
-    if (activeTabId === tabId) {
-      if (newTabs.length > 0) {
-        // Switch to the tab that was before this one, or the first tab
-        newActiveTabId = tabIndex > 0 ? tabs[tabIndex - 1].id : newTabs[0].id;
-      } else {
-        newActiveTabId = null;
-      }
-    }
-
-    set({
-      tabs: newTabs,
-      activeTabId: newActiveTabId,
-    });
-  },
-
-  setActiveTab: (tabId: string) => {
-    set({ activeTabId: tabId });
-  },
-
-  reorderTabs: (fromIndex: number, toIndex: number) => {
-    const { tabs } = get();
-    if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
-      return;
-    }
-    
-    const newTabs = [...tabs];
-    const [movedTab] = newTabs.splice(fromIndex, 1);
-    newTabs.splice(toIndex, 0, movedTab);
-    
-    set({ tabs: newTabs });
-  },
-
-  updateTab: (tabId: string, updates: Partial<QueryTab>) => {
-    set((state) => ({
-      tabs: state.tabs.map((tab) =>
-        tab.id === tabId ? { ...tab, ...updates } : tab
-      ),
-    }));
-  },
-
-  setTabQuery: (tabId: string, queryText: string) => {
-    const tab = get().tabs.find((t) => t.id === tabId);
-    if (tab) {
-      get().updateTab(tabId, {
-        queryText,
-        isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
+    createTab: () => {
+      const tabs = get().tabs;
+      // Count only query tabs (not explorer tab)
+      const queryTabs = tabs.filter(t => t.type !== 'explorer');
+      const newTabId = generateTabId();
+      const newTab: QueryTab = {
+        id: newTabId,
+        title: `Query ${queryTabs.length + 1}`,
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      };
+      // Add new tab after Explorer tab (always first)
+      const updatedTabs = ensureExplorerTabFirst([...tabs, newTab]);
+      set({
+        tabs: updatedTabs,
+        activeTabId: newTabId,
       });
-    }
-  },
+      return newTabId;
+    },
 
-  setTabResults: (tabId: string, results: QueryResult) => {
-    const tab = get().tabs.find((t) => t.id === tabId);
-    get().updateTab(tabId, {
-      results,
-      executionStatus: 'completed',
-      error: undefined,
-      lastExecuted: new Date().toISOString(),
-      lastExecutedQueryText: tab?.queryText || '',
-    });
-  },
+    closeTab: (tabId: string) => {
+      const { tabs, activeTabId } = get();
+      const tab = tabs.find((t) => t.id === tabId);
+      
+      // Don't allow closing Explorer tab
+      if (tab?.type === 'explorer') {
+        return;
+      }
+      
+      const tabIndex = tabs.findIndex((t) => t.id === tabId);
+      if (tabIndex === -1) return;
 
-  setTabError: (tabId: string, error: string) => {
-    const tab = get().tabs.find((t) => t.id === tabId);
-    get().updateTab(tabId, {
-      error,
-      executionStatus: 'error',
-      results: undefined,
-      lastExecuted: new Date().toISOString(),
-      lastExecutedQueryText: tab?.queryText || '',
-    });
-  },
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      // Ensure Explorer tab remains first
+      const updatedTabs = ensureExplorerTabFirst(newTabs);
+      
+      // If closing the active tab, switch to another tab
+      let newActiveTabId = activeTabId;
+      if (activeTabId === tabId) {
+        if (updatedTabs.length > 0) {
+          // Switch to the tab that was before this one, or the first query tab (skip Explorer)
+          const queryTabs = updatedTabs.filter(t => t.type !== 'explorer');
+          if (tabIndex > 1) {
+            // Was after Explorer, switch to previous query tab
+            newActiveTabId = updatedTabs[tabIndex - 1]?.id || queryTabs[0]?.id || updatedTabs[0]?.id || null;
+          } else {
+            // Was first query tab, switch to Explorer or next query tab
+            newActiveTabId = queryTabs[0]?.id || updatedTabs[0]?.id || null;
+          }
+        } else {
+          newActiveTabId = null;
+        }
+      }
 
-  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
-    get().updateTab(tabId, { executionStatus: status });
-  },
-}));
+      set({
+        tabs: updatedTabs,
+        activeTabId: newActiveTabId,
+      });
+    },
+
+    setActiveTab: (tabId: string) => {
+      set({ activeTabId: tabId });
+    },
+
+    reorderTabs: (fromIndex: number, toIndex: number) => {
+      const { tabs } = get();
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
+        return;
+      }
+      
+      // Don't allow reordering Explorer tab or moving tabs before Explorer (index 0)
+      const fromTab = tabs[fromIndex];
+      const toTab = tabs[toIndex];
+      if (fromTab?.type === 'explorer' || toTab?.type === 'explorer') {
+        return;
+      }
+      
+      // Don't allow moving tabs to position 0 (Explorer tab position)
+      if (toIndex === 0) {
+        return;
+      }
+      
+      const newTabs = [...tabs];
+      const [movedTab] = newTabs.splice(fromIndex, 1);
+      newTabs.splice(toIndex, 0, movedTab);
+      
+      // Ensure Explorer tab remains first (should already be, but enforce it)
+      const updatedTabs = ensureExplorerTabFirst(newTabs);
+      
+      set({ tabs: updatedTabs });
+    },
+
+    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
+      set((state) => {
+        const updatedTabs = state.tabs.map((tab) =>
+          tab.id === tabId ? { ...tab, ...updates } : tab
+        );
+        // Ensure Explorer tab remains first after update
+        return {
+          tabs: ensureExplorerTabFirst(updatedTabs),
+        };
+      });
+    },
+
+    setTabQuery: (tabId: string, queryText: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab) {
+        get().updateTab(tabId, {
+          queryText,
+          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
+        });
+      }
+    },
+
+    setTabResults: (tabId: string, results: QueryResult) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        results,
+        executionStatus: 'completed',
+        error: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabError: (tabId: string, error: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        error,
+        executionStatus: 'error',
+        results: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
+      get().updateTab(tabId, { executionStatus: status });
+    },
+  };
+});
 
 // Subscribe to tab changes and auto-save (debounced)
 let previousTabs: QueryTab[] = [];
 let previousActiveTabId: string | null = null;
 
 useTabsStore.subscribe((state) => {
+  // Ensure Explorer tab is always first (safety check)
+  const explorerTab = state.tabs.find(t => t.id === EXPLORER_TAB_ID);
+  const explorerIndex = explorerTab ? state.tabs.findIndex(t => t.id === EXPLORER_TAB_ID) : -1;
+  
+  if (explorerIndex !== 0 && explorerIndex !== -1) {
+    // Explorer tab is not first, fix it
+    const fixedTabs = ensureExplorerTabFirst(state.tabs);
+    useTabsStore.setState({ tabs: fixedTabs });
+    return;
+  }
+  
   // Check if tabs or activeTabId actually changed
   const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
   
