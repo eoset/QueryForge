@@ -35,6 +35,70 @@ Alternatively, you can use a package manager:
 - **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
 - **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
 
+### Setting Up Google Application Default Credentials
+
+Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
+
+#### Option 1: Using gcloud CLI (Recommended)
+
+1. **Install Google Cloud SDK**:
+   - **macOS**: `brew install google-cloud-sdk`
+   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+
+2. **Authenticate with your Google account**:
+   ```bash
+   gcloud auth login
+   ```
+   This will open a browser window for you to sign in with your Google account.
+
+3. **Set your default project** (optional but recommended):
+   ```bash
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+4. **Set up Application Default Credentials**:
+   ```bash
+   gcloud auth application-default login
+   ```
+   This command will:
+   - Open a browser for authentication
+   - Store credentials in a well-known location that QueryForge can automatically find
+
+#### Option 2: Using Service Account Key File
+
+If you prefer to use a service account key file, you can set it as Application Default Credentials:
+
+1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
+
+2. **Set the environment variable**:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+   ```
+
+   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
+   ```bash
+   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   **Windows (PowerShell)**:
+   ```powershell
+   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
+   ```
+
+#### Verifying Your Setup
+
+To verify that Application Default Credentials are configured correctly:
+
+```bash
+gcloud auth application-default print-access-token
+```
+
+If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
+
+**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
+
 ## Installation
 
 1. Clone the repository:
