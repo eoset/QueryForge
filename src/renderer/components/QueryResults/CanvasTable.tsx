@@ -554,11 +554,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
         ctx.fillStyle = headerTextColor;
         ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        // Check if column is INTEGER type for right alignment
+        // Column headers are always left-aligned regardless of data type
         const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
-        const columnType = (col.type || '').toUpperCase();
-        const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
-        const headerAlign = isIntegerColumn ? 'right' : 'left';
         
         // Draw header text directly with proper alignment and truncation
         // Reserve space for dropdown arrow
@@ -567,10 +564,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
         
         if (textWidth <= maxWidth) {
-          // Text fits - draw with proper alignment
-          const textX = headerAlign === 'right'
-            ? colX + colWidth - CELL_PADDING - textWidth - dropdownArrowSpace
-            : colX + CELL_PADDING;
+          // Text fits - always left-aligned
+          const textX = colX + CELL_PADDING;
           ctx.fillText(col.name, textX, headerTextY);
         } else {
           // Truncate with ellipsis
@@ -585,9 +580,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           }
           
           const finalWidth = truncatedWidth + ellipsisWidth;
-          const textX = headerAlign === 'right'
-            ? colX + colWidth - CELL_PADDING - finalWidth - dropdownArrowSpace
-            : colX + CELL_PADDING;
+          // Always left-aligned
+          const textX = colX + CELL_PADDING;
           ctx.fillText(truncated + ellipsis, textX, headerTextY);
         }
         
