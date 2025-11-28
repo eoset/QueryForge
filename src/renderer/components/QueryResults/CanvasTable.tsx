@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
+import { ColumnSortMenu } from './ColumnSortMenu';
 
 interface CanvasTableProps {
   results: QueryResult;
@@ -10,6 +11,9 @@ interface CanvasTableProps {
   formatValue: (value: any, columnType?: string, columnName?: string) => string;
   currentPage: number;
   rowsPerPage: number;
+  sortColumn: number | null;
+  sortDirection: 'asc' | 'desc' | null;
+  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
 }
 
 const ROW_HEIGHT = 24;
@@ -18,6 +22,8 @@ const ROW_NUMBER_COLUMN_WIDTH = 80;
 const MIN_COLUMN_WIDTH = 50;
 const CELL_PADDING = 8;
 const RESIZE_HANDLE_WIDTH = 4;
+const SORT_ARROW_WIDTH = 16;
+const SORT_ARROW_HEIGHT = 16;
 
 export const CanvasTable: React.FC<CanvasTableProps> = ({
   results,
@@ -28,6 +34,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   formatValue,
   currentPage,
   rowsPerPage,
+  sortColumn,
+  sortDirection,
+  onSortColumn,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -46,6 +55,13 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const selectionOverlayRef = useRef<HTMLDivElement>(null);
+  
+  // Sort menu state
+  const [sortMenu, setSortMenu] = useState<{
+    columnIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Results already contain only the current page rows (loaded from cache)
   // Calculate startIndex for row numbering
@@ -545,13 +561,15 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         const headerAlign = isIntegerColumn ? 'right' : 'left';
         
         // Draw header text directly with proper alignment and truncation
+        // Reserve space for dropdown arrow
+        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
         const textWidth = measureText(col.name, ctx);
-        const maxWidth = colWidth - CELL_PADDING * 2;
+        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
         
         if (textWidth <= maxWidth) {
           // Text fits - draw with proper alignment
           const textX = headerAlign === 'right'
-            ? colX + colWidth - CELL_PADDING - textWidth
+            ? colX + colWidth - CELL_PADDING - textWidth - dropdownArrowSpace
             : colX + CELL_PADDING;
           ctx.fillText(col.name, textX, headerTextY);
         } else {
@@ -568,10 +586,19 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           
           const finalWidth = truncatedWidth + ellipsisWidth;
           const textX = headerAlign === 'right'
-            ? colX + colWidth - CELL_PADDING - finalWidth
+            ? colX + colWidth - CELL_PADDING - finalWidth - dropdownArrowSpace
             : colX + CELL_PADDING;
           ctx.fillText(truncated + ellipsis, textX, headerTextY);
         }
+        
+        // Draw dropdown arrow indicator (always visible)
+        ctx.fillStyle = sortColumn === idx ? '#007acc' : '#858585';
+        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const dropdownIcon = sortColumn === idx 
+          ? (sortDirection === 'asc' ? '↑' : '↓')
+          : '▼';
+        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
+        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
 
         // Draw resize handle
         if (resizingColumn === idx || hoveredColumn === idx) {
@@ -606,6 +633,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop(e.currentTarget.scrollTop);
     setScrollLeft(e.currentTarget.scrollLeft);
+    // Close sort menu when scrolling (position would be incorrect)
+    setSortMenu(null);
   }, []);
 
   // Handle mouse move
@@ -645,7 +674,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         setHoveredColumn(foundColumn);
         setHoveredRow(null);
 
-        // Update cursor for resize
+        // Update cursor for resize or sort
         if (foundColumn !== null) {
           let colX = 0;
           if (foundColumn === -1) {
@@ -661,6 +690,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           
           if (x >= handleX - 5 && x <= handleX + 5) {
             container.style.cursor = 'col-resize';
+          } else if (foundColumn !== -1) {
+            // Show pointer cursor for data column headers (to indicate sortable)
+            container.style.cursor = 'pointer';
           } else {
             container.style.cursor = 'default';
           }
@@ -717,6 +749,60 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           // Click outside cells - clear selection
           setSelectionStart(null);
           setSelectionEnd(null);
+          return;
+        }
+      }
+
+      // Handle sort menu click in header (but not on resize handle)
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have sort menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            // Check if click is on resize handle
+            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+            if (x < handleX - 5 || x > handleX + 5) {
+              // Not on resize handle - show sort menu for any click on header
+              foundColumn = idx;
+            }
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          const container = containerRef.current;
+          if (container) {
+            const rect = container.getBoundingClientRect();
+            // Calculate position for sort menu
+            // colX is in scroll coordinates, need to convert to viewport coordinates
+            let colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+            const colWidth = getColumnWidth(foundColumn);
+            // Convert scroll coordinates to viewport coordinates
+            const viewportColX = colX - scrollLeft;
+            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
+            const menuY = rect.top + HEADER_HEIGHT + 2;
+            setSortMenu({
+              columnIndex: foundColumn,
+              x: menuX,
+              y: menuY,
+            });
+          }
           return;
         }
       }
@@ -1089,6 +1175,18 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           userSelect: 'none',
         }}
       />
+      {/* Sort menu */}
+      {sortMenu && (
+        <ColumnSortMenu
+          x={sortMenu.x}
+          y={sortMenu.y}
+          columnIndex={sortMenu.columnIndex}
+          currentSortColumn={sortColumn}
+          currentSortDirection={sortDirection}
+          onClose={() => setSortMenu(null)}
+          onSort={onSortColumn}
+        />
+      )}
     </div>
   );
 };
