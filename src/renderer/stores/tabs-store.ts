@@ -171,16 +171,19 @@ export const useTabsStore = create<TabsState>((set, get) => {
       let newActiveTabId = activeTabId;
       if (activeTabId === tabId) {
         if (updatedTabs.length > 0) {
-          // Switch to the tab that was before this one, or the first query tab (skip Explorer)
+          // Switch to the tab that was before this one, or the first query tab, or Explorer tab
           const queryTabs = updatedTabs.filter(t => t.type !== 'explorer');
+          const explorerTab = updatedTabs.find(t => t.id === EXPLORER_TAB_ID);
+          
           if (tabIndex > 1) {
             // Was after Explorer, switch to previous query tab
-            newActiveTabId = updatedTabs[tabIndex - 1]?.id || queryTabs[0]?.id || updatedTabs[0]?.id || null;
+            newActiveTabId = updatedTabs[tabIndex - 1]?.id || queryTabs[0]?.id || explorerTab?.id || null;
           } else {
-            // Was first query tab, switch to Explorer or next query tab
-            newActiveTabId = queryTabs[0]?.id || updatedTabs[0]?.id || null;
+            // Was first query tab, switch to next query tab or Explorer tab
+            newActiveTabId = queryTabs[0]?.id || explorerTab?.id || null;
           }
         } else {
+          // No tabs left (shouldn't happen since Explorer tab is always present)
           newActiveTabId = null;
         }
       }

@@ -137,7 +137,6 @@ export const TabBar: React.FC = () => {
                 className="tab-close"
                 onClick={(e) => handleCloseTab(e, tab.id)}
                 onMouseDown={(e) => e.stopPropagation()}
-                disabled={tabs.filter(t => t.type !== 'explorer').length === 1}
               >
                 ×
               </button>
