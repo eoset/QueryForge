@@ -17,6 +17,24 @@ A desktop application for browsing and querying Google Cloud Platform BigQuery d
 - GCP project with BigQuery access
 - Service account key file (JSON) OR Application Default Credentials configured
 
+### Installing Node.js and npm
+
+npm (Node Package Manager) comes bundled with Node.js. To install both:
+
+1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
+2. **Install Node.js**: Run the installer and follow the installation wizard
+3. **Verify installation**: Open a terminal and run:
+   ```bash
+   node --version
+   npm --version
+   ```
+   Both commands should display version numbers (Node.js 18+ and npm 9+)
+
+Alternatively, you can use a package manager:
+- **macOS**: `brew install node` (using Homebrew)
+- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
+- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
+
 ## Installation
 
 1. Clone the repository:
