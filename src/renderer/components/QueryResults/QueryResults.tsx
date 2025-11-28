@@ -25,6 +25,8 @@ export const QueryResults: React.FC = () => {
     rowIndex?: number;
     columnIndex?: number;
   } | null>(null);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
   
   // Store metadata and current page separately for efficient cache access
   const [resultsMetadata, setResultsMetadata] = useState<{
@@ -135,20 +137,6 @@ export const QueryResults: React.FC = () => {
     }
   }, [activeTabId, currentPage, resultsMetadata]);
   
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: currentPageRows,
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
   // Reset column widths when results change (use jobId as stable identifier)
   const resultsJobId = resultsMetadata?.jobId;
   const resultsColumnCount = resultsMetadata?.columns?.length;
@@ -157,8 +145,70 @@ export const QueryResults: React.FC = () => {
     if (resultsJobId !== undefined) {
       setColumnWidths({});
       setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
     }
   }, [resultsJobId, activeTab?.id, resultsColumnCount]);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
+
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
 
   const handleColumnResize = useCallback((columnIndex: number, width: number) => {
     setColumnWidths((prev) => ({
@@ -194,9 +244,9 @@ export const QueryResults: React.FC = () => {
   const handleCopyRowValues = useCallback(() => {
     if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
 
-    // Current page rows are already loaded
+    // Use sorted rows from results (which matches what's displayed)
     const rowIndex = contextMenu.rowIndex;
-    const row = currentPageRows[rowIndex];
+    const row = results.rows[rowIndex];
     
     if (!row) return;
 
@@ -213,7 +263,7 @@ export const QueryResults: React.FC = () => {
     navigator.clipboard.writeText(csvText).catch((err) => {
       console.error('Failed to copy to clipboard:', err);
     });
-  }, [results, contextMenu, currentPageRows, formatCSVValue]);
+  }, [results, contextMenu, formatCSVValue]);
 
   const handleCopyColumnValues = useCallback(() => {
     if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
@@ -226,8 +276,8 @@ export const QueryResults: React.FC = () => {
     // Get header
     const header = formatCSVValue(column.name);
     
-    // Get all values for this column in current page (already loaded)
-    const values = currentPageRows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
 
     // Format: header\nvalue1\nvalue2\nvalue3...
     const csvText = [header, ...values].join('\n');
@@ -236,7 +286,7 @@ export const QueryResults: React.FC = () => {
     navigator.clipboard.writeText(csvText).catch((err) => {
       console.error('Failed to copy to clipboard:', err);
     });
-  }, [results, contextMenu, currentPageRows, formatCSVValue]);
+  }, [results, contextMenu, formatCSVValue]);
 
   const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
     e.preventDefault();
@@ -246,6 +296,11 @@ export const QueryResults: React.FC = () => {
       y: e.clientY,
       columnIndex,
     });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
   }, []);
 
   // Pagination calculations - use metadata for total rows, current page rows are already loaded
@@ -382,6 +437,9 @@ export const QueryResults: React.FC = () => {
             formatValue={formatValue}
             currentPage={currentPage}
             rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
           />
         ) : (
           <div className="no-rows-message">No rows returned</div>
