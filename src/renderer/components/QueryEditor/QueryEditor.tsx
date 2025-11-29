@@ -144,7 +144,23 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
   }
 
   if (node.type === 'column_ref') {
-    const columnName = stripIdentifierQuotes(node.column);
+    // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
+    let columnName: string;
+    if (typeof node.column === 'string') {
+      columnName = stripIdentifierQuotes(node.column);
+    } else if (node.column && typeof node.column === 'object') {
+      // Handle nested column structure: { expr: { type: 'default', value: 'ColumnName' }, offset: [] }
+      if (node.column.expr && typeof node.column.expr.value === 'string') {
+        columnName = stripIdentifierQuotes(node.column.expr.value);
+      } else if (typeof node.column.column === 'string') {
+        columnName = stripIdentifierQuotes(node.column.column);
+      } else {
+        columnName = '';
+      }
+    } else {
+      columnName = '';
+    }
+    
     if (columnName && columnName !== '*') {
       refs.push({
         alias: node.table ? stripIdentifierQuotes(node.table) : null,
