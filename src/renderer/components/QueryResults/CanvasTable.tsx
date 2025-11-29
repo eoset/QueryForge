@@ -6,7 +6,7 @@ interface CanvasTableProps {
   results: QueryResult;
   columnWidths: { [key: number]: number };
   onColumnResize: (columnIndex: number, width: number) => void;
-  onRowContextMenu: (e: React.MouseEvent, rowIndex: number) => void;
+  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
   onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
   formatValue: (value: any, columnType?: string, columnName?: string) => string;
   currentPage: number;
@@ -721,6 +721,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   // Handle mouse down for resizing and selection
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      // Don't handle right-click (context menu) - let handleContextMenu deal with it
+      if (e.button === 2) return;
+      
       const container = containerRef.current;
       if (!container) return;
 
@@ -885,7 +888,10 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         // Row context menu
         const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
         if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          onRowContextMenu(e, rowIndex);
+          // Check if click is on the row number column
+          const rowNumWidth = getColumnWidth(-1);
+          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
+          onRowContextMenu(e, rowIndex, isRowNumberColumn);
         }
       }
     },

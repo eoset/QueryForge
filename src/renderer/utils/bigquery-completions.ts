@@ -590,6 +590,28 @@ function parseTableReference(text: string): {
 }
 
 /**
+ * Extracts dataset and table identifiers from a table reference string
+ */
+function resolveDatasetTableFromRef(tableRef: string): { datasetId: string; tableId: string } | null {
+  if (!tableRef) {
+    return null;
+  }
+
+  const cleanRef = tableRef.replace(/[`"']/g, '');
+  const parts = cleanRef.split('.').filter((part) => part.length > 0);
+
+  if (parts.length === 2) {
+    return { datasetId: parts[0], tableId: parts[1] };
+  }
+
+  if (parts.length === 3) {
+    return { datasetId: parts[1], tableId: parts[2] };
+  }
+
+  return null;
+}
+
+/**
  * Gets text before cursor that might be a table reference
  */
 function getTableReferenceText(model: any, position: any): string | null {
@@ -1393,21 +1415,10 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
               if (typedAlias.toLowerCase() === tableAlias.toLowerCase()) {
                 isSelectContext = true;
                 
-                // Parse table reference
-                const cleanRef = table.tableRef.replace(/[`"']/g, '');
-                const parts = cleanRef.split('.').filter(p => p.length > 0);
-                let datasetId: string | null = null;
-                let tableId: string | null = null;
+                const resolvedRef = resolveDatasetTableFromRef(table.tableRef);
                 
-                if (parts.length === 2) {
-                  datasetId = parts[0];
-                  tableId = parts[1];
-                } else if (parts.length === 3) {
-                  datasetId = parts[1];
-                  tableId = parts[2];
-                }
-                
-                if (datasetId && tableId) {
+                if (resolvedRef) {
+                  const { datasetId, tableId } = resolvedRef;
                   try {
                     const schema = await getTableSchema(projectId, datasetId, tableId);
                     const prefixLower = partialColumn.toLowerCase();
@@ -1441,6 +1452,85 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
                   }
                 }
                 break;
+              }
+            }
+          }
+
+          if (!isSelectContext) {
+            const dedupedTables: Array<{
+              alias: string | null;
+              tableRef: string;
+              datasetId: string;
+              tableId: string;
+            }> = [];
+            const seenTables = new Set<string>();
+
+            for (const table of selectTables) {
+              const resolvedRef = resolveDatasetTableFromRef(table.tableRef);
+              if (!resolvedRef) {
+                continue;
+              }
+
+              const key = table.alias
+                ? `alias:${table.alias.toLowerCase()}`
+                : `table:${resolvedRef.datasetId.toLowerCase()}.${resolvedRef.tableId.toLowerCase()}`;
+
+              if (seenTables.has(key)) {
+                continue;
+              }
+
+              seenTables.add(key);
+              dedupedTables.push({
+                alias: table.alias,
+                tableRef: table.tableRef,
+                datasetId: resolvedRef.datasetId,
+                tableId: resolvedRef.tableId,
+              });
+            }
+
+            if (dedupedTables.length > 0) {
+              try {
+                const schemaResults = await Promise.all(
+                  dedupedTables.map(async (tableInfo) => ({
+                    tableInfo,
+                    schema: await getTableSchema(projectId, tableInfo.datasetId, tableInfo.tableId),
+                  }))
+                );
+
+                const partialColumn = word.word || '';
+                const prefixLower = partialColumn.toLowerCase();
+                const baseRange = {
+                  startLineNumber: position.lineNumber,
+                  endLineNumber: position.lineNumber,
+                  startColumn: word.startColumn,
+                  endColumn: word.endColumn,
+                };
+                const shouldInsertBareColumns = dedupedTables.length === 1 && !dedupedTables[0].alias;
+
+                for (const { tableInfo, schema } of schemaResults) {
+                  const displayPrefix = tableInfo.alias || tableInfo.tableId;
+                  for (const field of schema) {
+                    if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                      const label = shouldInsertBareColumns && !tableInfo.alias
+                        ? field.name
+                        : `${displayPrefix}.${field.name}`;
+                      selectColumnSuggestions.push({
+                        label,
+                        kind: CompletionItemKind.Property,
+                        insertText: label,
+                        detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                        documentation: `Column from ${tableInfo.tableRef}`,
+                        range: baseRange,
+                      });
+                    }
+                  }
+                }
+
+                if (selectColumnSuggestions.length > 0) {
+                  isSelectContext = true;
+                }
+              } catch (error) {
+                // Silently handle errors
               }
             }
           }
