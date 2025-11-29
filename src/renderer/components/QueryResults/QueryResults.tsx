@@ -24,6 +24,7 @@ export const QueryResults: React.FC = () => {
     y: number;
     rowIndex?: number;
     columnIndex?: number;
+    isRowNumberColumn?: boolean;
   } | null>(null);
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
@@ -217,13 +218,14 @@ export const QueryResults: React.FC = () => {
     }));
   }, []);
 
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number) => {
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
       rowIndex,
+      isRowNumberColumn,
     });
   }, []);
 
@@ -474,7 +476,13 @@ export const QueryResults: React.FC = () => {
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
           onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={contextMenu.columnIndex !== undefined ? 'Copy column values (with header)' : 'Copy values (with headers)'}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
         />
       )}
     </div>
