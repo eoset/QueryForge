@@ -787,7 +787,17 @@ export const QueryEditor: React.FC = () => {
           database: 'bigquery',
         });
         
-        // If parsing succeeds, clear markers
+        // Parsing succeeded - set valid status immediately
+        // (column validation may change this to invalid later if issues are found)
+        setSqlValidationStatus((prev) => {
+          // Don't overwrite table not found errors - those are handled by calculateExpectedQuerySize
+          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+            return prev;
+          }
+          return { isValid: true, errorMessage: null };
+        });
+        
+        // Clear markers
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
         
         // Clear error decorations in glyph margin
@@ -1647,6 +1657,125 @@ export const QueryEditor: React.FC = () => {
     return Array.from(tableRefsMap.values());
   };
 
+  // Convert SQL to dbt syntax by replacing table references with {{ source('DATASET', 'TABLE') }}
+  const convertToDbtSyntax = (sql: string): string => {
+    let result = sql;
+    
+    // Only match table references that come after FROM or JOIN keywords
+    // This prevents matching column references like alias.column
+    // Pattern matches: FROM/JOIN followed by table reference (with optional backticks)
+    const fromJoinTablePattern = /(\b(?:FROM|JOIN)\s+)((?:`[^`]+`|[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+){1,2}))(\s|$|,|\))/gi;
+    
+    const matches = Array.from(result.matchAll(fromJoinTablePattern));
+    
+    // Process matches in reverse order to preserve positions when replacing
+    const processedMatches: Array<{ start: number; end: number; replacement: string }> = [];
+    
+    for (const match of matches) {
+      const prefix = match[1]; // FROM or JOIN with trailing space
+      const tableRef = match[2]; // The table reference
+      const suffix = match[3]; // Trailing whitespace or delimiter
+      
+      // Remove backticks if present
+      const cleanRef = tableRef.replace(/`/g, '');
+      
+      // Split by dots
+      const parts = cleanRef.split('.');
+      
+      let datasetId: string | null = null;
+      let tableId: string | null = null;
+      
+      if (parts.length === 2) {
+        // dataset.table
+        datasetId = parts[0];
+        tableId = parts[1];
+      } else if (parts.length === 3) {
+        // project.dataset.table
+        datasetId = parts[1];
+        tableId = parts[2];
+      } else {
+        // Not a valid table reference (single part or more than 3 parts)
+        continue;
+      }
+      
+      // Skip if this looks like it's inside a string literal
+      const beforeMatch = result.substring(0, match.index);
+      const openSingleQuotes = (beforeMatch.match(/'/g) || []).length;
+      const openDoubleQuotes = (beforeMatch.match(/"/g) || []).length;
+      
+      // If odd number of quotes, we're inside a string - skip
+      if (openSingleQuotes % 2 !== 0 || openDoubleQuotes % 2 !== 0) {
+        continue;
+      }
+      
+      // Create dbt source syntax
+      const dbtSource = `{{ source('${datasetId}', '${tableId}') }}`;
+      
+      // Replace just the table reference part, keeping the FROM/JOIN prefix and suffix
+      processedMatches.push({
+        start: match.index!,
+        end: match.index! + match[0].length,
+        replacement: `${prefix}${dbtSource}${suffix}`,
+      });
+    }
+    
+    // Apply replacements in reverse order to preserve positions
+    processedMatches.sort((a, b) => b.start - a.start);
+    
+    for (const { start, end, replacement } of processedMatches) {
+      result = result.substring(0, start) + replacement + result.substring(end);
+    }
+    
+    return result;
+  };
+
+  // Check if the query contains dbt source/ref syntax
+  const hasDbtSyntax = queryText.includes("{{ source('") || queryText.includes("{{ ref('");
+
+  // Convert dbt source syntax back to BigQuery table references
+  const convertFromDbtSyntax = (sql: string): string => {
+    // Get project ID from connection
+    const projectId = connection?.projectId || 'project';
+    
+    // Pattern to match {{ source('DATASET', 'TABLE') }}
+    const dbtSourcePattern = /\{\{\s*source\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}/g;
+    
+    // Pattern to match {{ ref('TABLE') }} - assumes same dataset
+    const dbtRefPattern = /\{\{\s*ref\s*\(\s*'([^']+)'\s*\)\s*\}\}/g;
+    
+    let result = sql.replace(dbtSourcePattern, (_, datasetId, tableId) => {
+      return `${projectId}.${datasetId}.${tableId}`;
+    });
+    
+    result = result.replace(dbtRefPattern, (_, tableId) => {
+      // For ref(), we don't know the dataset, so just use the table name
+      // This is a simplified handling
+      return tableId;
+    });
+    
+    return result;
+  };
+
+  // Handle dbtify/de-dbtify button click
+  const handleDbtify = () => {
+    if (!activeTab || !queryText.trim()) {
+      return;
+    }
+    
+    if (hasDbtSyntax) {
+      // De-dbtify: convert from dbt syntax to BigQuery
+      const bigQuerySyntax = convertFromDbtSyntax(queryText);
+      setTabQuery(activeTab.id, bigQuerySyntax);
+    } else {
+      // Dbtify: convert from BigQuery to dbt syntax
+      if (sqlValidationStatus.isValid !== true) {
+        return;
+      }
+      const dbtSyntax = convertToDbtSyntax(queryText);
+      setTabQuery(activeTab.id, dbtSyntax);
+    }
+  };
+
   // Calculate expected query size from table/view metadata
   useEffect(() => {
     const calculateExpectedQuerySize = async () => {
@@ -1970,6 +2099,14 @@ export const QueryEditor: React.FC = () => {
           title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
         >
           Expand *
+        </button>
+        <button
+          onClick={handleDbtify}
+          disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
+          className="dbtify-button"
+          title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
+        >
+          {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
         </button>
         <button onClick={handleOpenSaveDialog} disabled={!activeTab || !queryText.trim()} className="save-button">
           {activeTab?.savedQueryId ? 'Update' : 'Save'}
