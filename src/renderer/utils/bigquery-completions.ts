@@ -1271,6 +1271,115 @@ async function getJoinColumnSuggestions(
 /**
  * Gets matching tables from cache (synchronous)
  */
+/**
+ * Calculates a match score for a table name against a search pattern.
+ * Higher scores indicate better matches.
+ * 
+ * @param tableName - The table name to match against
+ * @param pattern - The search pattern (already lowercase)
+ * @returns A score object with match status and priority, or null if no match
+ */
+function calculateTableMatchScore(tableName: string, pattern: string): { score: number; matchType: 'prefix' | 'segment' | 'segment-start' | 'contains' | 'fuzzy' } | null {
+  const lowerName = tableName.toLowerCase();
+  
+  // Priority 1: Exact prefix match (highest priority)
+  if (lowerName.startsWith(pattern)) {
+    return { score: 1000 - lowerName.length, matchType: 'prefix' };
+  }
+  
+  // Priority 2: Segment match - pattern matches start of any underscore/hyphen-separated segment sequence
+  // e.g., "dim_acc" matches "whs_dim_account" because "dim_acc" starts the segment "dim_account"
+  const segments = lowerName.split(/[_-]/);
+  for (let i = 1; i < segments.length; i++) {
+    // Build the remaining part from this segment onwards
+    const remainingSegments = segments.slice(i).join('_');
+    if (remainingSegments.startsWith(pattern)) {
+      // Earlier segment matches get slightly higher priority
+      return { score: 900 - i * 10 - lowerName.length, matchType: 'segment' };
+    }
+  }
+  
+  // Priority 3: Single segment start match - pattern matches the start of any individual segment
+  // e.g., "agreement" matches "whs_dim_agreement" because segment "agreement" starts with "agreement"
+  // e.g., "agree" matches "whs_dim_agreement" because segment "agreement" starts with "agree"
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i].startsWith(pattern)) {
+      // Earlier segment matches get slightly higher priority
+      return { score: 800 - i * 10 - lowerName.length, matchType: 'segment-start' };
+    }
+  }
+  
+  // Priority 4: Contains match - pattern appears anywhere in the name
+  // e.g., "ount" matches "dim_account_history"
+  const containsIndex = lowerName.indexOf(pattern);
+  if (containsIndex > 0) {
+    // Earlier occurrence gets higher priority
+    return { score: 600 - containsIndex - lowerName.length, matchType: 'contains' };
+  }
+  
+  // Priority 5: Fuzzy segment match - each part of the pattern (split by underscore) 
+  // matches the start of corresponding segments in order
+  // e.g., "dim_acc" could match "dimension_table_account" (dim->dimension, acc->account)
+  const patternParts = pattern.split(/[_-]/);
+  if (patternParts.length > 1) {
+    let segmentIndex = 0;
+    let allPartsMatch = true;
+    
+    for (const part of patternParts) {
+      let found = false;
+      // Look for this part starting from current segment index
+      for (let i = segmentIndex; i < segments.length; i++) {
+        if (segments[i].startsWith(part)) {
+          segmentIndex = i + 1; // Next part must match a later segment
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        allPartsMatch = false;
+        break;
+      }
+    }
+    
+    if (allPartsMatch) {
+      return { score: 400 - lowerName.length, matchType: 'fuzzy' };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Filters and sorts tables based on the search pattern using intelligent matching.
+ * 
+ * @param tables - Array of tables to filter
+ * @param pattern - The search pattern (will be lowercased)
+ * @returns Filtered and sorted array of tables with their match info
+ */
+function filterTablesWithScoring<T extends { name: string }>(
+  tables: T[],
+  pattern: string
+): Array<{ table: T; score: number; matchType: string }> {
+  if (!pattern) {
+    return tables.map(table => ({ table, score: 0, matchType: 'all' }));
+  }
+  
+  const lowerPattern = pattern.toLowerCase();
+  const results: Array<{ table: T; score: number; matchType: string }> = [];
+  
+  for (const table of tables) {
+    const match = calculateTableMatchScore(table.name, lowerPattern);
+    if (match) {
+      results.push({ table, score: match.score, matchType: match.matchType });
+    }
+  }
+  
+  // Sort by score descending (higher is better)
+  results.sort((a, b) => b.score - a.score);
+  
+  return results;
+}
+
 function getMatchingTablesFromCache(
   projectId: string,
   parsedRef: { project?: string; dataset?: string; table?: string; prefix: string },
@@ -1284,10 +1393,10 @@ function getMatchingTablesFromCache(
     if (parsedRef.project && parsedRef.dataset) {
       const tables = metadataStore.getDatasetTables(parsedRef.dataset);
       if (tables) {
-        const prefix = parsedRef.prefix.toLowerCase();
-        const filtered = tables.filter((table: any) => !prefix || table.name.toLowerCase().startsWith(prefix));
+        const prefix = parsedRef.prefix;
+        const filtered = filterTablesWithScoring(tables, prefix);
         
-        filtered.forEach((table: any) => {
+        filtered.forEach(({ table, matchType }) => {
           // When we have project.dataset, only insert the table name (not the full path)
           // The user has already typed project.dataset, so we just complete with the table name
           const fullName = `${parsedRef.project}.${parsedRef.dataset}.${table.name}`;
@@ -1296,7 +1405,7 @@ function getMatchingTablesFromCache(
             kind: CompletionItemKind.Class,
             insertText: table.name, // Only table name since project.dataset is already typed
             detail: `Table: ${fullName}`,
-            documentation: `Table in ${parsedRef.project}.${parsedRef.dataset}`,
+            documentation: `Table in ${parsedRef.project}.${parsedRef.dataset}${matchType !== 'prefix' && matchType !== 'all' ? ` (${matchType} match)` : ''}`,
           });
         });
       }
@@ -1305,13 +1414,10 @@ function getMatchingTablesFromCache(
     else if (parsedRef.dataset) {
       const tables = metadataStore.getDatasetTables(parsedRef.dataset);
       if (tables && tables.length > 0) {
-        const prefix = parsedRef.prefix.toLowerCase();
-        // If prefix is empty (e.g., after typing "Bricks."), show all tables
-        const filtered = prefix 
-          ? tables.filter((table: any) => table.name.toLowerCase().startsWith(prefix))
-          : tables; // Show all tables if no prefix
+        const prefix = parsedRef.prefix;
+        const filtered = filterTablesWithScoring(tables, prefix);
         
-        filtered.forEach((table: any) => {
+        filtered.forEach(({ table, matchType }) => {
           // When we have a dataset, only insert the table name (not the full path)
           // The user has already typed the dataset, so we just complete with the table name
           const insertText = table.name; // Just the table name
@@ -1324,23 +1430,29 @@ function getMatchingTablesFromCache(
             insertText: insertText, // Only table name, not full path
             detail: `Table: ${fullName}`,
             documentation: projectId 
-              ? `Table in ${projectId}.${parsedRef.dataset}`
-              : `Table in ${parsedRef.dataset}`,
+              ? `Table in ${projectId}.${parsedRef.dataset}${matchType !== 'prefix' && matchType !== 'all' ? ` (${matchType} match)` : ''}`
+              : `Table in ${parsedRef.dataset}${matchType !== 'prefix' && matchType !== 'all' ? ` (${matchType} match)` : ''}`,
           });
         });
       }
     }
     // If we only have a prefix, search across all datasets
     else if (parsedRef.prefix) {
-      const prefix = parsedRef.prefix.toLowerCase();
+      const prefix = parsedRef.prefix;
       const allTables = metadataStore.getAllTables();
       
-      // Filter tables that match the prefix
-      const filtered = allTables.filter(({ table }) => table.name.toLowerCase().startsWith(prefix));
+      // Filter tables using the improved matching algorithm
+      const tablesWithNames = allTables.map(({ dataset, table }) => ({
+        name: table.name,
+        dataset,
+        table
+      }));
+      
+      const filtered = filterTablesWithScoring(tablesWithNames, prefix);
       
       filtered
         .slice(0, 50) // Limit to 50 suggestions
-        .forEach(({ dataset, table }) => {
+        .forEach(({ table: { dataset, table }, matchType }) => {
           // Always include project ID in the full path if available
           const fullName = projectId
             ? `${projectId}.${dataset}.${table.name}`
@@ -1351,8 +1463,8 @@ function getMatchingTablesFromCache(
             insertText: fullName, // Insert full project.dataset.table path if projectId available
             detail: `Table: ${fullName}`,
             documentation: projectId 
-              ? `Table in ${projectId}.${dataset}`
-              : `Table in ${dataset}`,
+              ? `Table in ${projectId}.${dataset}${matchType !== 'prefix' && matchType !== 'all' ? ` (${matchType} match)` : ''}`
+              : `Table in ${dataset}${matchType !== 'prefix' && matchType !== 'all' ? ` (${matchType} match)` : ''}`,
           });
         });
     }
