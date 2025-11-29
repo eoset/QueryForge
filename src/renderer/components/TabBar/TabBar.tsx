@@ -4,6 +4,8 @@ import './TabBar.css';
 
 export const TabBar: React.FC = () => {
   const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
+  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
+  const queryTabs = tabs.filter(tab => tab.type === 'query');
   const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const dragImageRef = useRef<HTMLCanvasElement | null>(null);
@@ -26,12 +28,7 @@ export const TabBar: React.FC = () => {
 
   const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
     e.stopPropagation();
-    const tab = tabs.find((t) => t.id === tabId);
-    
-    // Don't allow closing Explorer or Saved Queries tabs
-    if (tab?.type === 'explorer' || tab?.type === 'saved-queries') {
-      return;
-    }
+    const tab = queryTabs.find((t) => t.id === tabId);
     
     if (tab?.isModified) {
       const confirmed = window.confirm(
@@ -54,13 +51,6 @@ export const TabBar: React.FC = () => {
       return;
     }
     
-    // Don't allow dragging Explorer or Saved Queries tabs
-    const tab = tabs[index];
-    if (tab?.type === 'explorer' || tab?.type === 'saved-queries') {
-      e.preventDefault();
-      return;
-    }
-    
     setDraggedTabIndex(index);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
@@ -73,13 +63,6 @@ export const TabBar: React.FC = () => {
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
-    
-    // Don't allow dropping at index 0 or 1 (Explorer and Saved Queries tab positions)
-    if (index === 0 || index === 1) {
-      e.dataTransfer.dropEffect = 'none';
-      return;
-    }
-    
     e.dataTransfer.dropEffect = 'move';
     if (draggedTabIndex !== null && draggedTabIndex !== index) {
       setDragOverIndex(index);
@@ -93,16 +76,19 @@ export const TabBar: React.FC = () => {
   const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault();
     
-    // Don't allow dropping on Explorer/Saved Queries tabs or at positions 0 or 1
-    const dropTab = tabs[dropIndex];
-    if (dropTab?.type === 'explorer' || dropTab?.type === 'saved-queries' || dropIndex === 0 || dropIndex === 1) {
+    // Map dropIndex from queryTabs array back to full tabs array
+    const dropTab = queryTabs[dropIndex];
+    if (!dropTab) {
       setDraggedTabIndex(null);
       setDragOverIndex(null);
       return;
     }
     
-    if (draggedTabIndex !== null && draggedTabIndex !== dropIndex) {
-      reorderTabs(draggedTabIndex, dropIndex);
+    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
+    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
+    
+    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
+      reorderTabs(actualDragIndex, actualDropIndex);
     }
     setDraggedTabIndex(null);
     setDragOverIndex(null);
@@ -116,10 +102,10 @@ export const TabBar: React.FC = () => {
   return (
     <div className="tab-bar">
       <div className="tabs-container">
-        {tabs.map((tab, index) => (
+        {queryTabs.map((tab, index) => (
           <div
             key={tab.id}
-            draggable={tab.type !== 'explorer' && tab.type !== 'saved-queries'}
+            draggable
             onDragStart={(e) => handleDragStart(e, index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragLeave={handleDragLeave}
@@ -127,20 +113,18 @@ export const TabBar: React.FC = () => {
             onDragEnd={handleDragEnd}
             className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
               draggedTabIndex === index ? 'dragging' : ''
-            } ${dragOverIndex === index ? 'drag-over' : ''} ${tab.type === 'explorer' ? 'explorer-tab' : ''} ${tab.type === 'saved-queries' ? 'saved-queries-tab' : ''}`}
+            } ${dragOverIndex === index ? 'drag-over' : ''}`}
             onClick={() => handleTabClick(tab.id)}
           >
             <span className="tab-title">{tab.title}</span>
-            {tab.isModified && tab.type !== 'explorer' && tab.type !== 'saved-queries' && <span className="modified-indicator">●</span>}
-            {tab.type !== 'explorer' && tab.type !== 'saved-queries' && (
-              <button
-                className="tab-close"
-                onClick={(e) => handleCloseTab(e, tab.id)}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                ×
-              </button>
-            )}
+            {tab.isModified && <span className="modified-indicator">●</span>}
+            <button
+              className="tab-close"
+              onClick={(e) => handleCloseTab(e, tab.id)}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              ×
+            </button>
           </div>
         ))}
         <button className="new-tab-button" onClick={handleNewTab} title="New Tab">

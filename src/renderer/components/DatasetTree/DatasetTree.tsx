@@ -17,9 +17,10 @@ interface DatasetTreeProps {
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
 }
 
-const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema }) => {
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
   const connection = useConnectionStore((state) => state.connection);
   const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
   const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
@@ -93,6 +94,13 @@ const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, o
       setDatasets([]);
     }
   }, [connection, loadDatasets]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadDatasets, isLoading);
+    }
+  }, [onRefreshReady, loadDatasets, isLoading]);
 
   const toggleDataset = async (datasetId: string) => {
     if (!window.electronAPI) return;
@@ -186,21 +194,11 @@ const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, o
     const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
     const queryText = `SELECT * FROM ${tableRef}`;
     
-    // Store current active tab to restore it if it's Explorer
-    const currentActiveTabId = activeTabId;
-    const currentActiveTab = tabs.find(t => t.id === currentActiveTabId);
-    const wasOnExplorerTab = currentActiveTab?.type === 'explorer';
-    
     const newTabId = createTab();
     setTabQuery(newTabId, queryText);
     updateTab(newTabId, {
       title: `${dataset.name}.${table.name}`,
     });
-    
-    // If we were on Explorer tab, switch back to it
-    if (wasOnExplorerTab && currentActiveTabId) {
-      setActiveTab(currentActiveTabId);
-    }
     
     setContextMenu(null);
   };
@@ -395,16 +393,6 @@ const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, o
   if (!connection) {
     return (
       <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-        <div className="dataset-tree-header">
-          <button
-            className="collapse-button"
-            onClick={onToggleCollapse}
-            title={collapsed ? 'Expand' : 'Collapse'}
-          >
-            {collapsed ? '▶' : '◀'}
-          </button>
-          {!collapsed && <span className="dataset-tree-title">Explorer</span>}
-        </div>
         {!collapsed && (
           <div className="dataset-tree-empty">Not connected</div>
         )}
@@ -414,28 +402,6 @@ const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, o
 
   return (
     <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-      <div className="dataset-tree-header">
-        <button
-          className="collapse-button"
-          onClick={onToggleCollapse}
-          title={collapsed ? 'Expand' : 'Collapse'}
-        >
-          {collapsed ? '▶' : '◀'}
-        </button>
-        {!collapsed && (
-          <>
-            <span className="dataset-tree-title">Explorer</span>
-            <button
-              className="refresh-button"
-              onClick={loadDatasets}
-              title="Refresh"
-              disabled={isLoading}
-            >
-              ↻
-            </button>
-          </>
-        )}
-      </div>
       {!collapsed && (
         <>
           <div className="dataset-tree-search">

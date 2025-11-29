@@ -1,11 +1,12 @@
 .saved-queries-tree {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   background-color: #252526;
   color: #cccccc;
   border-right: 1px solid #3e3e42;
   overflow: hidden;
+  min-height: 0;
 }
 
 .saved-queries-tree.collapsed {
@@ -43,8 +44,10 @@
 .saved-queries-tree-title {
   flex: 1;
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 400;
   color: #cccccc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .refresh-button {
