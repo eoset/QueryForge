@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useBigQuery } from '../../hooks/useBigQuery';
+import { CanvasTable } from '../QueryResults/CanvasTable';
 import type { QueryResult } from '../../../shared/types/query';
 import { formatBigQueryValue } from '../../utils/bigquery-formatter';
 import './SampleDataModal.css';
@@ -25,15 +26,8 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
-  const resizeStartXRef = useRef(0);
-  const resizeStartWidthRef = useRef(0);
-  const tableRef = useRef<HTMLTableElement>(null);
-  const columnWidthsRef = useRef(columnWidths);
-
-  useEffect(() => {
-    columnWidthsRef.current = columnWidths;
-  }, [columnWidths]);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
 
   useEffect(() => {
     const loadSampleData = async () => {
@@ -62,75 +56,92 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
     loadSampleData();
   }, [projectId, datasetId, tableId, executeQuery, isConnected]);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    let currentWidth: number;
-    const storedWidth = columnWidthsRef.current[columnIndex];
-    
-    if (storedWidth) {
-      currentWidth = storedWidth;
-    } else {
-      const th = tableRef.current?.querySelector(`th:nth-child(${columnIndex + 1})`) as HTMLElement;
-      currentWidth = th?.offsetWidth || 100;
-    }
-    
-    resizeStartXRef.current = e.clientX;
-    resizeStartWidthRef.current = currentWidth;
-    setResizingColumn(columnIndex);
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
   }, []);
 
-  useEffect(() => {
-    if (resizingColumn === null) return;
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, _rowIndex: number) => {
+    // No-op for sample data modal - could be extended in the future
+    e.preventDefault();
+  }, []);
 
-    const columnIndex = resizingColumn;
-    const startX = resizeStartXRef.current;
-    const startWidth = resizeStartWidthRef.current;
-    
-    const handleMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const diff = e.clientX - startX;
-      const newWidth = Math.max(50, startWidth + diff);
-      
-      setColumnWidths((prev) => ({
-        ...prev,
-        [columnIndex]: newWidth,
-      }));
-    };
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, _columnIndex: number) => {
+    // No-op for sample data modal - could be extended in the future
+    e.preventDefault();
+  }, []);
 
-    const handleMouseUp = (e: MouseEvent) => {
-      e.preventDefault();
-      setResizingColumn(null);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove, { passive: false });
-    document.addEventListener('mouseup', handleMouseUp, { passive: false });
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [resizingColumn]);
-
-  const getColumnWidth = (columnIndex: number): number | undefined => {
-    return columnWidths[columnIndex];
-  };
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
 
   const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
     return formatBigQueryValue(value, columnType, columnName);
   }, []);
 
+  // Sort rows based on selected column and direction
+  const sortedRows = useMemo(() => {
+    if (!results?.rows || sortColumn === null || sortDirection === null) {
+      return results?.rows || [];
+    }
+
+    const sorted = [...results.rows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = results.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [results?.rows, results?.columns, sortColumn, sortDirection]);
+
   // Pagination calculations
-  const totalRows = results?.rows?.length || 0;
+  const totalRows = sortedRows.length;
   const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
   const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
   const endIndex = Math.min(startIndex + ROWS_PER_PAGE, totalRows);
-  const paginatedRows = results?.rows?.slice(startIndex, endIndex) || [];
+  const paginatedRows = sortedRows.slice(startIndex, endIndex);
+
+  // Create a QueryResult-like object for the CanvasTable with paginated rows
+  const paginatedResults: QueryResult | null = results
+    ? {
+        ...results,
+        rows: paginatedRows,
+      }
+    : null;
 
   const handlePreviousPage = () => {
     if (currentPage > 1) {
@@ -197,51 +208,22 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
                 )}
               </div>
               
-              {results.rows && results.rows.length > 0 ? (
+              {paginatedResults && paginatedResults.rows.length > 0 ? (
                 <>
-                  <div className="sample-data-table-container">
-                    <table className="sample-data-table" ref={tableRef}>
-                      <thead>
-                        <tr>
-                          {results.columns.map((col, idx) => {
-                            const width = getColumnWidth(idx);
-                            return (
-                              <th
-                                key={idx}
-                                style={{ width: width ? `${width}px` : undefined }}
-                                title={`${col.type}${col.mode ? ` (${col.mode})` : ''}`}
-                              >
-                                <div className="th-content">
-                                  {col.name}
-                                  <div
-                                    className="resize-handle"
-                                    onMouseDown={(e) => handleMouseDown(e, idx)}
-                                  />
-                                </div>
-                              </th>
-                            );
-                          })}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {paginatedRows.map((row, rowIdx) => (
-                          <tr key={startIndex + rowIdx}>
-                            {row.values.map((value, colIdx) => {
-                              const width = getColumnWidth(colIdx);
-                              const column = results.columns[colIdx];
-                              return (
-                                <td
-                                  key={colIdx}
-                                  style={{ width: width ? `${width}px` : undefined }}
-                                >
-                                  {formatValue(value, column?.type, column?.name)}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="sample-data-canvas-container">
+                    <CanvasTable
+                      results={paginatedResults}
+                      columnWidths={columnWidths}
+                      onColumnResize={handleColumnResize}
+                      onRowContextMenu={handleRowContextMenu}
+                      onColumnContextMenu={handleColumnContextMenu}
+                      formatValue={formatValue}
+                      currentPage={currentPage}
+                      rowsPerPage={ROWS_PER_PAGE}
+                      sortColumn={sortColumn}
+                      sortDirection={sortDirection}
+                      onSortColumn={handleSortColumn}
+                    />
                   </div>
                   
                   {totalPages > 1 && (
