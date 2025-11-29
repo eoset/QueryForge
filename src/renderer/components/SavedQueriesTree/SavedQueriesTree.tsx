@@ -7,9 +7,10 @@ import './SavedQueriesTree.css';
 interface SavedQueriesTreeProps {
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
 }
 
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse }) => {
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
   const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
   const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
   const [searchTerm, setSearchTerm] = useState('');
@@ -29,6 +30,13 @@ const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed 
     setStoreSearchTerm(searchTerm);
   }, [searchTerm, setStoreSearchTerm]);
 
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadQueries, isLoading);
+    }
+  }, [onRefreshReady, loadQueries, isLoading]);
+
   const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
     event.preventDefault();
     event.stopPropagation();
@@ -46,11 +54,6 @@ const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed 
     
     const { query } = contextMenu;
     
-    // Store current active tab to restore it if it's Saved Queries
-    const currentActiveTabId = activeTabId;
-    const currentActiveTab = tabs.find(t => t.id === currentActiveTabId);
-    const wasOnSavedQueriesTab = currentActiveTab?.type === 'saved-queries';
-    
     const newTabId = createTab();
     setTabQuery(newTabId, query.sqlText);
     updateTab(newTabId, {
@@ -58,11 +61,6 @@ const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed 
       savedQueryId: query.id,
       isModified: false,
     });
-    
-    // If we were on Saved Queries tab, switch back to it
-    if (wasOnSavedQueriesTab && currentActiveTabId) {
-      setActiveTab(currentActiveTabId);
-    }
     
     setContextMenu(null);
   };
@@ -107,28 +105,6 @@ const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed 
 
   return (
     <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
-      <div className="saved-queries-tree-header">
-        <button
-          className="collapse-button"
-          onClick={onToggleCollapse}
-          title={collapsed ? 'Expand' : 'Collapse'}
-        >
-          {collapsed ? '▶' : '◀'}
-        </button>
-        {!collapsed && (
-          <>
-            <span className="saved-queries-tree-title">Saved Queries</span>
-            <button
-              className="refresh-button"
-              onClick={loadQueries}
-              title="Refresh"
-              disabled={isLoading}
-            >
-              ↻
-            </button>
-          </>
-        )}
-      </div>
       {!collapsed && (
         <>
           <div className="saved-queries-tree-search">

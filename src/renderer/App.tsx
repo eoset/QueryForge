@@ -11,6 +11,8 @@ import { QueryResults } from './components/QueryResults/QueryResults';
 import { DatasetTree } from './components/DatasetTree/DatasetTree';
 import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
 import './App.css';
 
 const App: React.FC = () => {
@@ -22,10 +24,10 @@ const App: React.FC = () => {
   const [isResizing, setIsResizing] = useState(false);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(250);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
   const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(250); // Store the width before collapse
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
   const resizeStartYRef = useRef(0);
   const resizeStartHeightRef = useRef(350);
   const resizeStartXLeftRef = useRef(0);
@@ -36,8 +38,15 @@ const App: React.FC = () => {
   const connection = useConnectionStore((state) => state.connection);
   const { tabs, setActiveTab, activeTabId } = useTabsStore();
   const activeTab = tabs.find(t => t.id === activeTabId);
-  const isExplorerTabActive = activeTab?.type === 'explorer';
-  const isSavedQueriesTabActive = activeTab?.type === 'saved-queries';
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const [sidebarRefreshFn, setSidebarRefreshFn] = useState<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    setSidebarRefreshFn(null);
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
   const [schemaSidebar, setSchemaSidebar] = useState<{
     projectId: string;
     datasetId: string;
@@ -48,9 +57,11 @@ const App: React.FC = () => {
     // Load saved sidebar widths on mount
     if (window.electronAPI) {
       window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        setLeftSidebarWidth(width);
-        resizeStartWidthLeftRef.current = width;
-        savedLeftSidebarWidthRef.current = width;
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
       });
       window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
         setRightSidebarWidth(width);
@@ -62,12 +73,14 @@ const App: React.FC = () => {
   // Handle sidebar collapse/expand
   const handleLeftSidebarToggle = useCallback(() => {
     if (leftSidebarCollapsed) {
-      // Expanding - restore saved width
+      // Expanding - restore saved width, ensuring minimum of 268px
       setLeftSidebarCollapsed(false);
-      setLeftSidebarWidth(savedLeftSidebarWidthRef.current);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
     } else {
       // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = leftSidebarWidth;
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
       setLeftSidebarCollapsed(true);
       setLeftSidebarWidth(0);
     }
@@ -197,7 +210,7 @@ const App: React.FC = () => {
 
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(150, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 150px, max 600px
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
       currentWidth = newWidth;
       pendingWidth = newWidth;
       
@@ -301,9 +314,10 @@ const App: React.FC = () => {
         // Convert key to index (1-9 -> 0-8)
         const tabIndex = parseInt(keyCode, 10) - 1;
         
-        // Switch to the tab at the specified index if it exists
-        if (tabIndex >= 0 && tabIndex < tabs.length) {
-          setActiveTab(tabs[tabIndex].id);
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
         }
       }
     };
@@ -333,17 +347,36 @@ const App: React.FC = () => {
       <main className="app-main">
         <TabBar />
         <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease' }}>
-            {isSavedQueriesTabActive ? (
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFn || undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
               <SavedQueriesTree 
                 collapsed={leftSidebarCollapsed}
                 onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  setSidebarRefreshFn(() => refreshFn);
+                  setSidebarIsLoading(isLoading);
+                }}
               />
             ) : (
               <DatasetTree 
                 collapsed={leftSidebarCollapsed}
                 onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema} 
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  setSidebarRefreshFn(() => refreshFn);
+                  setSidebarIsLoading(isLoading);
+                }}
               />
             )}
           </div>
