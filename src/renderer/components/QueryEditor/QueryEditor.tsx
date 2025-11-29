@@ -28,6 +28,29 @@ export const QueryEditor: React.FC = () => {
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
   const validateHandlerRef = useRef<(() => void) | null>(null);
+  const selectionValidationTimeoutRef = useRef<number | null>(null);
+  const isMouseSelectingRef = useRef(false);
+    useEffect(() => {
+      return () => {
+        if (selectionValidationTimeoutRef.current !== null) {
+          window.clearTimeout(selectionValidationTimeoutRef.current);
+          selectionValidationTimeoutRef.current = null;
+        }
+        isMouseSelectingRef.current = false;
+      };
+    }, []);
+
+    const scheduleSelectionValidation = (delay: number = 150) => {
+      if (selectionValidationTimeoutRef.current !== null) {
+        window.clearTimeout(selectionValidationTimeoutRef.current);
+      }
+      selectionValidationTimeoutRef.current = window.setTimeout(() => {
+        selectionValidationTimeoutRef.current = null;
+        if (validateHandlerRef.current) {
+          validateHandlerRef.current();
+        }
+      }, delay);
+    };
   const errorDecorationsRef = useRef<string[]>([]);
   const activeTab = useTabsStore((state) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
@@ -1473,15 +1496,24 @@ export const QueryEditor: React.FC = () => {
                 );
 
                 // Listen for selection changes to re-validate
-                editor.onDidChangeCursorSelection(() => {
-                  // Debounce selection change validation
-                  if (validateHandlerRef.current) {
-                    setTimeout(() => {
-                      if (validateHandlerRef.current) {
-                        validateHandlerRef.current();
-                      }
-                    }, 100);
+                editor.onMouseDown(() => {
+                  isMouseSelectingRef.current = true;
+                  if (selectionValidationTimeoutRef.current !== null) {
+                    window.clearTimeout(selectionValidationTimeoutRef.current);
+                    selectionValidationTimeoutRef.current = null;
                   }
+                });
+
+                editor.onMouseUp(() => {
+                  isMouseSelectingRef.current = false;
+                  scheduleSelectionValidation(200);
+                });
+
+                editor.onDidChangeCursorSelection(() => {
+                  if (isMouseSelectingRef.current) {
+                    return;
+                  }
+                  scheduleSelectionValidation();
                 });
               }}
               options={{
