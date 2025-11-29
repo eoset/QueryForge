@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import { format } from 'sql-formatter';
 import { Parser } from 'node-sql-parser';
@@ -9,6 +9,350 @@ import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import './QueryEditor.css';
+
+interface SqlNodeLocation {
+  start?: { line: number; column: number };
+  end?: { line: number; column: number };
+  begin?: { line: number; column: number };
+  finish?: { line: number; column: number };
+}
+
+interface ColumnRefInfo {
+  alias: string | null;
+  column: string;
+  location?: SqlNodeLocation;
+}
+
+interface TableAliasInfo {
+  alias: string;
+  datasetId?: string;
+  tableId?: string;
+}
+
+interface ColumnValidationIssue {
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+const stripIdentifierQuotes = (value: string | null | undefined): string => {
+  if (!value) return '';
+  return value.replace(/[`"']/g, '');
+};
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const indexToLineColumn = (text: string, index: number): { line: number; column: number } => {
+  let line = 1;
+  let column = 1;
+
+  for (let i = 0; i < index && i < text.length; i++) {
+    const char = text[i];
+    if (char === '\n') {
+      line += 1;
+      column = 1;
+    } else if (char === '\r') {
+      // Handle Windows-style line endings (\r\n)
+      if (i + 1 < text.length && text[i + 1] === '\n') {
+        i += 1;
+      }
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+
+  return { line, column };
+};
+
+const getLocationPosition = (
+  location: SqlNodeLocation | undefined,
+  fallbackLength: number
+): { line: number; column: number; length: number } | null => {
+  if (!location) return null;
+
+  const start = location.start || location.begin;
+  const end = location.end || location.finish;
+
+  if (!start || start.line === undefined || start.column === undefined) {
+    return null;
+  }
+
+  let length = Math.max(1, fallbackLength);
+
+  if (end && end.line !== undefined && end.column !== undefined) {
+    if (end.line === start.line) {
+      const computedLength = end.column - start.column;
+      if (computedLength > 0) {
+        length = computedLength;
+      }
+    }
+  }
+
+  return {
+    line: start.line,
+    column: start.column,
+    length,
+  };
+};
+
+const findPositionInText = (
+  text: string,
+  alias: string | null,
+  column: string
+): { line: number; column: number; length: number } | null => {
+  const searchPatterns: Array<{ pattern: string; length: number }> = [];
+
+  const sanitizedAlias = alias ? stripIdentifierQuotes(alias) : null;
+  const sanitizedColumn = stripIdentifierQuotes(column);
+
+  if (sanitizedAlias) {
+    const aliasPattern = `${sanitizedAlias}.${sanitizedColumn}`;
+    searchPatterns.push({ pattern: aliasPattern, length: aliasPattern.length });
+  }
+
+  if (sanitizedColumn) {
+    searchPatterns.push({ pattern: sanitizedColumn, length: sanitizedColumn.length });
+  }
+
+    for (const { pattern, length } of searchPatterns) {
+      const regex = new RegExp(`\\b${escapeRegExp(pattern)}\\b`, 'i');
+    const match = regex.exec(text);
+    if (match && match.index !== undefined) {
+      const { line, column: col } = indexToLineColumn(text, match.index);
+      return { line, column: col, length: Math.max(1, length) };
+    }
+  }
+
+  return null;
+};
+
+const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
+  if (!node) return;
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectColumnRefsFromExpression(child, refs);
+    }
+    return;
+  }
+
+  if (typeof node !== 'object') {
+    return;
+  }
+
+  if (node.type === 'column_ref') {
+    const columnName = stripIdentifierQuotes(node.column);
+    if (columnName && columnName !== '*') {
+      refs.push({
+        alias: node.table ? stripIdentifierQuotes(node.table) : null,
+        column: columnName,
+        location: node.location || node.loc,
+      });
+    }
+    return;
+  }
+
+  // Recursively inspect child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') {
+      continue;
+    }
+    collectColumnRefsFromExpression(node[key], refs);
+  }
+};
+
+const collectColumnRefsForSelect = (selectAst: any): ColumnRefInfo[] => {
+  const refs: ColumnRefInfo[] = [];
+
+  if (!selectAst || typeof selectAst !== 'object') {
+    return refs;
+  }
+
+  const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
+
+  if (Array.isArray(selectAst.columns)) {
+    for (const col of selectAst.columns) {
+      collect(col?.expr ?? col);
+    }
+  }
+
+  if (selectAst.where) {
+    collect(selectAst.where);
+  }
+
+  if (Array.isArray(selectAst.groupby)) {
+    for (const groupExpr of selectAst.groupby) {
+      collect(groupExpr);
+    }
+  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
+    for (const groupExpr of selectAst.groupby.value) {
+      collect(groupExpr);
+    }
+  }
+
+  if (Array.isArray(selectAst.orderby)) {
+    for (const orderItem of selectAst.orderby) {
+      collect(orderItem?.expr ?? orderItem);
+    }
+  }
+
+  if (selectAst.having) {
+    collect(selectAst.having);
+  }
+
+  if (Array.isArray(selectAst.from)) {
+    for (const fromItem of selectAst.from) {
+      if (fromItem?.on) {
+        collect(fromItem.on);
+      }
+    }
+  }
+
+  return refs;
+};
+
+const buildTableAliasMapFromSelect = (
+  selectAst: any
+): {
+  aliasMap: Map<string, TableAliasInfo>;
+  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
+} => {
+  const aliasMap = new Map<string, TableAliasInfo>();
+  const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
+
+  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string }) => {
+    const cleanAlias = stripIdentifierQuotes(aliasName);
+    if (!cleanAlias) return;
+    const key = cleanAlias.toLowerCase();
+    const existing = aliasMap.get(key);
+    if (!existing || (!existing.datasetId && info.datasetId) || (!existing.tableId && info.tableId)) {
+      aliasMap.set(key, {
+        alias: cleanAlias,
+        datasetId: info.datasetId,
+        tableId: info.tableId,
+      });
+    }
+  };
+
+  const processFromItem = (item: any) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        processFromItem(child);
+      }
+      return;
+    }
+
+    // Handle subqueries - register alias name but skip schema mapping
+    if (item.expr && item.expr.type === 'select') {
+      registerAlias(item.as || item.alias, {});
+      return;
+    }
+
+    let datasetId: string | undefined;
+    let tableId: string | undefined;
+    let projectId: string | undefined;
+
+    if (typeof item.catalog === 'string') {
+      projectId = stripIdentifierQuotes(item.catalog);
+    }
+
+    if (typeof item.db === 'string') {
+      const dbValue = stripIdentifierQuotes(item.db);
+      // node-sql-parser uses db for project in BigQuery dialects
+      projectId = projectId ?? dbValue;
+      if (!datasetId) {
+        datasetId = dbValue;
+      }
+    }
+
+    if (typeof item.schema === 'string') {
+      datasetId = stripIdentifierQuotes(item.schema);
+    }
+
+    if (typeof item.dataset === 'string') {
+      datasetId = stripIdentifierQuotes(item.dataset);
+    }
+
+    const registerTableName = (raw: string | undefined) => {
+      if (!raw) return;
+      const cleaned = stripIdentifierQuotes(raw);
+      if (!cleaned) return;
+      const parts = cleaned.split('.').filter(Boolean);
+
+      let resolvedDataset = datasetId;
+      let resolvedTable = tableId;
+
+      if (parts.length >= 2) {
+        const potentialDataset = parts[parts.length - 2];
+        const potentialProject = parts.length >= 3 ? parts[parts.length - 3] : undefined;
+        if (!resolvedDataset || resolvedDataset === potentialProject) {
+          resolvedDataset = potentialDataset;
+        }
+        resolvedTable = parts[parts.length - 1];
+      } else if (parts.length === 1) {
+        resolvedTable = parts[0];
+      }
+
+      if (resolvedDataset) {
+        datasetId = resolvedDataset;
+      }
+      if (resolvedTable) {
+        tableId = resolvedTable;
+      }
+
+      if (resolvedDataset && resolvedTable) {
+        const key = `${resolvedDataset}.${resolvedTable}`.toLowerCase();
+        if (!uniqueTables.has(key)) {
+          uniqueTables.set(key, { datasetId: resolvedDataset, tableId: resolvedTable });
+        }
+      }
+
+      registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
+    };
+
+    if (typeof item.table === 'string') {
+      registerTableName(item.table);
+    } else if (item.table && typeof item.table === 'object') {
+      if (typeof item.table.table === 'string') {
+        registerTableName(item.table.table);
+      }
+      if (typeof item.table.name === 'string') {
+        registerTableName(item.table.name);
+      }
+      if (typeof item.table.db === 'string' && !datasetId) {
+        datasetId = stripIdentifierQuotes(item.table.db);
+      }
+    }
+
+    // Register alias variations for lookup
+    registerAlias(item.as || item.alias, { datasetId, tableId });
+
+    if (tableId) {
+      registerAlias(tableId, { datasetId, tableId });
+    }
+
+    if (datasetId && tableId) {
+      registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
+    }
+  };
+
+  if (Array.isArray(selectAst?.from)) {
+    for (const fromItem of selectAst.from) {
+      processFromItem(fromItem);
+    }
+  } else {
+    processFromItem(selectAst?.from);
+  }
+
+  return { aliasMap, uniqueTables };
+};
 
 export const QueryEditor: React.FC = () => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -30,6 +374,8 @@ export const QueryEditor: React.FC = () => {
   const validateHandlerRef = useRef<(() => void) | null>(null);
   const selectionValidationTimeoutRef = useRef<number | null>(null);
   const isMouseSelectingRef = useRef(false);
+  const validationRunIdRef = useRef(0);
+  const schemaCacheRef = useRef<Map<string, Promise<string[] | null>>>(new Map());
     useEffect(() => {
       return () => {
         if (selectionValidationTimeoutRef.current !== null) {
@@ -68,6 +414,133 @@ export const QueryEditor: React.FC = () => {
   const connection = useConnectionStore((state) => state.connection);
   
   const shouldDisableRunButton = isExecuting || !isConnected;
+
+  const getTableFields = useCallback(async (datasetId: string, tableId: string): Promise<string[] | null> => {
+    const cacheKey = `${datasetId}.${tableId}`.toLowerCase();
+    const existing = schemaCacheRef.current.get(cacheKey);
+    if (existing) {
+      return existing;
+    }
+
+    const fetchPromise = (async () => {
+      try {
+        if (!window.electronAPI?.bigquery?.getTableSchema) {
+          return null;
+        }
+        const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
+        if (!schemaResult || !Array.isArray(schemaResult.fields)) {
+          return [];
+        }
+        return schemaResult.fields
+          .map((field: any) => (typeof field?.name === 'string' ? field.name : null))
+          .filter((name): name is string => Boolean(name));
+      } catch (error) {
+        // If the schema call fails (e.g., table not found), return null so other checks can handle it.
+        return null;
+      }
+    })();
+
+    schemaCacheRef.current.set(cacheKey, fetchPromise);
+    return fetchPromise;
+  }, []);
+
+  const validateColumnsForSelect = useCallback(async (
+    selectAst: any,
+    textToValidate: string,
+    canFetchSchemas: boolean
+  ): Promise<ColumnValidationIssue[]> => {
+    const issues: ColumnValidationIssue[] = [];
+    const columnRefs = collectColumnRefsForSelect(selectAst);
+
+    if (columnRefs.length === 0) {
+      return issues;
+    }
+
+    const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
+    const uniqueTableList = Array.from(uniqueTables.values());
+
+    for (const columnRef of columnRefs) {
+      const baseColumnName = columnRef.column.split('.')[0];
+      const lowerColumnName = baseColumnName.toLowerCase();
+      const location =
+        getLocationPosition(columnRef.location, columnRef.column.length) ||
+        findPositionInText(textToValidate, columnRef.alias, columnRef.column) || {
+          line: 1,
+          column: 1,
+          length: Math.max(1, columnRef.column.length),
+        };
+
+      const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
+      const aliasInfo = aliasKey ? aliasMap.get(aliasKey) : null;
+
+      if (aliasKey && !aliasInfo) {
+        issues.push({
+          message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
+          line: location.line,
+          column: location.column,
+          length: location.length,
+        });
+        continue;
+      }
+
+      if (!canFetchSchemas) {
+        // Without schema access we can only report alias issues.
+        continue;
+      }
+
+      if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
+        const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
+        if (fields === null) {
+          // Schema lookup failed (likely table not found). Skip detailed column checks.
+          continue;
+        }
+
+        const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+        if (!hasColumn) {
+          const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+          issues.push({
+            message: `Column "${columnRef.column}" not found in ${targetName}`,
+            line: location.line,
+            column: location.column,
+            length: location.length,
+          });
+        }
+        continue;
+      }
+
+      if (!aliasInfo) {
+        let columnFound = false;
+
+        for (const tableInfo of uniqueTableList) {
+          if (!tableInfo.datasetId || !tableInfo.tableId) {
+            continue;
+          }
+
+          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+          if (fields === null) {
+            continue;
+          }
+
+          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+          if (hasColumn) {
+            columnFound = true;
+            break;
+          }
+        }
+
+        if (!columnFound && uniqueTableList.length > 0) {
+          issues.push({
+            message: `Column "${columnRef.column}" not found in referenced tables`,
+            line: location.line,
+            column: location.column,
+            length: location.length,
+          });
+        }
+      }
+    }
+
+    return issues;
+  }, [getTableFields]);
 
   // Format bytes to human-readable string
   const formatBytes = (bytes: number): string => {
@@ -189,9 +662,11 @@ export const QueryEditor: React.FC = () => {
       return;
     }
 
-    const validateSQL = () => {
+    const validateSQL = async () => {
       const model = editorRef.current?.getModel();
       if (!model || !(window as any).monaco) return;
+
+      const currentRunId = ++validationRunIdRef.current;
 
       // Get current selection
       const selection = editorRef.current?.getSelection();
@@ -305,9 +780,10 @@ export const QueryEditor: React.FC = () => {
       }
 
       // Validate the text (either selected or full query)
+      let parsedAst: any;
       try {
         // Try to parse the SQL
-        parserRef.current!.astify(trimmedQuery, {
+        parsedAst = parserRef.current!.astify(trimmedQuery, {
           database: 'bigquery',
         });
         
@@ -321,18 +797,10 @@ export const QueryEditor: React.FC = () => {
             []
           );
         }
-        
-        // Update status bar - valid SQL syntax
-        // But preserve table not found errors - they will be set by calculateExpectedQuerySize
-        setSqlValidationStatus((prev) => {
-          // If there's a table not found error, keep it
-          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-            return prev;
-          }
-          // Otherwise, mark as valid
-          return { isValid: true, errorMessage: null };
-        });
       } catch (error: any) {
+        if (currentRunId !== validationRunIdRef.current) {
+          return;
+        }
         // Parse error occurred, create marker
         const errorMessage = error.message || 'SQL syntax error';
         
@@ -595,16 +1063,110 @@ export const QueryEditor: React.FC = () => {
         
         // Update status bar - invalid SQL syntax (this takes precedence over table not found)
         setSqlValidationStatus({ isValid: false, errorMessage });
+        return;
       }
+
+      if (currentRunId !== validationRunIdRef.current) {
+        return;
+      }
+
+      const statements = Array.isArray(parsedAst) ? parsedAst : [parsedAst];
+      const selectStatements = statements.filter((stmt) => stmt?.type === 'select');
+
+      let columnIssues: ColumnValidationIssue[] = [];
+
+      if (selectStatements.length > 0) {
+        const canFetchSchemas = Boolean(isConnected && window.electronAPI?.bigquery?.getTableSchema);
+        for (const statement of selectStatements) {
+          const issues = await validateColumnsForSelect(statement, textToValidate, canFetchSchemas);
+          if (issues.length > 0) {
+            columnIssues = columnIssues.concat(issues);
+          }
+        }
+      }
+
+      if (currentRunId !== validationRunIdRef.current) {
+        return;
+      }
+
+      if (columnIssues.length > 0) {
+        const markers: any[] = [];
+        const decorations: any[] = [];
+
+        for (const issue of columnIssues) {
+          let lineNumber = issue.line;
+          let column = issue.column;
+
+          if (hasSelection && selection) {
+            lineNumber = selection.startLineNumber + lineNumber - 1;
+          }
+
+          lineNumber = Math.max(1, Math.min(lineNumber, model.getLineCount()));
+          const lineLength = model.getLineLength(lineNumber);
+          const startColumn = Math.max(1, Math.min(column, lineLength + 1));
+          const endColumn = Math.max(startColumn, Math.min(column + issue.length, lineLength + 1));
+
+          markers.push({
+            severity: (window as any).monaco.MarkerSeverity.Error,
+            startLineNumber: lineNumber,
+            startColumn,
+            endLineNumber: lineNumber,
+            endColumn,
+            message: issue.message,
+          });
+
+          decorations.push({
+            range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
+            options: {
+              glyphMarginClassName: 'error-glyph-margin',
+              glyphMarginHoverMessage: { value: issue.message },
+              minimap: {
+                color: '#f48771',
+              },
+              overviewRuler: {
+                color: '#f48771',
+                position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
+              },
+            },
+          });
+        }
+
+        (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+
+        if (editorRef.current) {
+          errorDecorationsRef.current = editorRef.current.deltaDecorations(
+            errorDecorationsRef.current,
+            decorations
+          );
+        }
+
+        setSqlValidationStatus({
+          isValid: false,
+          errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
+        });
+        return;
+      }
+
+      // Update status bar - valid SQL syntax (no column issues)
+      setSqlValidationStatus((prev) => {
+        if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+          return prev;
+        }
+        return { isValid: true, errorMessage: null };
+      });
     };
 
     // Store validation function in ref so it can be called from selection change listener
-    validateHandlerRef.current = validateSQL;
+    validateHandlerRef.current = () => {
+      void validateSQL();
+    };
 
     // Debounce validation to avoid excessive parsing
-    const timeoutId = setTimeout(validateSQL, 300);
+    const timeoutId = setTimeout(() => {
+      void validateSQL();
+    }, 300);
     return () => clearTimeout(timeoutId);
-  }, [queryText]);
+  }, [queryText, isConnected, validateColumnsForSelect]);
 
   const handleExecute = async () => {
     const currentTab = useTabsStore.getState().tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
