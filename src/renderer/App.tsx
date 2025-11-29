@@ -39,14 +39,21 @@ const App: React.FC = () => {
   const { tabs, setActiveTab, activeTabId } = useTabsStore();
   const activeTab = tabs.find(t => t.id === activeTabId);
   const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const [sidebarRefreshFn, setSidebarRefreshFn] = useState<(() => void) | null>(null);
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
   const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
 
   // Reset refresh function when switching views
   useEffect(() => {
-    setSidebarRefreshFn(null);
+    sidebarRefreshFnRef.current = null;
     setSidebarIsLoading(false);
   }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
   const [schemaSidebar, setSchemaSidebar] = useState<{
     projectId: string;
     datasetId: string;
@@ -351,7 +358,7 @@ const App: React.FC = () => {
             <SidebarHeader
               collapsed={leftSidebarCollapsed}
               onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFn || undefined}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
               isLoading={sidebarIsLoading}
             />
             <SidebarSwitcher
@@ -364,7 +371,7 @@ const App: React.FC = () => {
                 collapsed={leftSidebarCollapsed}
                 onToggleCollapse={handleLeftSidebarToggle}
                 onRefreshReady={(refreshFn, isLoading) => {
-                  setSidebarRefreshFn(() => refreshFn);
+                  sidebarRefreshFnRef.current = refreshFn;
                   setSidebarIsLoading(isLoading);
                 }}
               />
@@ -374,7 +381,7 @@ const App: React.FC = () => {
                 onToggleCollapse={handleLeftSidebarToggle}
                 onShowSchema={handleShowSchema}
                 onRefreshReady={(refreshFn, isLoading) => {
-                  setSidebarRefreshFn(() => refreshFn);
+                  sidebarRefreshFnRef.current = refreshFn;
                   setSidebarIsLoading(isLoading);
                 }}
               />
