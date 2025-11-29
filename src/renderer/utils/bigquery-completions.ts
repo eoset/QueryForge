@@ -653,6 +653,159 @@ function getTableReferenceText(model: any, position: any): string | null {
   return null;
 }
 
+interface StatementContext {
+  statementText: string;
+  statementStartOffset: number;
+  statementEndOffset: number;
+  cursorOffsetInStatement: number;
+  textBeforeCursor: string;
+}
+
+interface StatementBounds {
+  startOffset: number;
+  endOffset: number;
+}
+
+interface ScanState {
+  inSingleQuote: boolean;
+  inDoubleQuote: boolean;
+  inBacktick: boolean;
+  inLineComment: boolean;
+  inBlockComment: boolean;
+}
+
+function createInitialScanState(): ScanState {
+  return {
+    inSingleQuote: false,
+    inDoubleQuote: false,
+    inBacktick: false,
+    inLineComment: false,
+    inBlockComment: false,
+  };
+}
+
+function advanceScanState(state: ScanState, text: string, index: number): number {
+  const char = text[index];
+  const nextChar = index + 1 < text.length ? text[index + 1] : '';
+
+  if (state.inLineComment) {
+    if (char === '\n') {
+      state.inLineComment = false;
+    } else if (char === '\r') {
+      state.inLineComment = false;
+    }
+    return 1;
+  }
+
+  if (state.inBlockComment) {
+    if (char === '*' && nextChar === '/') {
+      state.inBlockComment = false;
+      return 2;
+    }
+    return 1;
+  }
+
+  if (!state.inSingleQuote && !state.inDoubleQuote && !state.inBacktick) {
+    if (char === '-' && nextChar === '-') {
+      state.inLineComment = true;
+      return 2;
+    }
+    if (char === '/' && nextChar === '*') {
+      state.inBlockComment = true;
+      return 2;
+    }
+  }
+
+  if (!state.inDoubleQuote && !state.inBacktick && char === "'") {
+    if (state.inSingleQuote && nextChar === "'") {
+      return 2;
+    }
+    state.inSingleQuote = !state.inSingleQuote;
+    return 1;
+  }
+
+  if (!state.inSingleQuote && !state.inBacktick && char === '"') {
+    if (state.inDoubleQuote && nextChar === '"') {
+      return 2;
+    }
+    state.inDoubleQuote = !state.inDoubleQuote;
+    return 1;
+  }
+
+  if (!state.inSingleQuote && !state.inDoubleQuote && char === '`') {
+    state.inBacktick = !state.inBacktick;
+    return 1;
+  }
+
+  return 1;
+}
+
+function findStatementBounds(fullText: string, cursorOffset: number): StatementBounds {
+  const len = fullText.length;
+  const stateBeforeCursor = createInitialScanState();
+  let startOffset = 0;
+  let i = 0;
+
+  while (i < Math.min(cursorOffset, len)) {
+    const char = fullText[i];
+    if (
+      !stateBeforeCursor.inSingleQuote &&
+      !stateBeforeCursor.inDoubleQuote &&
+      !stateBeforeCursor.inBacktick &&
+      !stateBeforeCursor.inLineComment &&
+      !stateBeforeCursor.inBlockComment &&
+      char === ';'
+    ) {
+      startOffset = i + 1;
+      i++;
+      continue;
+    }
+    i += advanceScanState(stateBeforeCursor, fullText, i);
+  }
+
+  const stateAfterCursor: ScanState = { ...stateBeforeCursor };
+  let endOffset = len;
+  let j = cursorOffset;
+
+  while (j < len) {
+    const char = fullText[j];
+    if (
+      !stateAfterCursor.inSingleQuote &&
+      !stateAfterCursor.inDoubleQuote &&
+      !stateAfterCursor.inBacktick &&
+      !stateAfterCursor.inLineComment &&
+      !stateAfterCursor.inBlockComment &&
+      char === ';'
+    ) {
+      endOffset = j;
+      break;
+    }
+    j += advanceScanState(stateAfterCursor, fullText, j);
+  }
+
+  return { startOffset, endOffset };
+}
+
+function getStatementContext(model: any, position: any): StatementContext | null {
+  if (!model || typeof model.getValue !== 'function' || typeof model.getOffsetAt !== 'function') {
+    return null;
+  }
+  const fullText = model.getValue();
+  const cursorOffset = model.getOffsetAt(position);
+  const { startOffset, endOffset } = findStatementBounds(fullText, cursorOffset);
+  const safeStart = Math.max(0, startOffset);
+  const safeEnd = Math.max(safeStart, endOffset);
+  const statementText = fullText.substring(safeStart, safeEnd);
+  const cursorOffsetInStatement = cursorOffset - safeStart;
+  return {
+    statementText,
+    statementStartOffset: safeStart,
+    statementEndOffset: safeEnd,
+    cursorOffsetInStatement,
+    textBeforeCursor: statementText.substring(0, Math.max(0, cursorOffsetInStatement)),
+  };
+}
+
 /**
  * Parses JOIN statements from SQL to extract table references and aliases
  * Returns array of { tableRef, alias, joinType } for each JOIN
@@ -907,31 +1060,32 @@ function parseFromClause(sql: string): { tableRef: string; alias: string | null 
  */
 function detectSelectContext(
   model: any,
-  position: any
+  position: any,
+  statementContext?: StatementContext | null
 ): Array<{ tableRef: string; alias: string | null }> | null {
-  const fullText = model.getValue();
-  const cursorOffset = model.getOffsetAt(position);
-  const textUpToCursor = fullText.substring(0, cursorOffset);
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
   
-  // Check if we're in a SELECT clause (between SELECT and FROM)
-  const selectMatch = textUpToCursor.match(/\bSELECT\s+/i);
-  if (!selectMatch) {
+  // Look for the last SELECT before the cursor inside the active statement
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
     return null;
   }
   
-  const selectIndex = selectMatch.index || 0;
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
   
-  // Find the FROM keyword after SELECT
-  const textAfterSelect = textUpToCursor.substring(selectIndex);
-  const fromMatch = textAfterSelect.match(/\bFROM\s+/i);
+  // Find the FROM keyword after the located SELECT
+  const fromMatch = selectScopedTextUpToCursor.match(/\bFROM\s+/i);
   
   // If we haven't reached FROM yet, or cursor is before FROM, we're in SELECT clause
   if (!fromMatch || cursorOffset <= selectIndex + (fromMatch.index || 0)) {
-    // Parse FROM clause to get the main table
-    const fromClause = parseFromClause(fullText);
-    
-    // Parse JOIN statements to get all joined tables
-    const joins = parseJoinStatements(fullText);
+    const fromClause = parseFromClause(selectScopedStatementText);
+    const joins = parseJoinStatements(selectScopedStatementText);
     
     const tables: Array<{ tableRef: string; alias: string | null }> = [];
     
@@ -957,69 +1111,61 @@ function detectSelectContext(
  */
 function detectJoinOnContext(
   model: any,
-  position: any
+  position: any,
+  statementContext?: StatementContext | null
 ): { leftTable: { tableRef: string; alias: string | null } | null; rightTable: { tableRef: string; alias: string | null } | null } | null {
-  const fullText = model.getValue();
-  const cursorOffset = model.getOffsetAt(position);
-  const textUpToCursor = fullText.substring(0, cursorOffset);
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
+  
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
+    return null;
+  }
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
   
   // Check if we're after an ON keyword that follows a JOIN
-  // Look backwards from cursor to find the most recent ON keyword
-  // Then check if there's a JOIN before it
-  const onMatches = Array.from(textUpToCursor.matchAll(/\bON\s+/gi)) as RegExpMatchArray[];
+  const onMatches = Array.from(selectScopedTextUpToCursor.matchAll(/\bON\s+/gi)) as RegExpMatchArray[];
   if (onMatches.length === 0) {
     return null;
   }
   
-  // Use the last (most recent) ON match
   const lastOnMatch = onMatches[onMatches.length - 1];
   const onIndex = lastOnMatch.index || 0;
-  const onMatchText = lastOnMatch[0];
   
-  // Check if there's a JOIN before this ON
-  const textBeforeOn = textUpToCursor.substring(0, onIndex);
+  // Ensure there is a JOIN prior to this ON within the active statement
+  const textBeforeOn = selectScopedTextUpToCursor.substring(0, onIndex);
   const joinMatch = textBeforeOn.match(/\b(?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)?\s+JOIN\s+/i);
   if (!joinMatch) {
     return null;
   }
   
-  // Make sure cursor is after the ON keyword (not before it)
-  // This allows detection even when typing column names after ON
-  const textAfterOn = textUpToCursor.substring(onIndex + onMatchText.length);
-  // Always allow if cursor is after ON (even if there's already text like "dp.ProdKey =")
-  // This enables column suggestions when typing anywhere in the ON clause
-  
-  // Parse FROM clause
-  const fromClause = parseFromClause(textUpToCursor);
+  // Parse FROM clause and JOIN statements using text up to cursor to stay within the active statement
+  const fromClause = parseFromClause(selectScopedStatementText);
   if (!fromClause) {
     return null;
   }
   
-  // Parse JOIN statements
-  const joins = parseJoinStatements(textUpToCursor);
-  
+  const joins = parseJoinStatements(selectScopedTextUpToCursor);
   if (joins.length === 0) {
     return null;
   }
   
-  // Find the most recent JOIN that has an ON clause before or at our position
-  // We'll use the last JOIN found, as it's the most recent one
   const activeJoin = joins[joins.length - 1];
-  
   if (!activeJoin) {
     return null;
   }
   
-  // Left table is the FROM table
-  // Right table is the current JOIN's table
   const leftTable = fromClause;
   const rightTable = {
     tableRef: activeJoin.tableRef,
     alias: activeJoin.alias,
   };
   
-  // Return both tables - the FROM table and the JOINed table
-  // This allows matching aliases from either table
   return { leftTable, rightTable };
 }
 
@@ -1205,6 +1351,7 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
       const word = model.getWordUntilPosition(position);
       const lineText = model.getLineContent(position.lineNumber);
       const textBeforeCursor = lineText.substring(0, position.column - 1);
+      const statementContext = getStatementContext(model, position);
       
       const range = {
         startLineNumber: position.lineNumber,
@@ -1222,7 +1369,7 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
       
       if (projectId) {
         // Check for SELECT clause context
-        const selectTables = detectSelectContext(model, position);
+        const selectTables = detectSelectContext(model, position, statementContext);
         if (selectTables && selectTables.length > 0) {
           // Check if we're typing after a table alias dot (e.g., "da." or "dp.id")
           const aliasDotMatch = textBeforeCursor.match(/([\w\-]+)\.([\w\-]*)$/);
@@ -1300,7 +1447,7 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
         }
         
         // Check if we're in a JOIN ON clause
-        const joinContext = detectJoinOnContext(model, position);
+        const joinContext = detectJoinOnContext(model, position, statementContext);
         if (joinContext && joinContext.leftTable && joinContext.rightTable) {
           isJoinOnContext = true;
           
