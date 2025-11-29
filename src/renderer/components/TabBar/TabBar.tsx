@@ -27,6 +27,12 @@ export const TabBar: React.FC = () => {
   const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
     e.stopPropagation();
     const tab = tabs.find((t) => t.id === tabId);
+    
+    // Don't allow closing Explorer or Saved Queries tabs
+    if (tab?.type === 'explorer' || tab?.type === 'saved-queries') {
+      return;
+    }
+    
     if (tab?.isModified) {
       const confirmed = window.confirm(
         'This tab has unsaved changes. Are you sure you want to close it?'
@@ -47,6 +53,14 @@ export const TabBar: React.FC = () => {
       e.preventDefault();
       return;
     }
+    
+    // Don't allow dragging Explorer or Saved Queries tabs
+    const tab = tabs[index];
+    if (tab?.type === 'explorer' || tab?.type === 'saved-queries') {
+      e.preventDefault();
+      return;
+    }
+    
     setDraggedTabIndex(index);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
@@ -59,6 +73,13 @@ export const TabBar: React.FC = () => {
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
+    
+    // Don't allow dropping at index 0 or 1 (Explorer and Saved Queries tab positions)
+    if (index === 0 || index === 1) {
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    
     e.dataTransfer.dropEffect = 'move';
     if (draggedTabIndex !== null && draggedTabIndex !== index) {
       setDragOverIndex(index);
@@ -71,6 +92,15 @@ export const TabBar: React.FC = () => {
 
   const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault();
+    
+    // Don't allow dropping on Explorer/Saved Queries tabs or at positions 0 or 1
+    const dropTab = tabs[dropIndex];
+    if (dropTab?.type === 'explorer' || dropTab?.type === 'saved-queries' || dropIndex === 0 || dropIndex === 1) {
+      setDraggedTabIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    
     if (draggedTabIndex !== null && draggedTabIndex !== dropIndex) {
       reorderTabs(draggedTabIndex, dropIndex);
     }
@@ -89,7 +119,7 @@ export const TabBar: React.FC = () => {
         {tabs.map((tab, index) => (
           <div
             key={tab.id}
-            draggable
+            draggable={tab.type !== 'explorer' && tab.type !== 'saved-queries'}
             onDragStart={(e) => handleDragStart(e, index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragLeave={handleDragLeave}
@@ -97,19 +127,20 @@ export const TabBar: React.FC = () => {
             onDragEnd={handleDragEnd}
             className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
               draggedTabIndex === index ? 'dragging' : ''
-            } ${dragOverIndex === index ? 'drag-over' : ''}`}
+            } ${dragOverIndex === index ? 'drag-over' : ''} ${tab.type === 'explorer' ? 'explorer-tab' : ''} ${tab.type === 'saved-queries' ? 'saved-queries-tab' : ''}`}
             onClick={() => handleTabClick(tab.id)}
           >
             <span className="tab-title">{tab.title}</span>
-            {tab.isModified && <span className="modified-indicator">●</span>}
-            <button
-              className="tab-close"
-              onClick={(e) => handleCloseTab(e, tab.id)}
-              onMouseDown={(e) => e.stopPropagation()}
-              disabled={tabs.length === 1}
-            >
-              ×
-            </button>
+            {tab.isModified && tab.type !== 'explorer' && tab.type !== 'saved-queries' && <span className="modified-indicator">●</span>}
+            {tab.type !== 'explorer' && tab.type !== 'saved-queries' && (
+              <button
+                className="tab-close"
+                onClick={(e) => handleCloseTab(e, tab.id)}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
         <button className="new-tab-button" onClick={handleNewTab} title="New Tab">

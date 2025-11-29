@@ -9,6 +9,7 @@ import { TabBar } from './components/TabBar/TabBar';
 import { QueryEditor } from './components/QueryEditor/QueryEditor';
 import { QueryResults } from './components/QueryResults/QueryResults';
 import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import './App.css';
 
@@ -33,7 +34,10 @@ const App: React.FC = () => {
   const resizeStartWidthRightRef = useRef(300);
   const editorResultsRef = useRef<HTMLDivElement>(null);
   const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab } = useTabsStore();
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const isExplorerTabActive = activeTab?.type === 'explorer';
+  const isSavedQueriesTabActive = activeTab?.type === 'saved-queries';
   const [schemaSidebar, setSchemaSidebar] = useState<{
     projectId: string;
     datasetId: string;
@@ -330,11 +334,18 @@ const App: React.FC = () => {
         <TabBar />
         <div className="app-content">
           <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease' }}>
-            <DatasetTree 
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onShowSchema={handleShowSchema} 
-            />
+            {isSavedQueriesTabActive ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema} 
+              />
+            )}
           </div>
           {!leftSidebarCollapsed && (
             <div
