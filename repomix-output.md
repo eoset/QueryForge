@@ -10500,497 +10500,6 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
 }
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
-````css
-.saved-queries-tree {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  background-color: #252526;
-  color: #cccccc;
-  border-right: 1px solid #3e3e42;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.saved-queries-tree.collapsed {
-  width: 30px;
-}
-
-.saved-queries-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  min-height: 35px;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  margin-right: 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.collapse-button:hover {
-  background-color: #3e3e42;
-}
-
-.saved-queries-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  font-weight: 400;
-  color: #cccccc;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.refresh-button:hover:not(:disabled) {
-  color: #cccccc;
-  background-color: #3e3e42;
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.saved-queries-tree-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid #3e3e42;
-  position: relative;
-}
-
-.saved-queries-tree-search-input {
-  width: 100%;
-  padding: 0.375rem 0.5rem;
-  background-color: #3e3e42;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  color: #cccccc;
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-}
-
-.saved-queries-tree-search-input:focus {
-  outline: none;
-  border-color: #007acc;
-  background-color: #1e1e1e;
-}
-
-.saved-queries-tree-search-clear {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease;
-}
-
-.saved-queries-tree-search-clear:hover {
-  color: #cccccc;
-}
-
-.saved-queries-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem;
-}
-
-.saved-queries-tree-loading,
-.saved-queries-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  color: #858585;
-  font-size: 0.8125rem;
-}
-
-.saved-query-item {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  cursor: pointer;
-  border-radius: 3px;
-  margin-bottom: 0.25rem;
-  transition: background-color 0.15s ease;
-}
-
-.saved-query-item:hover {
-  background-color: #2a2d2e;
-}
-
-.saved-query-icon {
-  margin-right: 0.5rem;
-  font-size: 1rem;
-}
-
-.saved-query-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.saved-query-name {
-  font-size: 0.8125rem;
-  color: #cccccc;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.saved-query-description {
-  font-size: 0.75rem;
-  color: #858585;
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.context-menu {
-  background-color: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  min-width: 150px;
-}
-
-.context-menu-item {
-  padding: 0.5rem 0.75rem;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover:not(.disabled) {
-  background-color: #2a2d2e;
-}
-
-.context-menu-item.disabled {
-  color: #858585;
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* Query preview tooltip */
-.saved-query-tooltip {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
-  max-width: 400px;
-  min-width: 200px;
-  max-height: 300px;
-  overflow: hidden;
-}
-
-.saved-query-tooltip-code {
-  margin: 0;
-  padding: 0.75rem;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: #d4d4d4;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  max-height: 284px;
-}
-````
-
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
-````typescript
-import React, { useState, useEffect, useRef, memo } from 'react';
-import { useQueriesStore } from '../../stores/queries-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import type { SavedQuery } from '../../../shared/types/query';
-import './SavedQueriesTree.css';
-
-interface SavedQueriesTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
-}
-
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
-  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    query: SavedQuery;
-  } | null>(null);
-  const [hoveredQuery, setHoveredQuery] = useState<{
-    query: SavedQuery;
-    x: number;
-    y: number;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    loadQueries();
-  }, [loadQueries]);
-
-  useEffect(() => {
-    setStoreSearchTerm(searchTerm);
-  }, [searchTerm, setStoreSearchTerm]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadQueries, isLoading);
-    }
-  }, [onRefreshReady, loadQueries, isLoading]);
-
-  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      query,
-    });
-  };
-
-  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    
-    // Clear any existing timeouts
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-    
-    // Add a small delay before showing tooltip
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery({
-        query,
-        x: rect.right + 8,
-        y: rect.top,
-      });
-    }, 300);
-  };
-
-  const handleQueryMouseLeave = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    // Delay hiding to allow cursor to move into tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery(null);
-    }, 100);
-  };
-
-  const handleTooltipMouseEnter = () => {
-    // Cancel the hide timeout when entering tooltip
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  };
-
-  const handleTooltipMouseLeave = () => {
-    // Hide tooltip when leaving it
-    setHoveredQuery(null);
-  };
-
-  const handleLoadToNewTab = () => {
-    if (!contextMenu) return;
-    
-    const { query } = contextMenu;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, query.sqlText);
-    updateTab(newTabId, {
-      title: query.name,
-      savedQueryId: query.id,
-      isModified: false,
-    });
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter queries based on search term
-  const filteredQueries = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return queries;
-    }
-    return getFilteredQueries();
-  }, [queries, searchTerm, getFilteredQueries]);
-
-  return (
-    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="saved-queries-tree-search">
-            <input
-              type="text"
-              className="saved-queries-tree-search-input"
-              placeholder="Search saved queries..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="saved-queries-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="saved-queries-tree-content">
-            {isLoading && queries.length === 0 && (
-              <div className="saved-queries-tree-loading">Loading saved queries...</div>
-            )}
-            {filteredQueries.length === 0 && !isLoading && (
-              <div className="saved-queries-tree-empty">
-                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
-              </div>
-            )}
-            {filteredQueries.map((query) => (
-              <div
-                key={query.id}
-                className="saved-query-item"
-                onContextMenu={(e) => handleQueryContextMenu(e, query)}
-                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
-                onMouseLeave={handleQueryMouseLeave}
-              >
-                <span className="saved-query-icon">📝</span>
-                <div className="saved-query-info">
-                  <span className="saved-query-name">{query.name}</span>
-                  {query.description && (
-                    <span className="saved-query-description">{query.description}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleLoadToNewTab}>
-            Open in new tab
-          </div>
-        </div>
-      )}
-      {hoveredQuery && (
-        <div
-          className="saved-query-tooltip"
-          style={{
-            position: 'fixed',
-            left: `${hoveredQuery.x}px`,
-            top: `${hoveredQuery.y}px`,
-          }}
-          onMouseEnter={handleTooltipMouseEnter}
-          onMouseLeave={handleTooltipMouseLeave}
-        >
-          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse
-  );
-});
-````
-
 ## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
 ````css
 .view-definition-modal-overlay {
@@ -11647,6 +11156,497 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
     </div>
   );
 };
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+````css
+.saved-queries-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: #252526;
+  color: #cccccc;
+  border-right: 1px solid #3e3e42;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.saved-queries-tree.collapsed {
+  width: 30px;
+}
+
+.saved-queries-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  min-height: 35px;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  margin-right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.collapse-button:hover {
+  background-color: #3e3e42;
+}
+
+.saved-queries-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: #cccccc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.refresh-button:hover:not(:disabled) {
+  color: #cccccc;
+  background-color: #3e3e42;
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.saved-queries-tree-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid #3e3e42;
+  position: relative;
+}
+
+.saved-queries-tree-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: #3e3e42;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
+
+.saved-queries-tree-search-input:focus {
+  outline: none;
+  border-color: #007acc;
+  background-color: #1e1e1e;
+}
+
+.saved-queries-tree-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.saved-queries-tree-search-clear:hover {
+  color: #cccccc;
+}
+
+.saved-queries-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
+
+.saved-queries-tree-loading,
+.saved-queries-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  color: #858585;
+  font-size: 0.8125rem;
+}
+
+.saved-query-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.saved-query-item:hover {
+  background-color: #2a2d2e;
+}
+
+.saved-query-icon {
+  margin-right: 0.5rem;
+  font-size: 1rem;
+}
+
+.saved-query-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-query-name {
+  font-size: 0.8125rem;
+  color: #cccccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-query-description {
+  font-size: 0.75rem;
+  color: #858585;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu {
+  background-color: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
+  padding: 0.5rem 0.75rem;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: #2a2d2e;
+}
+
+.context-menu-item.disabled {
+  color: #858585;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Query preview tooltip */
+.saved-query-tooltip {
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.saved-query-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
+````typescript
+import React, { useState, useEffect, useRef, memo } from 'react';
+import { useQueriesStore } from '../../stores/queries-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { SavedQuery } from '../../../shared/types/query';
+import './SavedQueriesTree.css';
+
+interface SavedQueriesTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
+  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    query: SavedQuery;
+  } | null>(null);
+  const [hoveredQuery, setHoveredQuery] = useState<{
+    query: SavedQuery;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    loadQueries();
+  }, [loadQueries]);
+
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadQueries, isLoading);
+    }
+  }, [onRefreshReady, loadQueries, isLoading]);
+
+  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      query,
+    });
+  };
+
+  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery({
+        query,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleQueryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredQuery(null);
+  };
+
+  const handleLoadToNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { query } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, query.sqlText);
+    updateTab(newTabId, {
+      title: query.name,
+      savedQueryId: query.id,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter queries based on search term
+  const filteredQueries = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return queries;
+    }
+    return getFilteredQueries();
+  }, [queries, searchTerm, getFilteredQueries]);
+
+  return (
+    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="saved-queries-tree-search">
+            <input
+              type="text"
+              className="saved-queries-tree-search-input"
+              placeholder="Search saved queries..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="saved-queries-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="saved-queries-tree-content">
+            {isLoading && queries.length === 0 && (
+              <div className="saved-queries-tree-loading">Loading saved queries...</div>
+            )}
+            {filteredQueries.length === 0 && !isLoading && (
+              <div className="saved-queries-tree-empty">
+                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
+              </div>
+            )}
+            {filteredQueries.map((query) => (
+              <div
+                key={query.id}
+                className="saved-query-item"
+                onContextMenu={(e) => handleQueryContextMenu(e, query)}
+                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
+                onMouseLeave={handleQueryMouseLeave}
+              >
+                <span className="saved-query-icon">📝</span>
+                <div className="saved-query-info">
+                  <span className="saved-query-name">{query.name}</span>
+                  {query.description && (
+                    <span className="saved-query-description">{query.description}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleLoadToNewTab}>
+            Open in new tab
+          </div>
+        </div>
+      )}
+      {hoveredQuery && (
+        <div
+          className="saved-query-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredQuery.x}px`,
+            top: `${hoveredQuery.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
+  );
+});
 ````
 
 ## File: src/renderer/components/TabBar/TabBar.css
@@ -20904,7 +20904,7 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
   }
 };
 
-const collectColumnRefsForSelect = (selectAst: any): ColumnRefInfo[] => {
+const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
   const refs: ColumnRefInfo[] = [];
 
   if (!selectAst || typeof selectAst !== 'object') {
@@ -20912,6 +20912,18 @@ const collectColumnRefsForSelect = (selectAst: any): ColumnRefInfo[] => {
   }
 
   const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
+
+  // Optionally collect from CTE bodies (for full query validation)
+  if (includeCteBodies && Array.isArray(selectAst.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Recursively collect from CTE body (but not nested CTEs within CTEs)
+        const cteRefs = collectColumnRefsForSelect(cteAst, false);
+        refs.push(...cteRefs);
+      }
+    }
+  }
 
   if (Array.isArray(selectAst.columns)) {
     for (const col of selectAst.columns) {
@@ -21083,6 +21095,19 @@ const buildTableAliasMapFromSelect = (
     }
   };
 
+  // Process CTEs (WITH clause) - register CTE names as valid aliases
+  // Note: We only register the CTE name here, not the tables inside the CTE.
+  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
+      const cteName = cte?.name?.value || cte?.name;
+      if (cteName) {
+        registerAlias(cteName, {});
+      }
+    }
+  }
+
   if (Array.isArray(selectAst?.from)) {
     for (const fromItem of selectAst.from) {
       processFromItem(fromItem);
@@ -21191,94 +21216,134 @@ export const QueryEditor: React.FC = () => {
     canFetchSchemas: boolean
   ): Promise<ColumnValidationIssue[]> => {
     const issues: ColumnValidationIssue[] = [];
-    const columnRefs = collectColumnRefsForSelect(selectAst);
 
-    if (columnRefs.length === 0) {
-      return issues;
-    }
+    // Helper function to validate columns for a single SELECT scope
+    const validateScope = async (
+      scopeAst: any,
+      scopeAliasMap: Map<string, TableAliasInfo>,
+      scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
+    ) => {
+      const columnRefs = collectColumnRefsForSelect(scopeAst, false);
+      const uniqueTableList = Array.from(scopeUniqueTables.values());
 
-    const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
-    const uniqueTableList = Array.from(uniqueTables.values());
+      for (const columnRef of columnRefs) {
+        const baseColumnName = columnRef.column.split('.')[0];
+        const lowerColumnName = baseColumnName.toLowerCase();
+        const location =
+          getLocationPosition(columnRef.location, columnRef.column.length) ||
+          findPositionInText(textToValidate, columnRef.alias, columnRef.column) || {
+            line: 1,
+            column: 1,
+            length: Math.max(1, columnRef.column.length),
+          };
 
-    for (const columnRef of columnRefs) {
-      const baseColumnName = columnRef.column.split('.')[0];
-      const lowerColumnName = baseColumnName.toLowerCase();
-      const location =
-        getLocationPosition(columnRef.location, columnRef.column.length) ||
-        findPositionInText(textToValidate, columnRef.alias, columnRef.column) || {
-          line: 1,
-          column: 1,
-          length: Math.max(1, columnRef.column.length),
-        };
+        const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
+        const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
 
-      const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
-      const aliasInfo = aliasKey ? aliasMap.get(aliasKey) : null;
-
-      if (aliasKey && !aliasInfo) {
-        issues.push({
-          message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
-          line: location.line,
-          column: location.column,
-          length: location.length,
-        });
-        continue;
-      }
-
-      if (!canFetchSchemas) {
-        // Without schema access we can only report alias issues.
-        continue;
-      }
-
-      if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
-        const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
-        if (fields === null) {
-          // Schema lookup failed (likely table not found). Skip detailed column checks.
-          continue;
-        }
-
-        const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-        if (!hasColumn) {
-          const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+        if (aliasKey && !aliasInfo) {
           issues.push({
-            message: `Column "${columnRef.column}" not found in ${targetName}`,
+            message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
             line: location.line,
             column: location.column,
             length: location.length,
           });
+          continue;
         }
-        continue;
-      }
 
-      if (!aliasInfo) {
-        let columnFound = false;
+        if (!canFetchSchemas) {
+          // Without schema access we can only report alias issues.
+          continue;
+        }
 
-        for (const tableInfo of uniqueTableList) {
-          if (!tableInfo.datasetId || !tableInfo.tableId) {
-            continue;
-          }
+        // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
+        // We can't validate columns against CTEs since we don't know their output schema.
+        // Skip validation for these cases.
+        if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
+          continue;
+        }
 
-          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+        if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
+          const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
           if (fields === null) {
+            // Schema lookup failed (likely table not found). Skip detailed column checks.
             continue;
           }
 
           const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-          if (hasColumn) {
-            columnFound = true;
-            break;
+          if (!hasColumn) {
+            const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+            issues.push({
+              message: `Column "${columnRef.column}" not found in ${targetName}`,
+              line: location.line,
+              column: location.column,
+              length: location.length,
+            });
           }
+          continue;
         }
 
-        if (!columnFound && uniqueTableList.length > 0) {
-          issues.push({
-            message: `Column "${columnRef.column}" not found in referenced tables`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
+        if (!aliasInfo) {
+          // Check if any table in scope is a CTE/subquery (no schema).
+          // If so, we can't reliably validate unqualified columns since they might come from the CTE.
+          const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
+            info => !info.datasetId || !info.tableId
+          );
+          
+          if (hasCteOrSubquery) {
+            // Skip validation for unqualified columns when CTEs/subqueries are present
+            // since we can't determine which table the column belongs to
+            continue;
+          }
+
+          let columnFound = false;
+
+          for (const tableInfo of uniqueTableList) {
+            if (!tableInfo.datasetId || !tableInfo.tableId) {
+              continue;
+            }
+
+            const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+            if (fields === null) {
+              continue;
+            }
+
+            const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+            if (hasColumn) {
+              columnFound = true;
+              break;
+            }
+          }
+
+          if (!columnFound && uniqueTableList.length > 0) {
+            issues.push({
+              message: `Column "${columnRef.column}" not found in referenced tables`,
+              line: location.line,
+              column: location.column,
+              length: location.length,
+            });
+          }
+        }
+      }
+    };
+
+    // First, validate each CTE body independently against its own FROM tables
+    if (Array.isArray(selectAst?.with)) {
+      for (const cte of selectAst.with) {
+        const cteAst = cte?.stmt?.ast;
+        if (cteAst) {
+          // Build alias map for just this CTE's scope (its own FROM clause only)
+          const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+            ...cteAst,
+            with: null, // Don't process nested CTEs here, they'd be handled separately
           });
+          await validateScope(cteAst, cteAliasMap, cteUniqueTables);
         }
       }
     }
+
+    // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
+    const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
+    await validateScope(selectAst, aliasMap, uniqueTables);
 
     return issues;
   }, [getTableFields]);

@@ -180,7 +180,7 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
   }
 };
 
-const collectColumnRefsForSelect = (selectAst: any): ColumnRefInfo[] => {
+const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
   const refs: ColumnRefInfo[] = [];
 
   if (!selectAst || typeof selectAst !== 'object') {
@@ -188,6 +188,18 @@ const collectColumnRefsForSelect = (selectAst: any): ColumnRefInfo[] => {
   }
 
   const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
+
+  // Optionally collect from CTE bodies (for full query validation)
+  if (includeCteBodies && Array.isArray(selectAst.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Recursively collect from CTE body (but not nested CTEs within CTEs)
+        const cteRefs = collectColumnRefsForSelect(cteAst, false);
+        refs.push(...cteRefs);
+      }
+    }
+  }
 
   if (Array.isArray(selectAst.columns)) {
     for (const col of selectAst.columns) {
@@ -359,6 +371,19 @@ const buildTableAliasMapFromSelect = (
     }
   };
 
+  // Process CTEs (WITH clause) - register CTE names as valid aliases
+  // Note: We only register the CTE name here, not the tables inside the CTE.
+  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
+      const cteName = cte?.name?.value || cte?.name;
+      if (cteName) {
+        registerAlias(cteName, {});
+      }
+    }
+  }
+
   if (Array.isArray(selectAst?.from)) {
     for (const fromItem of selectAst.from) {
       processFromItem(fromItem);
@@ -467,94 +492,134 @@ export const QueryEditor: React.FC = () => {
     canFetchSchemas: boolean
   ): Promise<ColumnValidationIssue[]> => {
     const issues: ColumnValidationIssue[] = [];
-    const columnRefs = collectColumnRefsForSelect(selectAst);
 
-    if (columnRefs.length === 0) {
-      return issues;
-    }
+    // Helper function to validate columns for a single SELECT scope
+    const validateScope = async (
+      scopeAst: any,
+      scopeAliasMap: Map<string, TableAliasInfo>,
+      scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
+    ) => {
+      const columnRefs = collectColumnRefsForSelect(scopeAst, false);
+      const uniqueTableList = Array.from(scopeUniqueTables.values());
 
-    const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
-    const uniqueTableList = Array.from(uniqueTables.values());
+      for (const columnRef of columnRefs) {
+        const baseColumnName = columnRef.column.split('.')[0];
+        const lowerColumnName = baseColumnName.toLowerCase();
+        const location =
+          getLocationPosition(columnRef.location, columnRef.column.length) ||
+          findPositionInText(textToValidate, columnRef.alias, columnRef.column) || {
+            line: 1,
+            column: 1,
+            length: Math.max(1, columnRef.column.length),
+          };
 
-    for (const columnRef of columnRefs) {
-      const baseColumnName = columnRef.column.split('.')[0];
-      const lowerColumnName = baseColumnName.toLowerCase();
-      const location =
-        getLocationPosition(columnRef.location, columnRef.column.length) ||
-        findPositionInText(textToValidate, columnRef.alias, columnRef.column) || {
-          line: 1,
-          column: 1,
-          length: Math.max(1, columnRef.column.length),
-        };
+        const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
+        const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
 
-      const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
-      const aliasInfo = aliasKey ? aliasMap.get(aliasKey) : null;
-
-      if (aliasKey && !aliasInfo) {
-        issues.push({
-          message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
-          line: location.line,
-          column: location.column,
-          length: location.length,
-        });
-        continue;
-      }
-
-      if (!canFetchSchemas) {
-        // Without schema access we can only report alias issues.
-        continue;
-      }
-
-      if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
-        const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
-        if (fields === null) {
-          // Schema lookup failed (likely table not found). Skip detailed column checks.
-          continue;
-        }
-
-        const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-        if (!hasColumn) {
-          const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+        if (aliasKey && !aliasInfo) {
           issues.push({
-            message: `Column "${columnRef.column}" not found in ${targetName}`,
+            message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
             line: location.line,
             column: location.column,
             length: location.length,
           });
+          continue;
         }
-        continue;
-      }
 
-      if (!aliasInfo) {
-        let columnFound = false;
+        if (!canFetchSchemas) {
+          // Without schema access we can only report alias issues.
+          continue;
+        }
 
-        for (const tableInfo of uniqueTableList) {
-          if (!tableInfo.datasetId || !tableInfo.tableId) {
-            continue;
-          }
+        // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
+        // We can't validate columns against CTEs since we don't know their output schema.
+        // Skip validation for these cases.
+        if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
+          continue;
+        }
 
-          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+        if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
+          const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
           if (fields === null) {
+            // Schema lookup failed (likely table not found). Skip detailed column checks.
             continue;
           }
 
           const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-          if (hasColumn) {
-            columnFound = true;
-            break;
+          if (!hasColumn) {
+            const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+            issues.push({
+              message: `Column "${columnRef.column}" not found in ${targetName}`,
+              line: location.line,
+              column: location.column,
+              length: location.length,
+            });
           }
+          continue;
         }
 
-        if (!columnFound && uniqueTableList.length > 0) {
-          issues.push({
-            message: `Column "${columnRef.column}" not found in referenced tables`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
+        if (!aliasInfo) {
+          // Check if any table in scope is a CTE/subquery (no schema).
+          // If so, we can't reliably validate unqualified columns since they might come from the CTE.
+          const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
+            info => !info.datasetId || !info.tableId
+          );
+          
+          if (hasCteOrSubquery) {
+            // Skip validation for unqualified columns when CTEs/subqueries are present
+            // since we can't determine which table the column belongs to
+            continue;
+          }
+
+          let columnFound = false;
+
+          for (const tableInfo of uniqueTableList) {
+            if (!tableInfo.datasetId || !tableInfo.tableId) {
+              continue;
+            }
+
+            const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+            if (fields === null) {
+              continue;
+            }
+
+            const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+            if (hasColumn) {
+              columnFound = true;
+              break;
+            }
+          }
+
+          if (!columnFound && uniqueTableList.length > 0) {
+            issues.push({
+              message: `Column "${columnRef.column}" not found in referenced tables`,
+              line: location.line,
+              column: location.column,
+              length: location.length,
+            });
+          }
+        }
+      }
+    };
+
+    // First, validate each CTE body independently against its own FROM tables
+    if (Array.isArray(selectAst?.with)) {
+      for (const cte of selectAst.with) {
+        const cteAst = cte?.stmt?.ast;
+        if (cteAst) {
+          // Build alias map for just this CTE's scope (its own FROM clause only)
+          const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+            ...cteAst,
+            with: null, // Don't process nested CTEs here, they'd be handled separately
           });
+          await validateScope(cteAst, cteAliasMap, cteUniqueTables);
         }
       }
     }
+
+    // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
+    const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
+    await validateScope(selectAst, aliasMap, uniqueTables);
 
     return issues;
   }, [getTableFields]);
