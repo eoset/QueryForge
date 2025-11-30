@@ -161,7 +161,14 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
       columnName = '';
     }
     
-    if (columnName && columnName !== '*') {
+    // Collect column refs for validation:
+    // - Non-* columns: always collect for column name validation
+    // - * columns with alias (e.g., da.*): collect to validate alias exists
+    // - Bare * without alias: skip (no validation needed)
+    const hasAlias = node.table ? true : false;
+    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
+    
+    if (shouldCollect) {
       refs.push({
         alias: node.table ? stripIdentifierQuotes(node.table) : null,
         column: columnName,
@@ -523,6 +530,12 @@ export const QueryEditor: React.FC = () => {
             column: location.column,
             length: location.length,
           });
+          continue;
+        }
+
+        // For alias.* patterns (e.g., da.*), we've validated the alias exists above.
+        // The * means "all columns" which is always valid syntax, so skip column validation.
+        if (columnRef.column === '*') {
           continue;
         }
 
