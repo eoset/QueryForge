@@ -1925,6 +1925,9 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
   };
 }
 
+// Track whether completion provider has been registered to avoid duplicates
+let completionProviderRegistered = false;
+
 /**
  * Registers BigQuery language support with Monaco Editor
  */
@@ -1932,6 +1935,11 @@ export function registerBigQueryLanguage(
   monaco?: typeof import('monaco-editor'),
   getProjectId?: () => string | null
 ): void {
+  // Avoid registering multiple completion providers (which causes duplicate suggestions)
+  if (completionProviderRegistered) {
+    return;
+  }
+  
   // Use provided monaco instance or try to get from window
   const monacoInstance = monaco || (typeof window !== 'undefined' ? (window as any).monaco : null);
   
@@ -1956,12 +1964,12 @@ export function registerBigQueryLanguage(
   });
 
   // Register completion provider for SQL language
-  // Check if already registered to avoid duplicate registrations
   const providers = monacoInstance.languages.getLanguages();
   const sqlLanguage = providers.find((lang: { id: string }) => lang.id === 'sql');
   
   if (sqlLanguage) {
     monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
+    completionProviderRegistered = true;
   }
 }
 
