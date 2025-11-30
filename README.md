@@ -1,14 +1,64 @@
 # QueryForge
 
-A desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript.
+A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
 
 ## Features
 
-- **Connect to BigQuery**: Configure connection using service account credentials or application default credentials
-- **Execute Queries**: Write and execute SQL queries with syntax highlighting
+### Connection Management
+- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
+- **Connection Persistence**: Connection settings persist across sessions
+- **Connection Testing**: Validate credentials before establishing connection
+
+### Query Execution
+- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
+- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
+- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
+- **Query Validation**: Syntax validation before execution
+- **Query Cancellation**: Cancel long-running queries
+- **Progress Indication**: Visual feedback during query execution
+
+### Multi-Tab Workflow
 - **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
-- **Save Queries**: Save frequently used queries locally for reuse
-- **Query Management**: Search, update, and delete saved queries
+- **Tab Persistence**: Tabs and their content persist across sessions
+- **Drag & Drop Reordering**: Reorganize tabs by dragging
+- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
+- **Modified Indicator**: Blue dot shows unsaved changes
+
+### Query Management
+- **Save Queries**: Save frequently used queries locally with names and descriptions
+- **Saved Queries Tree**: Browse saved queries in the sidebar
+- **Search Queries**: Find saved queries by name or SQL content
+- **Load Queries**: Open saved queries in new tabs with one click
+
+### Dataset Explorer
+- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
+- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
+- **Quick Actions**: Right-click context menu for table operations
+- **Search**: Filter datasets and tables
+
+### Schema Inspection
+- **Schema Sidebar**: View detailed table schemas in a dedicated panel
+- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
+- **Table Metadata**: View row count, table size, and creation time
+- **View Definitions**: Inspect SQL definitions for views
+
+### Query Results
+- **High-Performance Table**: Canvas-based rendering for large datasets
+- **Pagination**: Navigate through results with 200 rows per page (up to 100,000 total)
+- **Column Sorting**: Sort results by any column
+- **Column Resizing**: Adjust column widths by dragging
+- **Copy Values**: Right-click to copy cell values
+- **Results Caching**: Fast page navigation with cached results
+
+### Sample Data
+- **Quick Preview**: View sample data from any table
+- **One-Click Access**: Right-click table and select "View Sample Data"
+
+### UI Customization
+- **Resizable Panels**: Adjust sidebar and editor/results split
+- **Collapsible Sidebar**: Maximize editor space when needed
+- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
+- **Dark Theme**: Modern dark interface
 
 ## Prerequisites
 
@@ -144,16 +194,30 @@ npm run dev
 ### Executing Queries
 
 1. Type your SQL query in the editor
-2. Click "Execute" or use keyboard shortcut
+2. Click "Execute" or press Cmd/Ctrl+Enter
 3. View results in the table below
 4. Use "Cancel" to stop a running query
+5. Format your SQL with Cmd/Ctrl+Shift+F
+
+### Browsing Datasets
+
+1. Connect to BigQuery
+2. Browse datasets in the left sidebar
+3. Click a dataset to expand and view tables
+4. Right-click a table for options:
+   - **Open in new tab**: Generate a SELECT * query
+   - **View Schema**: Open schema details in sidebar
+   - **View Sample Data**: Preview table contents
+   - **View Definition**: See SQL for views
 
 ### Managing Tabs
 
 - Click "+" button to create a new tab
 - Click on a tab to switch between queries
+- Drag tabs to reorder them
 - Click "×" on a tab to close it
 - Modified tabs show a blue dot indicator
+- Use Cmd/Ctrl+1-9 to quickly switch tabs
 
 ### Saving Queries
 
@@ -164,10 +228,21 @@ npm run dev
 
 ### Loading Saved Queries
 
-1. Click "Saved Queries" in the header
+1. Switch to "SAVED QUERIES" view in the sidebar
 2. Search or browse your saved queries
-3. Click "Load" to open a query in a new tab
-4. Click "Delete" to remove a saved query
+3. Click a query to load it in a new tab
+4. Right-click for additional options
+
+## Keyboard Shortcuts
+
+| Action | macOS | Windows/Linux |
+|--------|-------|---------------|
+| New Tab | Cmd+T | Ctrl+T |
+| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
+| Execute Query | Cmd+Enter | Ctrl+Enter |
+| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
+| Show Help | Cmd+? | Ctrl+? |
+| Quit | Cmd+Q | Alt+F4 |
 
 ## Project Structure
 
