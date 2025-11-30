@@ -380,6 +380,7 @@ export const QueryEditor: React.FC = () => {
   }>({ isValid: null, errorMessage: null });
   const [expectedQuerySize, setExpectedQuerySize] = useState<number | null>(null);
   const [isLoadingQuerySize, setIsLoadingQuerySize] = useState(false);
+  const [selectedText, setSelectedText] = useState<string>('');
   const [completedQueryText, setCompletedQueryText] = useState<string | null>(null);
   const [completedQueryExecutionTime, setCompletedQueryExecutionTime] = useState<number | null>(null);
   const editorRef = useRef<any>(null);
@@ -1688,15 +1689,18 @@ export const QueryEditor: React.FC = () => {
 
     // Match FROM and JOIN clauses (including LEFT JOIN, RIGHT JOIN, INNER JOIN, etc.)
     // This pattern matches: FROM/JOIN/LEFT JOIN/etc followed by table reference
-    // Handles: backticked identifiers (with dots inside), quoted identifiers, and regular identifiers
+    // Handles: backticked identifiers (with dots inside OR separate backticks for each part),
+    // quoted identifiers, and regular identifiers
     // Pattern explanation:
     // - Matches FROM or any JOIN type
     // - Captures table reference which can be:
-    //   - Backticked: `project.dataset.table` (captures everything between backticks)
-    //   - Quoted: "project.dataset.table" or 'project.dataset.table' (captures everything between quotes)
-    //   - Regular: project.dataset.table or dataset.table (captures dot-separated identifiers)
+    //   - Backticked with dots inside: `project.dataset.table`
+    //   - Backticked separately: `project`.`dataset`.`table`
+    //   - Quoted: "project.dataset.table" or 'project.dataset.table'
+    //   - Regular: project.dataset.table or dataset.table
     // - Handles AS aliases
-    const fromJoinPattern = /(?:FROM|(?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)\s+JOIN|JOIN)\s+((?:`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))(?:\s+AS\s+[\w\-]+)?/gi;
+    // The pattern now handles `part1`.`part2`.`part3` format used by BigQuery
+    const fromJoinPattern = /(?:FROM|(?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)\s+JOIN|JOIN)\s+((?:`[^`]+`(?:\.`[^`]+`){0,2}|`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))(?:\s+AS\s+[\w\-]+)?/gi;
     const matches = Array.from(trimmedSql.matchAll(fromJoinPattern));
 
     for (const match of matches) {
@@ -1871,7 +1875,10 @@ export const QueryEditor: React.FC = () => {
   // Calculate expected query size from table/view metadata
   useEffect(() => {
     const calculateExpectedQuerySize = async () => {
-      if (!queryText.trim() || !isConnected || !connection?.projectId || !window.electronAPI) {
+      // Use selected text if available, otherwise use full query text
+      const textToAnalyze = selectedText.trim() || queryText.trim();
+      
+      if (!textToAnalyze || !isConnected || !connection?.projectId || !window.electronAPI) {
         setExpectedQuerySize(null);
         return;
       }
@@ -1889,7 +1896,7 @@ export const QueryEditor: React.FC = () => {
       setIsLoadingQuerySize(true);
       
       try {
-        const tableRefs = extractTableReferences(queryText);
+        const tableRefs = extractTableReferences(textToAnalyze);
         
         if (tableRefs.length === 0) {
           setExpectedQuerySize(null);
@@ -1897,17 +1904,96 @@ export const QueryEditor: React.FC = () => {
           return;
         }
 
+        // Helper function to get size for a table or view
+        // For views, recursively fetches the underlying table sizes
+        // visitedViews tracks already processed views to prevent infinite loops
+        const getTableOrViewSize = async (
+          datasetId: string,
+          tableId: string,
+          visitedViews: Set<string>
+        ): Promise<{ bytes: number; hasMetadata: boolean; error?: { message: string; tableRef: string } }> => {
+          const tableKey = `${datasetId}.${tableId}`;
+          
+          // Prevent infinite recursion for views that reference each other
+          if (visitedViews.has(tableKey)) {
+            return { bytes: 0, hasMetadata: false };
+          }
+          
+          try {
+            const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
+            
+            // If numBytes exists and is > 0, this is a regular table with data
+            if (schemaResult.metadata?.numBytes !== undefined && schemaResult.metadata.numBytes > 0) {
+              return { bytes: schemaResult.metadata.numBytes, hasMetadata: true };
+            }
+            
+            // If numBytes is 0 or undefined, this might be a view
+            // Try to get the view definition and extract underlying tables
+            try {
+              const viewResult = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+              if (viewResult.definition) {
+                // Mark this view as visited before processing its definition
+                visitedViews.add(tableKey);
+                
+                // Extract table references from the view definition
+                const viewTableRefs = extractTableReferences(viewResult.definition);
+                
+                // If no table references found in view definition, return 0 bytes but mark as having metadata
+                // so the user sees "0 bytes" rather than hiding the estimate
+                if (viewTableRefs.length === 0) {
+                  return { bytes: 0, hasMetadata: true };
+                }
+                
+                let viewTotalBytes = 0;
+                let viewHasMetadata = false;
+                
+                // Recursively get sizes for all tables referenced in the view
+                for (const ref of viewTableRefs) {
+                  const result = await getTableOrViewSize(ref.datasetId, ref.tableId, visitedViews);
+                  if (result.error) {
+                    // Propagate the first error encountered
+                    return result;
+                  }
+                  if (result.hasMetadata) {
+                    viewTotalBytes += result.bytes;
+                    viewHasMetadata = true;
+                  }
+                }
+                
+                // If we successfully processed a view, always mark as having metadata
+                // so the estimate is shown (even if 0 bytes)
+                return { bytes: viewTotalBytes, hasMetadata: true };
+              }
+            } catch {
+              // Not a view, or view definition couldn't be fetched
+              // This is normal for empty tables, just return no bytes
+            }
+            
+            // Regular table with no data, or couldn't determine view definition
+            return { bytes: 0, hasMetadata: schemaResult.metadata?.numBytes !== undefined };
+          } catch (err: any) {
+            // Handle table not found errors - will be processed below
+            throw err;
+          }
+        };
+
         // Fetch metadata for each table/view and sum up numBytes
         // This includes all tables from FROM and JOIN clauses
         let totalBytes = 0;
         let hasMetadata = false;
         let tableNotFoundError: { message: string; tableRef: string } | null = null;
+        // Track visited views to prevent infinite loops when views reference each other
+        const visitedViews = new Set<string>();
 
         for (const { datasetId, tableId } of tableRefs) {
           try {
-            const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
-            if (schemaResult.metadata?.numBytes !== undefined) {
-              totalBytes += schemaResult.metadata.numBytes;
+            const result = await getTableOrViewSize(datasetId, tableId, visitedViews);
+            if (result.error) {
+              tableNotFoundError = result.error;
+              break;
+            }
+            if (result.hasMetadata) {
+              totalBytes += result.bytes;
               hasMetadata = true;
             }
           } catch (err: any) {
@@ -2135,7 +2221,7 @@ export const QueryEditor: React.FC = () => {
     // Debounce calculation to avoid excessive API calls
     const timeoutId = setTimeout(calculateExpectedQuerySize, 500);
     return () => clearTimeout(timeoutId);
-  }, [queryText, isConnected, connection?.projectId, sqlValidationStatus.isValid]);
+  }, [queryText, selectedText, isConnected, connection?.projectId, sqlValidationStatus.isValid]);
 
   // Listen for table reference insertion from DatasetTree
   useEffect(() => {
@@ -2300,6 +2386,14 @@ export const QueryEditor: React.FC = () => {
                 editor.onMouseUp(() => {
                   isMouseSelectingRef.current = false;
                   scheduleSelectionValidation(200);
+                  // Update selected text state
+                  const selection = editor.getSelection();
+                  const model = editor.getModel();
+                  if (selection && !selection.isEmpty() && model) {
+                    setSelectedText(model.getValueInRange(selection));
+                  } else {
+                    setSelectedText('');
+                  }
                 });
 
                 editor.onDidChangeCursorSelection(() => {
@@ -2307,6 +2401,14 @@ export const QueryEditor: React.FC = () => {
                     return;
                   }
                   scheduleSelectionValidation();
+                  // Update selected text state
+                  const selection = editor.getSelection();
+                  const model = editor.getModel();
+                  if (selection && !selection.isEmpty() && model) {
+                    setSelectedText(model.getValueInRange(selection));
+                  } else {
+                    setSelectedText('');
+                  }
                 });
               }}
               options={{
