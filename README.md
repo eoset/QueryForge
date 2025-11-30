@@ -183,7 +183,7 @@ npm run dev
 
 ### Connecting to BigQuery
 
-1. Launch the application
+1. Launch the application 
 2. Click "Configure Connection" in the header
 3. Enter your GCP Project ID
 4. Select authentication method:
