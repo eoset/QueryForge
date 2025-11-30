@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom';
 
 // Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
 global.window = global.window || {};
 (global.window as any).electronAPI = {
   bigquery: {
@@ -10,6 +11,7 @@ global.window = global.window || {};
     listTables: jest.fn().mockResolvedValue([]),
     getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
     getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
   },
   connection: {
     configure: jest.fn().mockResolvedValue(undefined),
@@ -33,9 +35,26 @@ global.window = global.window || {};
     getRightSidebarWidth: jest.fn().mockResolvedValue(300),
     setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
   },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
   menu: {
     onShowHelp: jest.fn(() => () => {}),
     onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
   },
 };
 
