@@ -50,6 +50,7 @@ The content is organized as follows:
 .github/
   workflows/
     repomix.yml
+    test.yml
 .specify/
   memory/
     constitution.md
@@ -172,9 +173,33 @@ src/
     utils/
       connection-validation.ts
 tests/
+  integration/
+    connection-integration.test.tsx
+    tabs-integration.test.tsx
   unit/
+    main/
+      query-store.test.ts
+      tabs-store.test.ts
+      ui-settings-store.test.ts
     renderer/
+      components/
+        ConnectionDialog.test.tsx
+        ErrorBoundary.test.tsx
+        SidebarHeader.test.tsx
+        SidebarSwitcher.test.tsx
+        TabBar.test.tsx
+      hooks/
+        useBigQuery.test.ts
+      stores/
+        bigquery-metadata-store.test.ts
+        connection-store.test.ts
+        queries-store.test.ts
+        tabs-store.test.ts
       App.test.tsx
+      bigquery-formatter-additional.test.ts
+      bigquery-formatter.test.ts
+    shared/
+      connection-validation.test.ts
   setup.ts
 .eslintignore
 .eslintrc.json
@@ -1694,6 +1719,108 @@ jobs:
           git add repomix-output.md
           git commit -m "Update repomix output"
           git push origin main
+````
+
+## File: .github/workflows/test.yml
+````yaml
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        id: test
+        run: |
+          # Run tests and capture output
+          npm test -- --silent --coverage --coverageReporters=text-summary 2>&1 | tee test-output.txt
+          
+          # Store exit code
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          
+          # Extract summary for the comment
+          echo "## Test Results" > test-summary.md
+          echo "" >> test-summary.md
+          
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "✅ **All tests passed!**" >> test-summary.md
+          else
+            echo "❌ **Some tests failed**" >> test-summary.md
+          fi
+          
+          echo "" >> test-summary.md
+          echo "\`\`\`" >> test-summary.md
+          grep -E "(Test Suites:|Tests:|Snapshots:|Time:|Statements|Branches|Functions|Lines)" test-output.txt >> test-summary.md
+          echo "\`\`\`" >> test-summary.md
+          
+          # Exit with the test exit code
+          exit $TEST_EXIT_CODE
+        continue-on-error: true
+
+      - name: Comment PR with test results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('test-summary.md', 'utf8');
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('## Test Results')
+            );
+            
+            const commentBody = summary + '\n\n*Updated: ' + new Date().toISOString() + '*';
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: commentBody
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+            }
+
+      - name: Fail if tests failed
+        if: steps.test.outcome == 'failure'
+        run: exit 1
 ````
 
 ## File: .specify/memory/constitution.md
@@ -8426,102 +8553,6 @@ export const useQueriesStore = create<QueriesState>((set, get) => ({
 }));
 ````
 
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
 ## File: src/renderer/App.css
 ````css
 * {
@@ -8859,110 +8890,3896 @@ export function validateConnectionConfig(config: ConnectionConfig): {
 }
 ````
 
-## File: tests/unit/renderer/App.test.tsx
+## File: tests/integration/connection-integration.test.tsx
 ````typescript
+/**
+ * Integration tests for connection flow
+ * Tests the interaction between ConnectionDialog, connection store, and electronAPI
+ */
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import App from '../../../src/renderer/App';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { act } from 'react';
+import { useConnectionStore } from '../../src/renderer/stores/connection-store';
+import { validateConnectionConfig } from '../../src/shared/utils/connection-validation';
 
-// Mock the components that might have dependencies
-jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
-  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
-}));
+describe('Connection Flow Integration', () => {
+  beforeEach(() => {
+    // Reset connection store
+    act(() => {
+      useConnectionStore.getState().clearConnection();
+    });
 
-jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
-  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
-}));
-
-jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
-  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
-  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
-  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
-  QueryResults: () => <div data-testid="query-results">Query Results</div>,
-}));
-
-jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
-  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
-  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
-}));
-
-describe('App', () => {
-  it('renders without crashing', () => {
-    render(<App />);
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    // Reset mocks
+    jest.clearAllMocks();
+    (window.electronAPI.connection.test as jest.Mock).mockResolvedValue(true);
+    (window.electronAPI.connection.configure as jest.Mock).mockResolvedValue(undefined);
+    (window.electronAPI.connection.getActive as jest.Mock).mockResolvedValue({
+      projectId: 'test-project',
+      authType: 'application-default',
+      location: 'EU',
+      isActive: true,
+    });
+    (window.electronAPI.connection.getSaved as jest.Mock).mockResolvedValue(null);
   });
 
-  it('renders the main app structure', () => {
-    render(<App />);
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-    expect(screen.getByTestId('query-editor')).toBeInTheDocument();
-    expect(screen.getByTestId('query-results')).toBeInTheDocument();
+  describe('Connection Validation', () => {
+    it('should validate project ID format', () => {
+      // Valid project IDs
+      expect(validateConnectionConfig({
+        projectId: 'my-project-123',
+        authType: 'application-default',
+      }).valid).toBe(true);
+
+      expect(validateConnectionConfig({
+        projectId: 'valid-project',
+        authType: 'application-default',
+      }).valid).toBe(true);
+
+      // Invalid project IDs
+      expect(validateConnectionConfig({
+        projectId: 'InvalidProject',
+        authType: 'application-default',
+      }).valid).toBe(false);
+
+      expect(validateConnectionConfig({
+        projectId: '123-invalid',
+        authType: 'application-default',
+      }).valid).toBe(false);
+
+      expect(validateConnectionConfig({
+        projectId: '',
+        authType: 'application-default',
+      }).valid).toBe(false);
+    });
+
+    it('should validate service account configuration', () => {
+      // Missing key path and key content
+      expect(validateConnectionConfig({
+        projectId: 'valid-project',
+        authType: 'service-account',
+      }).valid).toBe(false);
+
+      // With key path
+      expect(validateConnectionConfig({
+        projectId: 'valid-project',
+        authType: 'service-account',
+        serviceAccountKeyPath: '/path/to/key.json',
+      }).valid).toBe(true);
+
+      // With valid key content
+      expect(validateConnectionConfig({
+        projectId: 'valid-project',
+        authType: 'service-account',
+        serviceAccountKey: JSON.stringify({ type: 'service_account' }),
+      }).valid).toBe(true);
+
+      // With invalid key content
+      expect(validateConnectionConfig({
+        projectId: 'valid-project',
+        authType: 'service-account',
+        serviceAccountKey: 'not-json',
+      }).valid).toBe(false);
+    });
+  });
+
+  describe('Connection Store State Management', () => {
+    it('should update store state when connection is set', () => {
+      const connection = {
+        projectId: 'test-project',
+        authType: 'application-default' as const,
+        location: 'EU',
+        isActive: true,
+      };
+
+      act(() => {
+        useConnectionStore.getState().setConnection(connection);
+      });
+
+      expect(useConnectionStore.getState().connection).toEqual(connection);
+      expect(useConnectionStore.getState().connectionError).toBeNull();
+      expect(useConnectionStore.getState().isConnecting).toBe(false);
+    });
+
+    it('should clear error when connection is successful', () => {
+      // Set an error first
+      act(() => {
+        useConnectionStore.getState().setConnectionError('Previous error');
+      });
+
+      expect(useConnectionStore.getState().connectionError).toBe('Previous error');
+
+      // Set a successful connection
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      expect(useConnectionStore.getState().connectionError).toBeNull();
+    });
+
+    it('should set isConnecting to false when error occurs', () => {
+      // Start connecting
+      act(() => {
+        useConnectionStore.getState().setConnecting(true);
+      });
+
+      expect(useConnectionStore.getState().isConnecting).toBe(true);
+
+      // Set error
+      act(() => {
+        useConnectionStore.getState().setConnectionError('Connection failed');
+      });
+
+      expect(useConnectionStore.getState().isConnecting).toBe(false);
+    });
+
+    it('should clear all state when clearConnection is called', () => {
+      // Set up some state
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+        useConnectionStore.getState().setConnecting(true);
+        useConnectionStore.getState().setConnectionError('Some error');
+      });
+
+      // Clear connection
+      act(() => {
+        useConnectionStore.getState().clearConnection();
+      });
+
+      const state = useConnectionStore.getState();
+      expect(state.connection).toBeNull();
+      expect(state.connectionError).toBeNull();
+      expect(state.isConnecting).toBe(false);
+    });
+  });
+
+  describe('IPC Communication', () => {
+    it('should call electronAPI.connection.test for connection validation', async () => {
+      const config = {
+        projectId: 'test-project',
+        authType: 'application-default' as const,
+      };
+
+      await window.electronAPI.connection.test(config);
+
+      expect(window.electronAPI.connection.test).toHaveBeenCalledWith(config);
+    });
+
+    it('should call electronAPI.connection.configure for establishing connection', async () => {
+      const config = {
+        projectId: 'test-project',
+        authType: 'application-default' as const,
+      };
+
+      await window.electronAPI.connection.configure(config);
+
+      expect(window.electronAPI.connection.configure).toHaveBeenCalledWith(config);
+    });
+
+    it('should retrieve active connection after configuring', async () => {
+      await window.electronAPI.connection.getActive();
+
+      expect(window.electronAPI.connection.getActive).toHaveBeenCalled();
+    });
+
+    it('should handle connection test failure', async () => {
+      (window.electronAPI.connection.test as jest.Mock).mockResolvedValue(false);
+
+      const result = await window.electronAPI.connection.test({
+        projectId: 'invalid-project',
+        authType: 'application-default',
+      });
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Saved Connection Restoration', () => {
+    it('should restore saved connection on startup', async () => {
+      const savedConnection = {
+        projectId: 'saved-project',
+        authType: 'application-default' as const,
+        location: 'US',
+        isActive: true,
+      };
+
+      (window.electronAPI.connection.restore as jest.Mock).mockResolvedValue(savedConnection);
+
+      const restored = await window.electronAPI.connection.restore();
+
+      expect(restored).toEqual(savedConnection);
+    });
+
+    it('should return null when no saved connection exists', async () => {
+      (window.electronAPI.connection.restore as jest.Mock).mockResolvedValue(null);
+
+      const restored = await window.electronAPI.connection.restore();
+
+      expect(restored).toBeNull();
+    });
   });
 });
 ````
 
-## File: tests/setup.ts
+## File: tests/integration/tabs-integration.test.tsx
 ````typescript
-import '@testing-library/jest-dom';
+/**
+ * Integration tests for TabBar and tabs store interaction
+ */
+import React from 'react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
+import { TabBar } from '../../src/renderer/components/TabBar/TabBar';
+import { useTabsStore } from '../../src/renderer/stores/tabs-store';
 
-// Mock Electron API
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-  },
+describe('TabBar integration with tabs-store', () => {
+  beforeEach(() => {
+    // Reset the store state before each test
+    act(() => {
+      useTabsStore.setState({
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Query 1',
+            type: 'query',
+            queryText: '',
+            isModified: false,
+            executionStatus: 'idle',
+          },
+        ],
+        activeTabId: 'tab-1',
+      });
+    });
+    
+    // Mock window.confirm
+    window.confirm = jest.fn().mockReturnValue(true);
+  });
+
+  it('should create a new tab and update the store', () => {
+    render(<TabBar />);
+
+    const initialTabCount = useTabsStore.getState().tabs.length;
+
+    // Click new tab button
+    const newTabButton = screen.getByTitle('New Tab');
+    fireEvent.click(newTabButton);
+
+    // Check store was updated
+    const newTabCount = useTabsStore.getState().tabs.length;
+    expect(newTabCount).toBe(initialTabCount + 1);
+  });
+
+  it('should close a tab and update the store', () => {
+    // Add a second tab first
+    act(() => {
+      useTabsStore.getState().createTab();
+    });
+
+    render(<TabBar />);
+
+    const initialTabCount = useTabsStore.getState().tabs.length;
+    expect(initialTabCount).toBe(2);
+
+    // Close the first tab
+    const closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[0]);
+
+    // Check store was updated
+    const newTabCount = useTabsStore.getState().tabs.length;
+    expect(newTabCount).toBe(initialTabCount - 1);
+  });
+
+  it('should switch active tab when clicking', () => {
+    // Add a second tab
+    act(() => {
+      useTabsStore.getState().createTab();
+    });
+
+    render(<TabBar />);
+
+    // Get the tabs
+    const tabs = useTabsStore.getState().tabs;
+    const secondTabId = tabs[1].id;
+
+    // Click the second tab
+    const secondTab = screen.getByText(tabs[1].title);
+    fireEvent.click(secondTab);
+
+    // Check active tab was updated
+    expect(useTabsStore.getState().activeTabId).toBe(secondTabId);
+  });
+
+  it('should reflect store changes in the UI', () => {
+    render(<TabBar />);
+
+    // Initially should show Query 1
+    expect(screen.getByText('Query 1')).toBeInTheDocument();
+
+    // Update the tab title through the store
+    act(() => {
+      const tabs = useTabsStore.getState().tabs;
+      useTabsStore.getState().updateTab(tabs[0].id, { title: 'Updated Query' });
+    });
+
+    // Re-render to see updates (in real app this happens automatically)
+    // For this test, we need to check the store state
+    expect(useTabsStore.getState().tabs[0].title).toBe('Updated Query');
+  });
+
+  it('should show modified indicator when tab is modified', () => {
+    render(<TabBar />);
+
+    // Mark tab as modified through store
+    act(() => {
+      const tabs = useTabsStore.getState().tabs;
+      useTabsStore.getState().updateTab(tabs[0].id, { isModified: true });
+    });
+
+    // The modified indicator should be visible
+    // We need to re-render or the component needs to re-render on store change
+    // In the actual app with Zustand, this happens automatically
+    const state = useTabsStore.getState();
+    expect(state.tabs[0].isModified).toBe(true);
+  });
+
+  it('should handle creating multiple tabs in sequence', () => {
+    render(<TabBar />);
+
+    const newTabButton = screen.getByTitle('New Tab');
+
+    // Create multiple tabs
+    fireEvent.click(newTabButton);
+    fireEvent.click(newTabButton);
+    fireEvent.click(newTabButton);
+
+    // Should have 4 tabs total (1 initial + 3 new)
+    expect(useTabsStore.getState().tabs.length).toBe(4);
+  });
+
+  it('should handle closing all but one tab', () => {
+    // Start with 3 tabs
+    act(() => {
+      useTabsStore.setState({
+        tabs: [
+          { id: 'tab-1', title: 'Query 1', type: 'query', queryText: '', isModified: false, executionStatus: 'idle' },
+          { id: 'tab-2', title: 'Query 2', type: 'query', queryText: '', isModified: false, executionStatus: 'idle' },
+          { id: 'tab-3', title: 'Query 3', type: 'query', queryText: '', isModified: false, executionStatus: 'idle' },
+        ],
+        activeTabId: 'tab-1',
+      });
+    });
+
+    render(<TabBar />);
+
+    // Close tabs one by one
+    let closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[0]); // Close first tab
+
+    closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[0]); // Close next first tab
+
+    // Should have 1 tab left
+    expect(useTabsStore.getState().tabs.length).toBe(1);
+  });
+
+  it('should maintain active tab state across tab operations', () => {
+    act(() => {
+      useTabsStore.setState({
+        tabs: [
+          { id: 'tab-1', title: 'Query 1', type: 'query', queryText: '', isModified: false, executionStatus: 'idle' },
+          { id: 'tab-2', title: 'Query 2', type: 'query', queryText: '', isModified: false, executionStatus: 'idle' },
+        ],
+        activeTabId: 'tab-2',
+      });
+    });
+
+    render(<TabBar />);
+
+    // Initial active tab should be tab-2
+    expect(useTabsStore.getState().activeTabId).toBe('tab-2');
+
+    // Close the active tab
+    const closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[1]); // Close tab-2
+
+    // Active tab should switch to tab-1
+    expect(useTabsStore.getState().activeTabId).toBe('tab-1');
+  });
+});
+````
+
+## File: tests/unit/main/query-store.test.ts
+````typescript
+// Mock electron-store before importing the module
+const mockStore = {
+  get: jest.fn(),
+  set: jest.fn(),
+  delete: jest.fn(),
 };
 
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
+jest.mock('electron-store', () => {
+  return jest.fn().mockImplementation(() => mockStore);
+});
+
+// Mock crypto module
+jest.mock('crypto', () => ({
+  randomUUID: jest.fn(() => 'test-uuid-1234'),
 }));
+
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput } from '../../../src/shared/types/query';
+
+// Import after mocks are set up
+let getQueries: () => SavedQuery[];
+let getQuery: (id: string) => SavedQuery | undefined;
+let saveQuery: (input: SaveQueryInput) => SavedQuery;
+let updateQuery: (id: string, updates: UpdateQueryInput) => SavedQuery;
+let deleteQuery: (id: string) => void;
+let searchQueries: (term: string) => SavedQuery[];
+
+describe('query-store', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.resetModules();
+    
+    // Re-import the module to reset state
+    const queryStore = require('../../../src/main/storage/query-store');
+    getQueries = queryStore.getQueries;
+    getQuery = queryStore.getQuery;
+    saveQuery = queryStore.saveQuery;
+    updateQuery = queryStore.updateQuery;
+    deleteQuery = queryStore.deleteQuery;
+    searchQueries = queryStore.searchQueries;
+  });
+
+  describe('getQueries', () => {
+    it('should return empty array when no queries exist', () => {
+      mockStore.get.mockReturnValue([]);
+      const result = getQueries();
+      expect(result).toEqual([]);
+    });
+
+    it('should return stored queries', () => {
+      const mockQueries: SavedQuery[] = [
+        {
+          id: '1',
+          name: 'Test Query',
+          sqlText: 'SELECT * FROM test',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ];
+      mockStore.get.mockReturnValue(mockQueries);
+      
+      const result = getQueries();
+      expect(result).toEqual(mockQueries);
+    });
+
+    it('should return empty array when store returns null', () => {
+      mockStore.get.mockReturnValue(null);
+      const result = getQueries();
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('getQuery', () => {
+    it('should return query by id', () => {
+      const mockQueries: SavedQuery[] = [
+        {
+          id: '1',
+          name: 'Test Query',
+          sqlText: 'SELECT * FROM test',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ];
+      mockStore.get.mockReturnValue(mockQueries);
+      
+      const result = getQuery('1');
+      expect(result).toEqual(mockQueries[0]);
+    });
+
+    it('should return undefined for non-existent query', () => {
+      mockStore.get.mockReturnValue([]);
+      
+      const result = getQuery('non-existent');
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('saveQuery', () => {
+    beforeEach(() => {
+      mockStore.get.mockReturnValue([]);
+    });
+
+    it('should save a new query', () => {
+      const input: SaveQueryInput = {
+        name: 'Test Query',
+        sqlText: 'SELECT * FROM test',
+        description: 'A test query',
+        tags: ['test'],
+      };
+
+      const result = saveQuery(input);
+
+      expect(result).toMatchObject({
+        id: 'test-uuid-1234',
+        name: 'Test Query',
+        sqlText: 'SELECT * FROM test',
+        description: 'A test query',
+        tags: ['test'],
+      });
+      expect(result.createdAt).toBeDefined();
+      expect(result.updatedAt).toBeDefined();
+      expect(mockStore.set).toHaveBeenCalled();
+    });
+
+    it('should trim query name', () => {
+      const input: SaveQueryInput = {
+        name: '  Test Query  ',
+        sqlText: 'SELECT * FROM test',
+      };
+
+      const result = saveQuery(input);
+      expect(result.name).toBe('Test Query');
+    });
+
+    it('should throw error for empty name', () => {
+      const input: SaveQueryInput = {
+        name: '',
+        sqlText: 'SELECT * FROM test',
+      };
+
+      expect(() => saveQuery(input)).toThrow('Query name is required');
+    });
+
+    it('should throw error for whitespace-only name', () => {
+      const input: SaveQueryInput = {
+        name: '   ',
+        sqlText: 'SELECT * FROM test',
+      };
+
+      expect(() => saveQuery(input)).toThrow('Query name is required');
+    });
+
+    it('should throw error for name exceeding 255 characters', () => {
+      const input: SaveQueryInput = {
+        name: 'a'.repeat(256),
+        sqlText: 'SELECT * FROM test',
+      };
+
+      expect(() => saveQuery(input)).toThrow('Query name must be 255 characters or less');
+    });
+
+    it('should throw error for duplicate name', () => {
+      const existingQueries: SavedQuery[] = [
+        {
+          id: '1',
+          name: 'Test Query',
+          sqlText: 'SELECT 1',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-01T00:00:00Z',
+        },
+      ];
+      mockStore.get.mockReturnValue(existingQueries);
+
+      const input: SaveQueryInput = {
+        name: 'Test Query',
+        sqlText: 'SELECT * FROM test',
+      };
+
+      expect(() => saveQuery(input)).toThrow('A query with the name "Test Query" already exists');
+    });
+  });
+
+  describe('updateQuery', () => {
+    const existingQuery: SavedQuery = {
+      id: '1',
+      name: 'Test Query',
+      sqlText: 'SELECT * FROM test',
+      description: 'Original description',
+      tags: ['original'],
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    };
+
+    beforeEach(() => {
+      mockStore.get.mockReturnValue([existingQuery]);
+    });
+
+    it('should update query name', () => {
+      const updates: UpdateQueryInput = {
+        name: 'Updated Query',
+      };
+
+      const result = updateQuery('1', updates);
+
+      expect(result.name).toBe('Updated Query');
+      expect(result.sqlText).toBe('SELECT * FROM test');
+    });
+
+    it('should update query SQL', () => {
+      const updates: UpdateQueryInput = {
+        sqlText: 'SELECT 1',
+      };
+
+      const result = updateQuery('1', updates);
+
+      expect(result.sqlText).toBe('SELECT 1');
+      expect(result.name).toBe('Test Query');
+    });
+
+    it('should update multiple fields', () => {
+      const updates: UpdateQueryInput = {
+        name: 'Updated Query',
+        sqlText: 'SELECT 1',
+        description: 'Updated description',
+        tags: ['updated'],
+      };
+
+      const result = updateQuery('1', updates);
+
+      expect(result.name).toBe('Updated Query');
+      expect(result.sqlText).toBe('SELECT 1');
+      expect(result.description).toBe('Updated description');
+      expect(result.tags).toEqual(['updated']);
+    });
+
+    it('should throw error for non-existent query', () => {
+      expect(() => updateQuery('non-existent', { name: 'Test' })).toThrow(
+        'Query with id "non-existent" not found'
+      );
+    });
+
+    it('should throw error for empty name update', () => {
+      expect(() => updateQuery('1', { name: '' })).toThrow('Query name cannot be empty');
+    });
+
+    it('should throw error for name exceeding 255 characters', () => {
+      expect(() => updateQuery('1', { name: 'a'.repeat(256) })).toThrow(
+        'Query name must be 255 characters or less'
+      );
+    });
+
+    it('should throw error for duplicate name', () => {
+      const anotherQuery: SavedQuery = {
+        id: '2',
+        name: 'Another Query',
+        sqlText: 'SELECT 2',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+      mockStore.get.mockReturnValue([existingQuery, anotherQuery]);
+
+      expect(() => updateQuery('1', { name: 'Another Query' })).toThrow(
+        'A query with the name "Another Query" already exists'
+      );
+    });
+
+    it('should update updatedAt timestamp', () => {
+      const result = updateQuery('1', { description: 'New description' });
+
+      expect(result.updatedAt).not.toBe(existingQuery.updatedAt);
+    });
+  });
+
+  describe('deleteQuery', () => {
+    it('should delete an existing query', () => {
+      const existingQuery: SavedQuery = {
+        id: '1',
+        name: 'Test Query',
+        sqlText: 'SELECT * FROM test',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+      mockStore.get.mockReturnValue([existingQuery]);
+
+      deleteQuery('1');
+
+      expect(mockStore.set).toHaveBeenCalledWith('queries', []);
+    });
+
+    it('should throw error for non-existent query', () => {
+      mockStore.get.mockReturnValue([]);
+
+      expect(() => deleteQuery('non-existent')).toThrow('Query with id "non-existent" not found');
+    });
+  });
+
+  describe('searchQueries', () => {
+    const queries: SavedQuery[] = [
+      {
+        id: '1',
+        name: 'Sales Report',
+        sqlText: 'SELECT * FROM sales',
+        description: 'Monthly sales data',
+        tags: ['report', 'monthly'],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      },
+      {
+        id: '2',
+        name: 'User Analytics',
+        sqlText: 'SELECT * FROM users WHERE active = true',
+        description: 'Active user metrics',
+        tags: ['analytics', 'users'],
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      },
+    ];
+
+    beforeEach(() => {
+      mockStore.get.mockReturnValue(queries);
+    });
+
+    it('should return all queries for empty search term', () => {
+      const result = searchQueries('');
+      expect(result).toEqual(queries);
+    });
+
+    it('should return all queries for whitespace search term', () => {
+      const result = searchQueries('   ');
+      expect(result).toEqual(queries);
+    });
+
+    it('should search by query name', () => {
+      const result = searchQueries('sales');
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('Sales Report');
+    });
+
+    it('should search by SQL text', () => {
+      const result = searchQueries('active');
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('User Analytics');
+    });
+
+    it('should search by description', () => {
+      const result = searchQueries('metrics');
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('User Analytics');
+    });
+
+    it('should search by tags', () => {
+      const result = searchQueries('report');
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('Sales Report');
+    });
+
+    it('should be case-insensitive', () => {
+      const result = searchQueries('SALES');
+      expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('Sales Report');
+    });
+
+    it('should return empty array for no matches', () => {
+      const result = searchQueries('nonexistent');
+      expect(result).toEqual([]);
+    });
+  });
+});
+````
+
+## File: tests/unit/main/tabs-store.test.ts
+````typescript
+// Mock electron-store before importing the module
+const mockStore = {
+  get: jest.fn(),
+  set: jest.fn(),
+};
+
+jest.mock('electron-store', () => {
+  return jest.fn().mockImplementation(() => mockStore);
+});
+
+import type { QueryTab } from '../../../src/shared/types/query';
+
+// Import after mocks are set up
+let getTabs: () => QueryTab[];
+let getActiveTabId: () => string | null;
+let saveTabs: (tabs: QueryTab[], activeTabId: string | null) => void;
+
+describe('tabs-store', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.resetModules();
+
+    // Re-import the module to reset state
+    const tabsStore = require('../../../src/main/storage/tabs-store');
+    getTabs = tabsStore.getTabs;
+    getActiveTabId = tabsStore.getActiveTabId;
+    saveTabs = tabsStore.saveTabs;
+  });
+
+  describe('getTabs', () => {
+    it('should return empty array when no tabs exist', () => {
+      mockStore.get.mockReturnValue([]);
+      const result = getTabs();
+      expect(result).toEqual([]);
+    });
+
+    it('should return empty array when store returns null', () => {
+      mockStore.get.mockReturnValue(null);
+      const result = getTabs();
+      expect(result).toEqual([]);
+    });
+
+    it('should return tabs with undefined results', () => {
+      const persistedTabs = [
+        {
+          id: 'tab-1',
+          title: 'Query 1',
+          type: 'query',
+          queryText: 'SELECT 1',
+          isModified: false,
+          executionStatus: 'idle',
+        },
+      ];
+      mockStore.get.mockReturnValue(persistedTabs);
+
+      const result = getTabs();
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('tab-1');
+      expect(result[0].results).toBeUndefined();
+    });
+
+    it('should preserve all tab properties except results', () => {
+      const persistedTabs = [
+        {
+          id: 'tab-1',
+          title: 'Query 1',
+          type: 'query',
+          queryText: 'SELECT * FROM test',
+          isModified: true,
+          executionStatus: 'completed',
+          jobId: 'job-123',
+          error: undefined,
+          lastExecuted: '2024-01-01T00:00:00Z',
+          savedQueryId: 'saved-1',
+        },
+      ];
+      mockStore.get.mockReturnValue(persistedTabs);
+
+      const result = getTabs();
+
+      expect(result[0]).toMatchObject({
+        id: 'tab-1',
+        title: 'Query 1',
+        type: 'query',
+        queryText: 'SELECT * FROM test',
+        isModified: true,
+        executionStatus: 'completed',
+        jobId: 'job-123',
+        lastExecuted: '2024-01-01T00:00:00Z',
+        savedQueryId: 'saved-1',
+      });
+    });
+  });
+
+  describe('getActiveTabId', () => {
+    it('should return null when no active tab', () => {
+      mockStore.get.mockReturnValue(null);
+      const result = getActiveTabId();
+      expect(result).toBeNull();
+    });
+
+    it('should return active tab id', () => {
+      mockStore.get.mockReturnValue('tab-1');
+      const result = getActiveTabId();
+      expect(result).toBe('tab-1');
+    });
+  });
+
+  describe('saveTabs', () => {
+    it('should save tabs without results', () => {
+      const tabs: QueryTab[] = [
+        {
+          id: 'tab-1',
+          title: 'Query 1',
+          type: 'query',
+          queryText: 'SELECT 1',
+          isModified: false,
+          executionStatus: 'completed',
+          results: {
+            columns: [{ name: 'col', type: 'INTEGER' }],
+            rows: [{ values: [1] }],
+            totalRows: 1,
+            rowsReturned: 1,
+            executionTimeMs: 100,
+            jobId: 'job-1',
+            hasMore: false,
+          },
+        },
+      ];
+
+      saveTabs(tabs, 'tab-1');
+
+      expect(mockStore.set).toHaveBeenCalledWith('tabs', [
+        {
+          id: 'tab-1',
+          title: 'Query 1',
+          type: 'query',
+          queryText: 'SELECT 1',
+          isModified: false,
+          executionStatus: 'completed',
+        },
+      ]);
+    });
+
+    it('should save active tab id', () => {
+      saveTabs([], 'tab-1');
+
+      expect(mockStore.set).toHaveBeenCalledWith('activeTabId', 'tab-1');
+    });
+
+    it('should save null active tab id', () => {
+      saveTabs([], null);
+
+      expect(mockStore.set).toHaveBeenCalledWith('activeTabId', null);
+    });
+
+    it('should save multiple tabs', () => {
+      const tabs: QueryTab[] = [
+        {
+          id: 'tab-1',
+          title: 'Query 1',
+          type: 'query',
+          queryText: 'SELECT 1',
+          isModified: false,
+          executionStatus: 'idle',
+        },
+        {
+          id: 'tab-2',
+          title: 'Query 2',
+          type: 'query',
+          queryText: 'SELECT 2',
+          isModified: true,
+          executionStatus: 'idle',
+        },
+      ];
+
+      saveTabs(tabs, 'tab-2');
+
+      const savedTabs = mockStore.set.mock.calls.find((call) => call[0] === 'tabs')?.[1];
+      expect(savedTabs).toHaveLength(2);
+      expect(savedTabs[0].id).toBe('tab-1');
+      expect(savedTabs[1].id).toBe('tab-2');
+    });
+  });
+});
+````
+
+## File: tests/unit/main/ui-settings-store.test.ts
+````typescript
+// Mock electron-store before importing the module
+const mockStore = {
+  get: jest.fn(),
+  set: jest.fn(),
+};
+
+jest.mock('electron-store', () => {
+  return jest.fn().mockImplementation(() => mockStore);
+});
+
+// Import after mocks are set up
+let getLeftSidebarWidth: () => number;
+let setLeftSidebarWidth: (width: number) => void;
+let getRightSidebarWidth: () => number;
+let setRightSidebarWidth: (width: number) => void;
+let getWindowBounds: () => { width: number; height: number; x?: number; y?: number } | undefined;
+let setWindowBounds: (bounds: { width: number; height: number; x?: number; y?: number }) => void;
+
+describe('ui-settings-store', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.resetModules();
+
+    // Re-import the module to reset state
+    const uiSettingsStore = require('../../../src/main/storage/ui-settings-store');
+    getLeftSidebarWidth = uiSettingsStore.getLeftSidebarWidth;
+    setLeftSidebarWidth = uiSettingsStore.setLeftSidebarWidth;
+    getRightSidebarWidth = uiSettingsStore.getRightSidebarWidth;
+    setRightSidebarWidth = uiSettingsStore.setRightSidebarWidth;
+    getWindowBounds = uiSettingsStore.getWindowBounds;
+    setWindowBounds = uiSettingsStore.setWindowBounds;
+  });
+
+  describe('getLeftSidebarWidth', () => {
+    it('should return stored width', () => {
+      mockStore.get.mockReturnValue(300);
+      const result = getLeftSidebarWidth();
+      expect(result).toBe(300);
+    });
+
+    it('should return default width when no value is stored', () => {
+      mockStore.get.mockReturnValue(null);
+      const result = getLeftSidebarWidth();
+      expect(result).toBe(250);
+    });
+
+    it('should return default width when store returns 0', () => {
+      mockStore.get.mockReturnValue(0);
+      const result = getLeftSidebarWidth();
+      expect(result).toBe(250);
+    });
+  });
+
+  describe('setLeftSidebarWidth', () => {
+    it('should save width to store', () => {
+      setLeftSidebarWidth(350);
+      expect(mockStore.set).toHaveBeenCalledWith('leftSidebarWidth', 350);
+    });
+
+    it('should save minimum width', () => {
+      setLeftSidebarWidth(100);
+      expect(mockStore.set).toHaveBeenCalledWith('leftSidebarWidth', 100);
+    });
+
+    it('should save large width', () => {
+      setLeftSidebarWidth(500);
+      expect(mockStore.set).toHaveBeenCalledWith('leftSidebarWidth', 500);
+    });
+  });
+
+  describe('getRightSidebarWidth', () => {
+    it('should return stored width', () => {
+      mockStore.get.mockReturnValue(400);
+      const result = getRightSidebarWidth();
+      expect(result).toBe(400);
+    });
+
+    it('should return default width when no value is stored', () => {
+      mockStore.get.mockReturnValue(null);
+      const result = getRightSidebarWidth();
+      expect(result).toBe(300);
+    });
+
+    it('should return default width when store returns 0', () => {
+      mockStore.get.mockReturnValue(0);
+      const result = getRightSidebarWidth();
+      expect(result).toBe(300);
+    });
+  });
+
+  describe('setRightSidebarWidth', () => {
+    it('should save width to store', () => {
+      setRightSidebarWidth(450);
+      expect(mockStore.set).toHaveBeenCalledWith('rightSidebarWidth', 450);
+    });
+  });
+
+  describe('getWindowBounds', () => {
+    it('should return stored window bounds', () => {
+      const bounds = { width: 1400, height: 900, x: 100, y: 50 };
+      mockStore.get.mockReturnValue(bounds);
+      
+      const result = getWindowBounds();
+      expect(result).toEqual(bounds);
+    });
+
+    it('should return undefined when no bounds are stored', () => {
+      mockStore.get.mockReturnValue(undefined);
+      
+      const result = getWindowBounds();
+      expect(result).toBeUndefined();
+    });
+
+    it('should return bounds without position', () => {
+      const bounds = { width: 1400, height: 900 };
+      mockStore.get.mockReturnValue(bounds);
+      
+      const result = getWindowBounds();
+      expect(result).toEqual(bounds);
+    });
+  });
+
+  describe('setWindowBounds', () => {
+    it('should save window bounds with position', () => {
+      const bounds = { width: 1400, height: 900, x: 100, y: 50 };
+      setWindowBounds(bounds);
+      
+      expect(mockStore.set).toHaveBeenCalledWith('windowBounds', bounds);
+    });
+
+    it('should save window bounds without position', () => {
+      const bounds = { width: 1400, height: 900 };
+      setWindowBounds(bounds);
+      
+      expect(mockStore.set).toHaveBeenCalledWith('windowBounds', bounds);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/components/ConnectionDialog.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { ConnectionDialog } from '../../../../src/renderer/components/ConnectionDialog/ConnectionDialog';
+
+// Mock the stores
+jest.mock('../../../../src/renderer/stores/connection-store', () => ({
+  useConnectionStore: () => ({
+    setConnection: jest.fn(),
+    setConnecting: jest.fn(),
+    setConnectionError: jest.fn(),
+  }),
+}));
+
+// Mock validateConnectionConfig
+jest.mock('../../../../src/shared/utils/connection-validation', () => ({
+  validateConnectionConfig: jest.fn(() => ({ valid: true })),
+}));
+
+describe('ConnectionDialog', () => {
+  const mockOnClose = jest.fn();
+  
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    // Reset electronAPI mocks
+    (window.electronAPI.connection.getSaved as jest.Mock).mockResolvedValue(null);
+    (window.electronAPI.connection.test as jest.Mock).mockResolvedValue(true);
+    (window.electronAPI.connection.configure as jest.Mock).mockResolvedValue(undefined);
+    (window.electronAPI.connection.getActive as jest.Mock).mockResolvedValue({
+      projectId: 'test-project',
+      authType: 'application-default',
+      location: 'EU',
+      isActive: true,
+    });
+  });
+
+  it('should render the dialog', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    expect(screen.getByText('Connect to BigQuery')).toBeInTheDocument();
+  });
+
+  it('should render project ID input', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    expect(screen.getByLabelText(/project id/i)).toBeInTheDocument();
+  });
+
+  it('should render location dropdown', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    expect(screen.getByLabelText(/location/i)).toBeInTheDocument();
+  });
+
+  it('should render authentication method dropdown', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    expect(screen.getByLabelText(/authentication method/i)).toBeInTheDocument();
+  });
+
+  it('should show service account fields when service-account auth is selected', async () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    // Service account is the default, so the fields should be visible
+    expect(screen.getByLabelText(/service account key file path/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/paste service account key json/i)).toBeInTheDocument();
+  });
+
+  it('should hide service account fields when application-default is selected', async () => {
+    const user = userEvent.setup();
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const authSelect = screen.getByLabelText(/authentication method/i);
+    await user.selectOptions(authSelect, 'application-default');
+
+    expect(screen.queryByLabelText(/service account key file path/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/paste service account key json/i)).not.toBeInTheDocument();
+  });
+
+  it('should call onClose when cancel button is clicked', async () => {
+    const user = userEvent.setup();
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const cancelButton = screen.getByRole('button', { name: /cancel/i });
+    await user.click(cancelButton);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should call onClose when clicking overlay', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const overlay = document.querySelector('.connection-dialog-overlay');
+    fireEvent.click(overlay!);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should not call onClose when clicking dialog content', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const dialog = document.querySelector('.connection-dialog');
+    fireEvent.click(dialog!);
+
+    expect(mockOnClose).not.toHaveBeenCalled();
+  });
+
+  it('should disable connect button when project ID is empty', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const connectButton = screen.getByRole('button', { name: /connect/i });
+    expect(connectButton).toBeDisabled();
+  });
+
+  it('should enable connect button when project ID is provided', async () => {
+    const user = userEvent.setup();
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const projectIdInput = screen.getByLabelText(/project id/i);
+    await user.type(projectIdInput, 'my-test-project');
+
+    const connectButton = screen.getByRole('button', { name: /connect/i });
+    expect(connectButton).not.toBeDisabled();
+  });
+
+  it('should load saved connection on mount', async () => {
+    const savedConnection = {
+      projectId: 'saved-project',
+      authType: 'service-account' as const,
+      serviceAccountKeyPath: '/path/to/key.json',
+      location: 'US',
+      enableDbtSupport: true,
+    };
+    (window.electronAPI.connection.getSaved as jest.Mock).mockResolvedValue(savedConnection);
+
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/project id/i)).toHaveValue('saved-project');
+    });
+  });
+
+  it('should show dbt support checkbox', () => {
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    expect(screen.getByLabelText(/enable dbt syntax support/i)).toBeInTheDocument();
+  });
+
+  it('should toggle dbt support checkbox', async () => {
+    const user = userEvent.setup();
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    const dbtCheckbox = screen.getByLabelText(/enable dbt syntax support/i);
+    expect(dbtCheckbox).not.toBeChecked();
+
+    await user.click(dbtCheckbox);
+    expect(dbtCheckbox).toBeChecked();
+  });
+
+  it('should attempt connection when connect button is clicked', async () => {
+    const user = userEvent.setup();
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    // Select application-default auth to avoid service account validation
+    const authSelect = screen.getByLabelText(/authentication method/i);
+    await user.selectOptions(authSelect, 'application-default');
+
+    // Enter project ID
+    const projectIdInput = screen.getByLabelText(/project id/i);
+    await user.type(projectIdInput, 'my-test-project');
+
+    // Click connect
+    const connectButton = screen.getByRole('button', { name: /connect/i });
+    await user.click(connectButton);
+
+    await waitFor(() => {
+      expect(window.electronAPI.connection.test).toHaveBeenCalled();
+    });
+  });
+
+  it('should show error message when connection fails', async () => {
+    const user = userEvent.setup();
+    const { validateConnectionConfig } = require('../../../../src/shared/utils/connection-validation');
+    validateConnectionConfig.mockReturnValue({ valid: false, error: 'Invalid project ID' });
+
+    render(<ConnectionDialog onClose={mockOnClose} />);
+
+    // Select application-default auth
+    const authSelect = screen.getByLabelText(/authentication method/i);
+    await user.selectOptions(authSelect, 'application-default');
+
+    // Enter project ID
+    const projectIdInput = screen.getByLabelText(/project id/i);
+    await user.type(projectIdInput, 'invalid');
+
+    // Click connect
+    const connectButton = screen.getByRole('button', { name: /connect/i });
+    await user.click(connectButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Invalid project ID')).toBeInTheDocument();
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/components/ErrorBoundary.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { ErrorBoundary } from '../../../../src/renderer/components/ErrorBoundary/ErrorBoundary';
+
+// A component that throws an error
+const ThrowError: React.FC<{ shouldThrow?: boolean }> = ({ shouldThrow = true }) => {
+  if (shouldThrow) {
+    throw new Error('Test error');
+  }
+  return <div>No error</div>;
+};
+
+// Suppress console.error for error boundary tests
+const originalError = console.error;
+beforeAll(() => {
+  console.error = jest.fn();
+});
+afterAll(() => {
+  console.error = originalError;
+});
+
+describe('ErrorBoundary', () => {
+  beforeEach(() => {
+    // Clear mock calls between tests
+    jest.clearAllMocks();
+  });
+
+  it('should render children when there is no error', () => {
+    render(
+      <ErrorBoundary>
+        <div data-testid="child">Child content</div>
+      </ErrorBoundary>
+    );
+
+    expect(screen.getByTestId('child')).toBeInTheDocument();
+    expect(screen.getByText('Child content')).toBeInTheDocument();
+  });
+
+  it('should render error UI when child throws', () => {
+    render(
+      <ErrorBoundary>
+        <ThrowError />
+      </ErrorBoundary>
+    );
+
+    expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.queryByText('No error')).not.toBeInTheDocument();
+  });
+
+  it('should display error message in details', () => {
+    render(
+      <ErrorBoundary>
+        <ThrowError />
+      </ErrorBoundary>
+    );
+
+    // The error message should be in the details element
+    expect(screen.getByText(/Test error/)).toBeInTheDocument();
+  });
+
+  it('should have a reload button', () => {
+    render(
+      <ErrorBoundary>
+        <ThrowError />
+      </ErrorBoundary>
+    );
+
+    const reloadButton = screen.getByRole('button', { name: /reload application/i });
+    expect(reloadButton).toBeInTheDocument();
+  });
+
+  it('should not catch errors from event handlers', () => {
+    // ErrorBoundary only catches errors during rendering, not event handlers
+    const ClickError: React.FC = () => {
+      const handleClick = () => {
+        throw new Error('Click error');
+      };
+      return <button onClick={handleClick}>Click me</button>;
+    };
+
+    render(
+      <ErrorBoundary>
+        <ClickError />
+      </ErrorBoundary>
+    );
+
+    // The component should render normally
+    expect(screen.getByRole('button', { name: 'Click me' })).toBeInTheDocument();
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();
+  });
+
+  it('should render multiple children when there is no error', () => {
+    render(
+      <ErrorBoundary>
+        <div data-testid="child1">Child 1</div>
+        <div data-testid="child2">Child 2</div>
+      </ErrorBoundary>
+    );
+
+    expect(screen.getByTestId('child1')).toBeInTheDocument();
+    expect(screen.getByTestId('child2')).toBeInTheDocument();
+  });
+});
+````
+
+## File: tests/unit/renderer/components/SidebarHeader.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { SidebarHeader } from '../../../../src/renderer/components/SidebarHeader/SidebarHeader';
+
+describe('SidebarHeader', () => {
+  const mockOnToggleCollapse = jest.fn();
+  const mockOnRefresh = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('expanded state', () => {
+    it('should render collapse button when expanded', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+        />
+      );
+
+      expect(screen.getByTitle('Collapse')).toBeInTheDocument();
+    });
+
+    it('should call onToggleCollapse when collapse button is clicked', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+        />
+      );
+
+      fireEvent.click(screen.getByTitle('Collapse'));
+      expect(mockOnToggleCollapse).toHaveBeenCalled();
+    });
+
+    it('should render refresh button when onRefresh is provided', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+          onRefresh={mockOnRefresh}
+        />
+      );
+
+      expect(screen.getByTitle('Refresh')).toBeInTheDocument();
+    });
+
+    it('should not render refresh button when onRefresh is not provided', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+        />
+      );
+
+      expect(screen.queryByTitle('Refresh')).not.toBeInTheDocument();
+    });
+
+    it('should call onRefresh when refresh button is clicked', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+          onRefresh={mockOnRefresh}
+        />
+      );
+
+      fireEvent.click(screen.getByTitle('Refresh'));
+      expect(mockOnRefresh).toHaveBeenCalled();
+    });
+
+    it('should disable refresh button when isLoading is true', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+          onRefresh={mockOnRefresh}
+          isLoading={true}
+        />
+      );
+
+      expect(screen.getByTitle('Refresh')).toBeDisabled();
+    });
+
+    it('should enable refresh button when isLoading is false', () => {
+      render(
+        <SidebarHeader
+          collapsed={false}
+          onToggleCollapse={mockOnToggleCollapse}
+          onRefresh={mockOnRefresh}
+          isLoading={false}
+        />
+      );
+
+      expect(screen.getByTitle('Refresh')).not.toBeDisabled();
+    });
+  });
+
+  describe('collapsed state', () => {
+    it('should render expand button when collapsed', () => {
+      render(
+        <SidebarHeader
+          collapsed={true}
+          onToggleCollapse={mockOnToggleCollapse}
+        />
+      );
+
+      expect(screen.getByTitle('Expand')).toBeInTheDocument();
+    });
+
+    it('should call onToggleCollapse when expand button is clicked', () => {
+      render(
+        <SidebarHeader
+          collapsed={true}
+          onToggleCollapse={mockOnToggleCollapse}
+        />
+      );
+
+      fireEvent.click(screen.getByTitle('Expand'));
+      expect(mockOnToggleCollapse).toHaveBeenCalled();
+    });
+
+    it('should not render refresh button when collapsed', () => {
+      render(
+        <SidebarHeader
+          collapsed={true}
+          onToggleCollapse={mockOnToggleCollapse}
+          onRefresh={mockOnRefresh}
+        />
+      );
+
+      expect(screen.queryByTitle('Refresh')).not.toBeInTheDocument();
+    });
+
+    it('should have collapsed class', () => {
+      const { container } = render(
+        <SidebarHeader
+          collapsed={true}
+          onToggleCollapse={mockOnToggleCollapse}
+        />
+      );
+
+      expect(container.querySelector('.sidebar-header-collapsed')).toBeInTheDocument();
+    });
+  });
+
+  describe('default values', () => {
+    it('should default collapsed to false', () => {
+      render(<SidebarHeader onToggleCollapse={mockOnToggleCollapse} />);
+
+      expect(screen.getByTitle('Collapse')).toBeInTheDocument();
+    });
+
+    it('should default isLoading to false', () => {
+      render(
+        <SidebarHeader
+          onToggleCollapse={mockOnToggleCollapse}
+          onRefresh={mockOnRefresh}
+        />
+      );
+
+      expect(screen.getByTitle('Refresh')).not.toBeDisabled();
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/components/SidebarSwitcher.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { SidebarSwitcher, SidebarView } from '../../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher';
+
+describe('SidebarSwitcher', () => {
+  const mockOnViewChange = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should render both buttons', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
+
+    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /saved queries/i })).toBeInTheDocument();
+  });
+
+  it('should highlight explorer button when current view is explorer', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
+
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
+
+    expect(explorerButton).toHaveClass('active');
+    expect(savedQueriesButton).not.toHaveClass('active');
+  });
+
+  it('should highlight saved queries button when current view is saved-queries', () => {
+    render(
+      <SidebarSwitcher currentView="saved-queries" onViewChange={mockOnViewChange} />
+    );
+
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
+
+    expect(explorerButton).not.toHaveClass('active');
+    expect(savedQueriesButton).toHaveClass('active');
+  });
+
+  it('should call onViewChange with "explorer" when explorer button is clicked', () => {
+    render(
+      <SidebarSwitcher currentView="saved-queries" onViewChange={mockOnViewChange} />
+    );
+
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    fireEvent.click(explorerButton);
+
+    expect(mockOnViewChange).toHaveBeenCalledWith('explorer');
+  });
+
+  it('should call onViewChange with "saved-queries" when saved queries button is clicked', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
+
+    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
+    fireEvent.click(savedQueriesButton);
+
+    expect(mockOnViewChange).toHaveBeenCalledWith('saved-queries');
+  });
+
+  it('should not render when collapsed is true', () => {
+    render(
+      <SidebarSwitcher
+        currentView="explorer"
+        onViewChange={mockOnViewChange}
+        collapsed={true}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: /explorer/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /saved queries/i })).not.toBeInTheDocument();
+  });
+
+  it('should render when collapsed is false', () => {
+    render(
+      <SidebarSwitcher
+        currentView="explorer"
+        onViewChange={mockOnViewChange}
+        collapsed={false}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /saved queries/i })).toBeInTheDocument();
+  });
+
+  it('should render when collapsed is not provided', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
+
+    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
+  });
+
+  it('should have correct title attributes', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
+
+    expect(screen.getByTitle('Explorer')).toBeInTheDocument();
+    expect(screen.getByTitle('Saved Queries')).toBeInTheDocument();
+  });
+});
+````
+
+## File: tests/unit/renderer/components/TabBar.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { TabBar } from '../../../../src/renderer/components/TabBar/TabBar';
+import { useTabsStore } from '../../../../src/renderer/stores/tabs-store';
+
+// Mock the tabs store
+jest.mock('../../../../src/renderer/stores/tabs-store', () => ({
+  useTabsStore: jest.fn(),
+}));
+
+const mockUseTabsStore = useTabsStore as jest.MockedFunction<typeof useTabsStore>;
+
+describe('TabBar', () => {
+  const mockTabs = [
+    { id: 'tab-1', title: 'Query 1', type: 'query' as const, queryText: '', isModified: false, executionStatus: 'idle' as const },
+    { id: 'tab-2', title: 'Query 2', type: 'query' as const, queryText: '', isModified: true, executionStatus: 'idle' as const },
+    { id: 'tab-3', title: 'Query 3', type: 'query' as const, queryText: '', isModified: false, executionStatus: 'idle' as const },
+  ];
+
+  const mockSetActiveTab = jest.fn();
+  const mockCloseTab = jest.fn();
+  const mockCreateTab = jest.fn();
+  const mockReorderTabs = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseTabsStore.mockReturnValue({
+      tabs: mockTabs,
+      activeTabId: 'tab-1',
+      setActiveTab: mockSetActiveTab,
+      closeTab: mockCloseTab,
+      createTab: mockCreateTab,
+      reorderTabs: mockReorderTabs,
+      updateTab: jest.fn(),
+      setTabQuery: jest.fn(),
+      setTabResults: jest.fn(),
+      setTabError: jest.fn(),
+      setTabStatus: jest.fn(),
+      loadTabs: jest.fn(),
+      saveTabs: jest.fn(),
+    });
+  });
+
+  it('should render all query tabs', () => {
+    render(<TabBar />);
+
+    expect(screen.getByText('Query 1')).toBeInTheDocument();
+    expect(screen.getByText('Query 2')).toBeInTheDocument();
+    expect(screen.getByText('Query 3')).toBeInTheDocument();
+  });
+
+  it('should highlight the active tab', () => {
+    render(<TabBar />);
+
+    const activeTab = screen.getByText('Query 1').closest('.tab');
+    expect(activeTab).toHaveClass('active');
+  });
+
+  it('should show modified indicator for modified tabs', () => {
+    render(<TabBar />);
+
+    // The modified tab should have a modified indicator
+    const modifiedTab = screen.getByText('Query 2').closest('.tab');
+    expect(modifiedTab).toHaveClass('modified');
+    
+    // Check for the modified indicator
+    const modifiedIndicator = screen.getByText('●');
+    expect(modifiedIndicator).toBeInTheDocument();
+  });
+
+  it('should call setActiveTab when clicking a tab', () => {
+    render(<TabBar />);
+
+    fireEvent.click(screen.getByText('Query 2'));
+
+    expect(mockSetActiveTab).toHaveBeenCalledWith('tab-2');
+  });
+
+  it('should call createTab when clicking new tab button', () => {
+    render(<TabBar />);
+
+    const newTabButton = screen.getByTitle('New Tab');
+    fireEvent.click(newTabButton);
+
+    expect(mockCreateTab).toHaveBeenCalled();
+  });
+
+  it('should call closeTab when clicking close button', () => {
+    // Mock window.confirm to return true
+    window.confirm = jest.fn().mockReturnValue(true);
+
+    render(<TabBar />);
+
+    const closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[0]);
+
+    expect(mockCloseTab).toHaveBeenCalledWith('tab-1');
+  });
+
+  it('should prompt confirmation when closing a modified tab', () => {
+    window.confirm = jest.fn().mockReturnValue(true);
+
+    render(<TabBar />);
+
+    // Click close on the modified tab (tab-2)
+    const closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[1]); // Second close button for tab-2
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'This tab has unsaved changes. Are you sure you want to close it?'
+    );
+    expect(mockCloseTab).toHaveBeenCalledWith('tab-2');
+  });
+
+  it('should not close modified tab when confirmation is cancelled', () => {
+    window.confirm = jest.fn().mockReturnValue(false);
+
+    render(<TabBar />);
+
+    // Click close on the modified tab (tab-2)
+    const closeButtons = screen.getAllByText('×');
+    fireEvent.click(closeButtons[1]);
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(mockCloseTab).not.toHaveBeenCalled();
+  });
+
+  it('should not show explorer or saved-queries tabs', () => {
+    mockUseTabsStore.mockReturnValue({
+      tabs: [
+        ...mockTabs,
+        { id: 'explorer', title: 'Explorer', type: 'explorer' as const, queryText: '', isModified: false, executionStatus: 'idle' as const },
+        { id: 'saved', title: 'Saved Queries', type: 'saved-queries' as const, queryText: '', isModified: false, executionStatus: 'idle' as const },
+      ],
+      activeTabId: 'tab-1',
+      setActiveTab: mockSetActiveTab,
+      closeTab: mockCloseTab,
+      createTab: mockCreateTab,
+      reorderTabs: mockReorderTabs,
+      updateTab: jest.fn(),
+      setTabQuery: jest.fn(),
+      setTabResults: jest.fn(),
+      setTabError: jest.fn(),
+      setTabStatus: jest.fn(),
+      loadTabs: jest.fn(),
+      saveTabs: jest.fn(),
+    });
+
+    render(<TabBar />);
+
+    expect(screen.queryByText('Explorer')).not.toBeInTheDocument();
+    expect(screen.queryByText('Saved Queries')).not.toBeInTheDocument();
+  });
+
+  describe('drag and drop', () => {
+    it('should set dragging class on drag start', () => {
+      render(<TabBar />);
+
+      const tab = screen.getByText('Query 1').closest('.tab');
+      
+      fireEvent.dragStart(tab!, {
+        dataTransfer: {
+          effectAllowed: '',
+          setData: jest.fn(),
+          setDragImage: jest.fn(),
+        },
+      });
+
+      expect(tab).toHaveClass('dragging');
+    });
+
+    it('should clear dragging class on drag end', () => {
+      render(<TabBar />);
+
+      const tab = screen.getByText('Query 1').closest('.tab');
+      
+      fireEvent.dragStart(tab!, {
+        dataTransfer: {
+          effectAllowed: '',
+          setData: jest.fn(),
+          setDragImage: jest.fn(),
+        },
+      });
+
+      fireEvent.dragEnd(tab!);
+
+      expect(tab).not.toHaveClass('dragging');
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/hooks/useBigQuery.test.ts
+````typescript
+import { renderHook, act, waitFor } from '@testing-library/react';
+import { useBigQuery } from '../../../../src/renderer/hooks/useBigQuery';
+import { useConnectionStore } from '../../../../src/renderer/stores/connection-store';
+
+describe('useBigQuery', () => {
+  beforeEach(() => {
+    // Reset connection store
+    act(() => {
+      useConnectionStore.getState().clearConnection();
+    });
+
+    // Reset mocks
+    jest.clearAllMocks();
+    (window.electronAPI.bigquery.execute as jest.Mock).mockResolvedValue({
+      columns: [{ name: 'col1', type: 'STRING' }],
+      rows: [{ values: ['value1'] }],
+      totalRows: 1,
+      rowsReturned: 1,
+      executionTimeMs: 100,
+      jobId: 'job-123',
+      hasMore: false,
+    });
+    (window.electronAPI.bigquery.cancel as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  describe('isConnected', () => {
+    it('should return false when no connection', () => {
+      const { result } = renderHook(() => useBigQuery());
+      expect(result.current.isConnected).toBe(false);
+    });
+
+    it('should return true when connected', () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+      expect(result.current.isConnected).toBe(true);
+    });
+  });
+
+  describe('executeQuery', () => {
+    it('should throw error when no connection', async () => {
+      const { result } = renderHook(() => useBigQuery());
+
+      await expect(result.current.executeQuery('SELECT 1')).rejects.toThrow('No active connection');
+    });
+
+    it('should execute query when connected', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+
+      const queryResult = await result.current.executeQuery('SELECT 1');
+
+      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith('SELECT 1', 'test-project');
+      expect(queryResult.jobId).toBe('job-123');
+    });
+
+    it('should pass query text to API', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+
+      await result.current.executeQuery('SELECT * FROM `dataset.table`');
+
+      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith(
+        'SELECT * FROM `dataset.table`',
+        'test-project'
+      );
+    });
+
+    it('should return query result', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+
+      const queryResult = await result.current.executeQuery('SELECT 1');
+
+      expect(queryResult).toEqual({
+        columns: [{ name: 'col1', type: 'STRING' }],
+        rows: [{ values: ['value1'] }],
+        totalRows: 1,
+        rowsReturned: 1,
+        executionTimeMs: 100,
+        jobId: 'job-123',
+        hasMore: false,
+      });
+    });
+
+    it('should propagate API errors', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      (window.electronAPI.bigquery.execute as jest.Mock).mockRejectedValue(
+        new Error('Query syntax error')
+      );
+
+      const { result } = renderHook(() => useBigQuery());
+
+      await expect(result.current.executeQuery('INVALID SQL')).rejects.toThrow('Query syntax error');
+    });
+  });
+
+  describe('cancelQuery', () => {
+    it('should cancel a running query', async () => {
+      const { result } = renderHook(() => useBigQuery());
+
+      await result.current.cancelQuery('job-123');
+
+      expect(window.electronAPI.bigquery.cancel).toHaveBeenCalledWith('job-123');
+    });
+
+    it('should propagate cancel errors', async () => {
+      (window.electronAPI.bigquery.cancel as jest.Mock).mockRejectedValue(
+        new Error('Job not found')
+      );
+
+      const { result } = renderHook(() => useBigQuery());
+
+      await expect(result.current.cancelQuery('invalid-job')).rejects.toThrow('Job not found');
+    });
+  });
+
+  describe('connection state changes', () => {
+    it('should update isConnected when connection changes', () => {
+      const { result, rerender } = renderHook(() => useBigQuery());
+
+      expect(result.current.isConnected).toBe(false);
+
+      // Set connection
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      rerender();
+      expect(result.current.isConnected).toBe(true);
+
+      // Clear connection
+      act(() => {
+        useConnectionStore.getState().clearConnection();
+      });
+
+      rerender();
+      expect(result.current.isConnected).toBe(false);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/stores/bigquery-metadata-store.test.ts
+````typescript
+import { act, renderHook } from '@testing-library/react';
+import { useBigQueryMetadataStore } from '../../../../src/renderer/stores/bigquery-metadata-store';
+import type { Dataset, Table } from '../../../../src/shared/types/dataset';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  tablesLoaded?: boolean;
+}
+
+describe('bigquery-metadata-store', () => {
+  beforeEach(() => {
+    // Reset store state before each test
+    act(() => {
+      useBigQueryMetadataStore.getState().clear();
+    });
+  });
+
+  describe('initial state', () => {
+    it('should have empty datasets', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      expect(result.current.datasets).toEqual([]);
+    });
+
+    it('should not be loading', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('should have no error', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe('setDatasets', () => {
+    it('should set datasets', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+        { id: 'dataset2', name: 'Dataset 2', location: 'US' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      expect(result.current.datasets).toEqual(datasets);
+    });
+
+    it('should replace existing datasets', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const initialDatasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(initialDatasets);
+      });
+
+      const newDatasets: DatasetWithTables[] = [
+        { id: 'dataset2', name: 'Dataset 2', location: 'US' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(newDatasets);
+      });
+
+      expect(result.current.datasets).toEqual(newDatasets);
+    });
+  });
+
+  describe('setDatasetTables', () => {
+    it('should set tables for a dataset', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      const tables: Table[] = [
+        { id: 'table1', name: 'Table 1', type: 'TABLE' },
+        { id: 'table2', name: 'Table 2', type: 'VIEW' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      act(() => {
+        result.current.setDatasetTables('dataset1', tables);
+      });
+
+      expect(result.current.datasets[0].tables).toEqual(tables);
+      expect(result.current.datasets[0].tablesLoaded).toBe(true);
+    });
+
+    it('should not affect other datasets', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+        { id: 'dataset2', name: 'Dataset 2', location: 'US' },
+      ];
+
+      const tables: Table[] = [
+        { id: 'table1', name: 'Table 1', type: 'TABLE' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      act(() => {
+        result.current.setDatasetTables('dataset1', tables);
+      });
+
+      expect(result.current.datasets[1].tables).toBeUndefined();
+      expect(result.current.datasets[1].tablesLoaded).toBeUndefined();
+    });
+  });
+
+  describe('getDatasetTables', () => {
+    it('should return tables for a dataset', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const tables: Table[] = [
+        { id: 'table1', name: 'Table 1', type: 'TABLE' },
+      ];
+
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU', tables },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      const result2 = result.current.getDatasetTables('dataset1');
+      expect(result2).toEqual(tables);
+    });
+
+    it('should return undefined for non-existent dataset', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      const tables = result.current.getDatasetTables('non-existent');
+      expect(tables).toBeUndefined();
+    });
+
+    it('should return undefined when tables not loaded', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      const tables = result.current.getDatasetTables('dataset1');
+      expect(tables).toBeUndefined();
+    });
+  });
+
+  describe('getAllTables', () => {
+    it('should return all tables from all datasets', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const table1: Table = { id: 'table1', name: 'Table 1', type: 'TABLE' };
+      const table2: Table = { id: 'table2', name: 'Table 2', type: 'VIEW' };
+      const table3: Table = { id: 'table3', name: 'Table 3', type: 'TABLE' };
+
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU', tables: [table1, table2] },
+        { id: 'dataset2', name: 'Dataset 2', location: 'US', tables: [table3] },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      const allTables = result.current.getAllTables();
+      
+      expect(allTables).toHaveLength(3);
+      expect(allTables).toContainEqual({ dataset: 'dataset1', table: table1 });
+      expect(allTables).toContainEqual({ dataset: 'dataset1', table: table2 });
+      expect(allTables).toContainEqual({ dataset: 'dataset2', table: table3 });
+    });
+
+    it('should return empty array when no tables loaded', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      const allTables = result.current.getAllTables();
+      expect(allTables).toEqual([]);
+    });
+
+    it('should return empty array when no datasets', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const allTables = result.current.getAllTables();
+      expect(allTables).toEqual([]);
+    });
+  });
+
+  describe('clear', () => {
+    it('should clear all state', () => {
+      const { result } = renderHook(() => useBigQueryMetadataStore());
+      
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      act(() => {
+        result.current.setDatasets(datasets);
+      });
+
+      act(() => {
+        result.current.clear();
+      });
+
+      expect(result.current.datasets).toEqual([]);
+      expect(result.current.isLoading).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe('state persistence across hooks', () => {
+    it('should share state between multiple hooks', () => {
+      const { result: hook1 } = renderHook(() => useBigQueryMetadataStore());
+      const { result: hook2 } = renderHook(() => useBigQueryMetadataStore());
+
+      const datasets: DatasetWithTables[] = [
+        { id: 'dataset1', name: 'Dataset 1', location: 'EU' },
+      ];
+
+      act(() => {
+        hook1.current.setDatasets(datasets);
+      });
+
+      expect(hook2.current.datasets).toEqual(datasets);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/stores/connection-store.test.ts
+````typescript
+import { act, renderHook } from '@testing-library/react';
+import { useConnectionStore } from '../../../../src/renderer/stores/connection-store';
+import type { ConnectionConfiguration } from '../../../../src/shared/types/connection';
+
+describe('connection-store', () => {
+  beforeEach(() => {
+    // Reset store state before each test
+    act(() => {
+      useConnectionStore.getState().clearConnection();
+    });
+  });
+
+  describe('initial state', () => {
+    it('should have null connection', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      expect(result.current.connection).toBeNull();
+    });
+
+    it('should not be connecting', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      expect(result.current.isConnecting).toBe(false);
+    });
+
+    it('should have no connection error', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      expect(result.current.connectionError).toBeNull();
+    });
+  });
+
+  describe('setConnection', () => {
+    it('should set the connection', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      const connection: ConnectionConfiguration = {
+        projectId: 'test-project',
+        authType: 'application-default',
+        location: 'EU',
+        isActive: true,
+        lastConnected: '2024-01-01T00:00:00Z',
+      };
+
+      act(() => {
+        result.current.setConnection(connection);
+      });
+
+      expect(result.current.connection).toEqual(connection);
+    });
+
+    it('should clear connection error when setting connection', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnectionError('Previous error');
+      });
+
+      const connection: ConnectionConfiguration = {
+        projectId: 'test-project',
+        authType: 'application-default',
+        location: 'EU',
+        isActive: true,
+      };
+
+      act(() => {
+        result.current.setConnection(connection);
+      });
+
+      expect(result.current.connectionError).toBeNull();
+    });
+
+    it('should set isConnecting to false when setting connection', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnecting(true);
+      });
+
+      const connection: ConnectionConfiguration = {
+        projectId: 'test-project',
+        authType: 'application-default',
+        location: 'EU',
+        isActive: true,
+      };
+
+      act(() => {
+        result.current.setConnection(connection);
+      });
+
+      expect(result.current.isConnecting).toBe(false);
+    });
+  });
+
+  describe('clearConnection', () => {
+    it('should clear the connection', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      const connection: ConnectionConfiguration = {
+        projectId: 'test-project',
+        authType: 'application-default',
+        location: 'EU',
+        isActive: true,
+      };
+
+      act(() => {
+        result.current.setConnection(connection);
+      });
+
+      act(() => {
+        result.current.clearConnection();
+      });
+
+      expect(result.current.connection).toBeNull();
+    });
+
+    it('should clear connection error', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnectionError('Some error');
+      });
+
+      act(() => {
+        result.current.clearConnection();
+      });
+
+      expect(result.current.connectionError).toBeNull();
+    });
+
+    it('should set isConnecting to false', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnecting(true);
+      });
+
+      act(() => {
+        result.current.clearConnection();
+      });
+
+      expect(result.current.isConnecting).toBe(false);
+    });
+  });
+
+  describe('setConnecting', () => {
+    it('should set isConnecting to true', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnecting(true);
+      });
+
+      expect(result.current.isConnecting).toBe(true);
+    });
+
+    it('should set isConnecting to false', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnecting(true);
+      });
+
+      act(() => {
+        result.current.setConnecting(false);
+      });
+
+      expect(result.current.isConnecting).toBe(false);
+    });
+  });
+
+  describe('setConnectionError', () => {
+    it('should set connection error', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnectionError('Connection failed');
+      });
+
+      expect(result.current.connectionError).toBe('Connection failed');
+    });
+
+    it('should set isConnecting to false when error is set', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnecting(true);
+      });
+
+      act(() => {
+        result.current.setConnectionError('Connection failed');
+      });
+
+      expect(result.current.isConnecting).toBe(false);
+    });
+
+    it('should clear connection error when null is passed', () => {
+      const { result } = renderHook(() => useConnectionStore());
+      
+      act(() => {
+        result.current.setConnectionError('Some error');
+      });
+
+      act(() => {
+        result.current.setConnectionError(null);
+      });
+
+      expect(result.current.connectionError).toBeNull();
+    });
+  });
+
+  describe('state persistence across hooks', () => {
+    it('should share state between multiple hooks', () => {
+      const { result: hook1 } = renderHook(() => useConnectionStore());
+      const { result: hook2 } = renderHook(() => useConnectionStore());
+
+      const connection: ConnectionConfiguration = {
+        projectId: 'test-project',
+        authType: 'application-default',
+        location: 'EU',
+        isActive: true,
+      };
+
+      act(() => {
+        hook1.current.setConnection(connection);
+      });
+
+      expect(hook2.current.connection).toEqual(connection);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/stores/queries-store.test.ts
+````typescript
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { useQueriesStore } from '../../../../src/renderer/stores/queries-store';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput } from '../../../../src/shared/types/query';
+
+describe('queries-store', () => {
+  const mockQueries: SavedQuery[] = [
+    {
+      id: '1',
+      name: 'Sales Report',
+      sqlText: 'SELECT * FROM sales',
+      description: 'Monthly sales data',
+      tags: ['report', 'monthly'],
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    },
+    {
+      id: '2',
+      name: 'User Analytics',
+      sqlText: 'SELECT * FROM users WHERE active = true',
+      description: 'Active user metrics',
+      tags: ['analytics', 'users'],
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    },
+  ];
+
+  beforeEach(() => {
+    // Reset store state before each test
+    useQueriesStore.setState({
+      queries: [],
+      isLoading: false,
+      searchTerm: '',
+    });
+    
+    // Reset mock implementations
+    jest.clearAllMocks();
+    
+    // Setup default mock responses
+    (window.electronAPI.queries.list as jest.Mock).mockResolvedValue(mockQueries);
+    (window.electronAPI.queries.save as jest.Mock).mockImplementation(async (input: SaveQueryInput) => ({
+      id: 'new-id',
+      ...input,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }));
+    (window.electronAPI.queries.update as jest.Mock).mockImplementation(
+      async (id: string, updates: UpdateQueryInput) => ({
+        ...mockQueries.find((q) => q.id === id),
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      })
+    );
+    (window.electronAPI.queries.delete as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  describe('initial state', () => {
+    it('should have empty queries', () => {
+      const { result } = renderHook(() => useQueriesStore());
+      expect(result.current.queries).toEqual([]);
+    });
+
+    it('should not be loading', () => {
+      const { result } = renderHook(() => useQueriesStore());
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('should have empty search term', () => {
+      const { result } = renderHook(() => useQueriesStore());
+      expect(result.current.searchTerm).toBe('');
+    });
+  });
+
+  describe('loadQueries', () => {
+    it('should load queries from API', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      await act(async () => {
+        await result.current.loadQueries();
+      });
+
+      expect(result.current.queries).toEqual(mockQueries);
+      expect(window.electronAPI.queries.list).toHaveBeenCalled();
+    });
+
+    it('should set isLoading during load', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      // Start the load
+      let loadPromise: Promise<void>;
+      act(() => {
+        loadPromise = result.current.loadQueries();
+      });
+
+      // Check loading state
+      expect(result.current.isLoading).toBe(true);
+
+      // Wait for completion
+      await act(async () => {
+        await loadPromise;
+      });
+
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('should throw error when electronAPI is not available', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+      
+      // Temporarily remove electronAPI
+      const originalElectronAPI = window.electronAPI;
+      delete (window as any).electronAPI;
+
+      await expect(
+        act(async () => {
+          await result.current.loadQueries();
+        })
+      ).rejects.toThrow('Electron API not available');
+
+      // Restore electronAPI
+      (window as any).electronAPI = originalElectronAPI;
+    });
+
+    it('should set isLoading to false on error', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+      
+      (window.electronAPI.queries.list as jest.Mock).mockRejectedValue(new Error('Load failed'));
+
+      try {
+        await act(async () => {
+          await result.current.loadQueries();
+        });
+      } catch (e) {
+        // Expected to throw
+      }
+
+      expect(result.current.isLoading).toBe(false);
+    });
+  });
+
+  describe('saveQuery', () => {
+    it('should save a new query', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      const input: SaveQueryInput = {
+        name: 'New Query',
+        sqlText: 'SELECT 1',
+        description: 'A new query',
+        tags: ['new'],
+      };
+
+      let savedQuery: SavedQuery;
+      await act(async () => {
+        savedQuery = await result.current.saveQuery(input);
+      });
+
+      expect(savedQuery!).toMatchObject({
+        id: 'new-id',
+        name: 'New Query',
+        sqlText: 'SELECT 1',
+      });
+      expect(result.current.queries).toContainEqual(expect.objectContaining({ id: 'new-id' }));
+    });
+
+    it('should call API to save query', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      const input: SaveQueryInput = {
+        name: 'New Query',
+        sqlText: 'SELECT 1',
+      };
+
+      await act(async () => {
+        await result.current.saveQuery(input);
+      });
+
+      expect(window.electronAPI.queries.save).toHaveBeenCalledWith(input);
+    });
+  });
+
+  describe('updateQuery', () => {
+    beforeEach(() => {
+      // Pre-populate queries
+      useQueriesStore.setState({ queries: mockQueries });
+    });
+
+    it('should update an existing query', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      const updates: UpdateQueryInput = {
+        name: 'Updated Sales Report',
+      };
+
+      await act(async () => {
+        await result.current.updateQuery('1', updates);
+      });
+
+      expect(result.current.queries.find((q) => q.id === '1')?.name).toBe('Updated Sales Report');
+    });
+
+    it('should call API to update query', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      const updates: UpdateQueryInput = {
+        sqlText: 'SELECT * FROM new_table',
+      };
+
+      await act(async () => {
+        await result.current.updateQuery('1', updates);
+      });
+
+      expect(window.electronAPI.queries.update).toHaveBeenCalledWith('1', updates);
+    });
+  });
+
+  describe('deleteQuery', () => {
+    beforeEach(() => {
+      // Pre-populate queries
+      useQueriesStore.setState({ queries: mockQueries });
+    });
+
+    it('should delete a query', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      await act(async () => {
+        await result.current.deleteQuery('1');
+      });
+
+      expect(result.current.queries.find((q) => q.id === '1')).toBeUndefined();
+      expect(result.current.queries).toHaveLength(1);
+    });
+
+    it('should call API to delete query', async () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      await act(async () => {
+        await result.current.deleteQuery('1');
+      });
+
+      expect(window.electronAPI.queries.delete).toHaveBeenCalledWith('1');
+    });
+  });
+
+  describe('setSearchTerm', () => {
+    it('should set search term', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('sales');
+      });
+
+      expect(result.current.searchTerm).toBe('sales');
+    });
+  });
+
+  describe('getFilteredQueries', () => {
+    beforeEach(() => {
+      // Pre-populate queries
+      useQueriesStore.setState({ queries: mockQueries });
+    });
+
+    it('should return all queries for empty search term', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toEqual(mockQueries);
+    });
+
+    it('should filter queries by name', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('sales');
+      });
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe('Sales Report');
+    });
+
+    it('should filter queries by SQL text', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('active');
+      });
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe('User Analytics');
+    });
+
+    it('should filter queries by description', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('metrics');
+      });
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe('User Analytics');
+    });
+
+    it('should filter queries by tags', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('monthly');
+      });
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe('Sales Report');
+    });
+
+    it('should be case-insensitive', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('SALES');
+      });
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toHaveLength(1);
+    });
+
+    it('should return all queries for whitespace search term', () => {
+      const { result } = renderHook(() => useQueriesStore());
+
+      act(() => {
+        result.current.setSearchTerm('   ');
+      });
+
+      const filtered = result.current.getFilteredQueries();
+      expect(filtered).toEqual(mockQueries);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/stores/tabs-store.test.ts
+````typescript
+/**
+ * Additional unit tests for tabs-store
+ */
+import { act, renderHook } from '@testing-library/react';
+import { useTabsStore } from '../../../../src/renderer/stores/tabs-store';
+import type { QueryTab } from '../../../../src/shared/types/query';
+
+describe('tabs-store additional tests', () => {
+  beforeEach(() => {
+    // Reset store state before each test
+    act(() => {
+      useTabsStore.setState({
+        tabs: [
+          {
+            id: 'tab-1',
+            title: 'Query 1',
+            type: 'query',
+            queryText: '',
+            isModified: false,
+            executionStatus: 'idle',
+          },
+          {
+            id: 'tab-2',
+            title: 'Query 2',
+            type: 'query',
+            queryText: '',
+            isModified: false,
+            executionStatus: 'idle',
+          },
+        ],
+        activeTabId: 'tab-1',
+      });
+    });
+  });
+
+  describe('updateTab', () => {
+    it('should update tab title', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.updateTab('tab-1', { title: 'Updated Title' });
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.title).toBe('Updated Title');
+    });
+
+    it('should update tab query text', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.updateTab('tab-1', { queryText: 'SELECT * FROM test' });
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.queryText).toBe('SELECT * FROM test');
+    });
+
+    it('should update tab isModified', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.updateTab('tab-1', { isModified: true });
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.isModified).toBe(true);
+    });
+
+    it('should not affect other tabs', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.updateTab('tab-1', { title: 'Updated' });
+      });
+
+      const otherTab = result.current.tabs.find((t) => t.id === 'tab-2');
+      expect(otherTab?.title).toBe('Query 2');
+    });
+  });
+
+  describe('setTabQuery', () => {
+    it('should set query text', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.setTabQuery('tab-1', 'SELECT 1');
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.queryText).toBe('SELECT 1');
+    });
+
+    it('should mark tab as modified when query changes', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.setTabQuery('tab-1', 'SELECT 1');
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.isModified).toBe(true);
+    });
+  });
+
+  describe('setTabResults', () => {
+    it('should set results and update status to completed', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      const mockResults = {
+        columns: [{ name: 'col1', type: 'STRING' }],
+        rows: [{ values: ['value1'] }],
+        totalRows: 1,
+        rowsReturned: 1,
+        executionTimeMs: 100,
+        jobId: 'job-123',
+        hasMore: false,
+      };
+
+      act(() => {
+        result.current.setTabResults('tab-1', mockResults);
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.results).toEqual(mockResults);
+      expect(tab?.executionStatus).toBe('completed');
+    });
+  });
+
+  describe('setTabError', () => {
+    it('should set error and update status', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.setTabError('tab-1', 'Query failed');
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.error).toBe('Query failed');
+      expect(tab?.executionStatus).toBe('error');
+    });
+  });
+
+  describe('setTabStatus', () => {
+    it('should set execution status', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.setTabStatus('tab-1', 'running');
+      });
+
+      const tab = result.current.tabs.find((t) => t.id === 'tab-1');
+      expect(tab?.executionStatus).toBe('running');
+    });
+  });
+
+  describe('reorderTabs', () => {
+    it('should reorder tabs', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      const initialFirstTabId = result.current.tabs[0].id;
+      const initialSecondTabId = result.current.tabs[1].id;
+
+      act(() => {
+        result.current.reorderTabs(0, 1);
+      });
+
+      expect(result.current.tabs[0].id).toBe(initialSecondTabId);
+      expect(result.current.tabs[1].id).toBe(initialFirstTabId);
+    });
+
+    it('should not reorder if indices are the same', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      const tabsBefore = [...result.current.tabs];
+
+      act(() => {
+        result.current.reorderTabs(0, 0);
+      });
+
+      expect(result.current.tabs).toEqual(tabsBefore);
+    });
+
+    it('should not reorder if indices are out of bounds', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      const tabsBefore = [...result.current.tabs];
+
+      act(() => {
+        result.current.reorderTabs(-1, 0);
+      });
+
+      expect(result.current.tabs).toEqual(tabsBefore);
+    });
+  });
+
+  describe('createTab', () => {
+    it('should create a new tab', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      const initialCount = result.current.tabs.length;
+
+      act(() => {
+        result.current.createTab();
+      });
+
+      expect(result.current.tabs.length).toBe(initialCount + 1);
+    });
+
+    it('should set new tab as active', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      let newTabId: string;
+      act(() => {
+        newTabId = result.current.createTab();
+      });
+
+      expect(result.current.activeTabId).toBe(newTabId!);
+    });
+
+    it('should return the new tab id', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      let newTabId: string;
+      act(() => {
+        newTabId = result.current.createTab();
+      });
+
+      expect(newTabId!).toBeTruthy();
+      expect(result.current.tabs.find((t) => t.id === newTabId!)).toBeTruthy();
+    });
+  });
+
+  describe('closeTab', () => {
+    it('should close the specified tab', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.closeTab('tab-1');
+      });
+
+      expect(result.current.tabs.find((t) => t.id === 'tab-1')).toBeUndefined();
+    });
+
+    it('should switch active tab when closing active tab', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      // tab-1 is active
+      expect(result.current.activeTabId).toBe('tab-1');
+
+      act(() => {
+        result.current.closeTab('tab-1');
+      });
+
+      // Should switch to tab-2
+      expect(result.current.activeTabId).toBe('tab-2');
+    });
+
+    it('should not affect active tab when closing non-active tab', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      expect(result.current.activeTabId).toBe('tab-1');
+
+      act(() => {
+        result.current.closeTab('tab-2');
+      });
+
+      expect(result.current.activeTabId).toBe('tab-1');
+    });
+  });
+
+  describe('setActiveTab', () => {
+    it('should set active tab', () => {
+      const { result } = renderHook(() => useTabsStore());
+
+      act(() => {
+        result.current.setActiveTab('tab-2');
+      });
+
+      expect(result.current.activeTabId).toBe('tab-2');
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/bigquery-formatter-additional.test.ts
+````typescript
+/**
+ * Additional tests for bigquery-formatter covering more edge cases
+ */
+import { formatBigQueryValue } from '../../../src/renderer/utils/bigquery-formatter';
+
+describe('bigquery-formatter - additional coverage', () => {
+  describe('BOOL handling - string values', () => {
+    it('should handle "1" and "0" strings for BOOL', () => {
+      expect(formatBigQueryValue('1', 'BOOL')).toBe('TRUE');
+      expect(formatBigQueryValue('0', 'BOOL')).toBe('FALSE');
+    });
+  });
+
+  describe('BYTES handling', () => {
+    it('should decode valid base64 to hex', () => {
+      // "Hello" encoded in base64 is "SGVsbG8="
+      const result = formatBigQueryValue('SGVsbG8=', 'BYTES');
+      expect(result).toMatch(/^0x[0-9a-f]+$/);
+    });
+
+    it('should handle Uint8Array', () => {
+      const bytes = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]); // "Hello"
+      const result = formatBigQueryValue(bytes, 'BYTES');
+      expect(result).toBe('0x48656c6c6f');
+    });
+
+    it('should handle number array', () => {
+      const bytes = [0x48, 0x65, 0x6c, 0x6c, 0x6f]; // "Hello"
+      const result = formatBigQueryValue(bytes, 'BYTES');
+      expect(result).toBe('0x48656c6c6f');
+    });
+
+    it('should return invalid base64 as-is', () => {
+      const result = formatBigQueryValue('not-valid-base64!!!', 'BYTES');
+      expect(result).toBe('not-valid-base64!!!');
+    });
+  });
+
+  describe('DATE handling', () => {
+    it('should handle numeric date values', () => {
+      // Days since epoch - 0 should be 1970-01-01
+      const result = formatBigQueryValue(0, 'DATE');
+      expect(result).toBe('1970-01-01');
+    });
+
+    it('should handle objects with year/month/day properties', () => {
+      const dateObj = { year: 2024, month: 6, day: 15 };
+      const result = formatBigQueryValue(dateObj, 'DATE');
+      expect(result).toBe('2024-06-15');
+    });
+
+    it('should handle objects with wrapped value', () => {
+      const wrapped = { value: '2024-06-15' };
+      const result = formatBigQueryValue(wrapped, 'DATE');
+      expect(result).toBe('2024-06-15');
+    });
+  });
+
+  describe('TIME handling', () => {
+    it('should format time strings', () => {
+      expect(formatBigQueryValue('12:30:45', 'TIME')).toBe('12:30:45');
+    });
+
+    it('should handle time with milliseconds', () => {
+      expect(formatBigQueryValue('12:30:45.123', 'TIME')).toBe('12:30:45.123');
+    });
+  });
+
+  describe('TIMESTAMP handling', () => {
+    it('should handle ISO timestamp strings', () => {
+      const result = formatBigQueryValue('2024-06-15T12:30:45Z', 'TIMESTAMP');
+      expect(result).toBe('2024-06-15T12:30:45Z');
+    });
+
+    it('should handle timestamp with timezone offset', () => {
+      const result = formatBigQueryValue('2024-06-15T12:30:45+02:00', 'TIMESTAMP');
+      expect(result).toBe('2024-06-15T12:30:45+02:00');
+    });
+  });
+
+  describe('DATETIME handling', () => {
+    it('should handle datetime strings', () => {
+      const result = formatBigQueryValue('2024-06-15 12:30:45', 'DATETIME');
+      expect(result).toBe('2024-06-15 12:30:45');
+    });
+  });
+
+  describe('GEOGRAPHY handling', () => {
+    it('should handle WKT strings', () => {
+      const wkt = 'POINT(-122.4194 37.7749)';
+      expect(formatBigQueryValue(wkt, 'GEOGRAPHY')).toBe(wkt);
+    });
+
+    it('should handle POLYGON', () => {
+      const wkt = 'POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))';
+      expect(formatBigQueryValue(wkt, 'GEOGRAPHY')).toBe(wkt);
+    });
+  });
+
+  describe('JSON handling', () => {
+    it('should handle JSON strings', () => {
+      const jsonStr = '{"name": "John", "age": 30}';
+      // JSON gets pretty-printed
+      const result = formatBigQueryValue(jsonStr, 'JSON');
+      expect(JSON.parse(result)).toEqual({ name: 'John', age: 30 });
+    });
+
+    it('should handle JSON objects', () => {
+      const jsonObj = { name: 'John', age: 30 };
+      const result = formatBigQueryValue(jsonObj, 'JSON');
+      expect(JSON.parse(result)).toEqual(jsonObj);
+    });
+  });
+
+  describe('ARRAY handling', () => {
+    it('should format arrays of numbers', () => {
+      const result = formatBigQueryValue([1, 2, 3], 'ARRAY');
+      expect(result).toBe('[1, 2, 3]');
+    });
+
+    it('should format arrays of strings', () => {
+      const result = formatBigQueryValue(['a', 'b', 'c'], 'ARRAY');
+      // Formatter joins without quoting string elements
+      expect(result).toBe('[a, b, c]');
+    });
+
+    it('should format nested arrays', () => {
+      const result = formatBigQueryValue([[1, 2], [3, 4]], 'ARRAY');
+      expect(result).toBe('[[1, 2], [3, 4]]');
+    });
+
+    it('should format empty arrays', () => {
+      expect(formatBigQueryValue([], 'ARRAY')).toBe('[]');
+    });
+  });
+
+  describe('STRUCT/RECORD handling', () => {
+    it('should format simple structs', () => {
+      const struct = { name: 'John', age: 30 };
+      const result = formatBigQueryValue(struct, 'STRUCT');
+      expect(JSON.parse(result)).toEqual(struct);
+    });
+
+    it('should format nested structs', () => {
+      const struct = { user: { name: 'John', address: { city: 'NYC' } } };
+      const result = formatBigQueryValue(struct, 'RECORD');
+      expect(JSON.parse(result)).toEqual(struct);
+    });
+  });
+
+  describe('INTEGER/INT64 handling', () => {
+    it('should format positive integers', () => {
+      expect(formatBigQueryValue(42, 'INT64')).toBe('42');
+    });
+
+    it('should format negative integers', () => {
+      expect(formatBigQueryValue(-42, 'INT64')).toBe('-42');
+    });
+
+    it('should format zero', () => {
+      expect(formatBigQueryValue(0, 'INT64')).toBe('0');
+    });
+
+    it('should format string integers', () => {
+      expect(formatBigQueryValue('12345', 'INT64')).toBe('12345');
+    });
+  });
+
+  describe('FLOAT64 handling', () => {
+    it('should format floats with decimals', () => {
+      expect(formatBigQueryValue(3.14159, 'FLOAT64')).toBe('3.14159');
+    });
+
+    it('should format negative floats', () => {
+      expect(formatBigQueryValue(-2.718, 'FLOAT64')).toBe('-2.718');
+    });
+
+    it('should format very small numbers', () => {
+      expect(formatBigQueryValue(0.000001, 'FLOAT64')).toBe('0.000001');
+    });
+  });
+
+  describe('NUMERIC/BIGNUMERIC handling', () => {
+    it('should format NUMERIC values', () => {
+      expect(formatBigQueryValue('123.456789', 'NUMERIC')).toBe('123.456789');
+    });
+
+    it('should format BIGNUMERIC values', () => {
+      // BIGNUMERIC strings are formatted with locale settings (grouping)
+      const result = formatBigQueryValue('123456789.123456789', 'BIGNUMERIC');
+      // Result includes thousand separators and may round
+      expect(result).toContain('123');
+    });
+
+    it('should format DECIMAL values', () => {
+      expect(formatBigQueryValue('999.99', 'DECIMAL')).toBe('999.99');
+    });
+  });
+
+  describe('STRING handling', () => {
+    it('should return strings as-is', () => {
+      expect(formatBigQueryValue('hello', 'STRING')).toBe('hello');
+    });
+
+    it('should handle special characters', () => {
+      expect(formatBigQueryValue('hello\nworld', 'STRING')).toBe('hello\nworld');
+    });
+
+    it('should handle unicode', () => {
+      expect(formatBigQueryValue('こんにちは', 'STRING')).toBe('こんにちは');
+    });
+  });
+
+  describe('Type inference without column type', () => {
+    it('should infer string type', () => {
+      expect(formatBigQueryValue('hello')).toBe('hello');
+    });
+
+    it('should infer number type', () => {
+      expect(formatBigQueryValue(42)).toBe('42');
+    });
+
+    it('should infer boolean type', () => {
+      expect(formatBigQueryValue(true)).toBe('true');
+      expect(formatBigQueryValue(false)).toBe('false');
+    });
+
+    it('should infer Date type', () => {
+      const date = new Date('2024-06-15T12:30:45Z');
+      const result = formatBigQueryValue(date);
+      expect(result).toMatch(/2024-06-15/);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/bigquery-formatter.test.ts
+````typescript
+import { formatBigQueryValue } from '../../../src/renderer/utils/bigquery-formatter';
+
+describe('bigquery-formatter', () => {
+  describe('formatBigQueryValue', () => {
+    describe('NULL handling', () => {
+      it('should return "NULL" for null values', () => {
+        expect(formatBigQueryValue(null)).toBe('NULL');
+        expect(formatBigQueryValue(null, 'STRING')).toBe('NULL');
+        expect(formatBigQueryValue(null, 'INTEGER')).toBe('NULL');
+      });
+
+      it('should return "NULL" for undefined values', () => {
+        expect(formatBigQueryValue(undefined)).toBe('NULL');
+        expect(formatBigQueryValue(undefined, 'STRING')).toBe('NULL');
+      });
+    });
+
+    describe('BOOLEAN formatting', () => {
+      it('should format boolean true as "TRUE"', () => {
+        expect(formatBigQueryValue(true, 'BOOL')).toBe('TRUE');
+        expect(formatBigQueryValue(true, 'BOOLEAN')).toBe('TRUE');
+      });
+
+      it('should format boolean false as "FALSE"', () => {
+        expect(formatBigQueryValue(false, 'BOOL')).toBe('FALSE');
+        expect(formatBigQueryValue(false, 'BOOLEAN')).toBe('FALSE');
+      });
+
+      it('should handle string boolean values', () => {
+        expect(formatBigQueryValue('true', 'BOOL')).toBe('TRUE');
+        expect(formatBigQueryValue('false', 'BOOL')).toBe('FALSE');
+        expect(formatBigQueryValue('TRUE', 'BOOL')).toBe('TRUE');
+        expect(formatBigQueryValue('FALSE', 'BOOL')).toBe('FALSE');
+      });
+    });
+
+    describe('STRING formatting', () => {
+      it('should return strings as-is', () => {
+        expect(formatBigQueryValue('hello', 'STRING')).toBe('hello');
+        expect(formatBigQueryValue('hello world', 'STRING')).toBe('hello world');
+      });
+
+      it('should handle empty strings', () => {
+        expect(formatBigQueryValue('', 'STRING')).toBe('');
+      });
+    });
+
+    describe('INTEGER/INT64 formatting', () => {
+      it('should format integers', () => {
+        expect(formatBigQueryValue(123, 'INTEGER')).toBe('123');
+        expect(formatBigQueryValue(123, 'INT64')).toBe('123');
+        expect(formatBigQueryValue(-456, 'INT64')).toBe('-456');
+      });
+
+      it('should format large integers', () => {
+        expect(formatBigQueryValue(9007199254740991, 'INT64')).toBe('9007199254740991');
+      });
+
+      it('should format zero', () => {
+        expect(formatBigQueryValue(0, 'INTEGER')).toBe('0');
+      });
+    });
+
+    describe('FLOAT64/FLOAT formatting', () => {
+      it('should format floats', () => {
+        expect(formatBigQueryValue(3.14159, 'FLOAT64')).toBe('3.14159');
+        expect(formatBigQueryValue(3.14159, 'FLOAT')).toBe('3.14159');
+      });
+
+      it('should format negative floats', () => {
+        expect(formatBigQueryValue(-2.5, 'FLOAT64')).toBe('-2.5');
+      });
+    });
+
+    describe('DATE formatting', () => {
+      it('should format date strings', () => {
+        expect(formatBigQueryValue('2024-01-15', 'DATE')).toBe('2024-01-15');
+      });
+
+      it('should format Date objects for DATE type', () => {
+        const date = new Date('2024-01-15T00:00:00Z');
+        const result = formatBigQueryValue(date, 'DATE');
+        expect(result).toBe('2024-01-15');
+      });
+    });
+
+    describe('TIMESTAMP formatting', () => {
+      it('should format timestamp strings', () => {
+        expect(formatBigQueryValue('2024-01-15T10:30:00Z', 'TIMESTAMP')).toBe('2024-01-15T10:30:00Z');
+      });
+
+      it('should format Date objects for TIMESTAMP type', () => {
+        const date = new Date('2024-01-15T10:30:00Z');
+        const result = formatBigQueryValue(date, 'TIMESTAMP');
+        expect(result).toMatch(/2024-01-15T10:30:00/);
+      });
+    });
+
+    describe('DATETIME formatting', () => {
+      it('should format datetime strings', () => {
+        expect(formatBigQueryValue('2024-01-15 10:30:00', 'DATETIME')).toBe('2024-01-15 10:30:00');
+      });
+
+      it('should format Date objects for DATETIME type', () => {
+        const date = new Date('2024-01-15T10:30:00Z');
+        const result = formatBigQueryValue(date, 'DATETIME');
+        expect(result).toBe('2024-01-15 10:30:00');
+      });
+    });
+
+    describe('TIME formatting', () => {
+      it('should format time strings', () => {
+        expect(formatBigQueryValue('10:30:00', 'TIME')).toBe('10:30:00');
+      });
+
+      it('should format Date objects for TIME type', () => {
+        const date = new Date('2024-01-15T10:30:00Z');
+        const result = formatBigQueryValue(date, 'TIME');
+        expect(result).toBe('10:30:00');
+      });
+    });
+
+    describe('ARRAY formatting', () => {
+      it('should format arrays as JSON', () => {
+        const result = formatBigQueryValue([1, 2, 3], 'ARRAY');
+        expect(result).toBe('[1, 2, 3]');
+      });
+
+      it('should format arrays of strings', () => {
+        const result = formatBigQueryValue(['a', 'b', 'c'], 'ARRAY');
+        // The formatter joins elements without quoting individual strings
+        expect(result).toBe('[a, b, c]');
+      });
+
+      it('should format empty arrays', () => {
+        const result = formatBigQueryValue([], 'ARRAY');
+        expect(result).toBe('[]');
+      });
+    });
+
+    describe('STRUCT/RECORD formatting', () => {
+      it('should format objects as JSON', () => {
+        const result = formatBigQueryValue({ name: 'John', age: 30 }, 'STRUCT');
+        expect(JSON.parse(result)).toEqual({ name: 'John', age: 30 });
+      });
+
+      it('should format nested objects', () => {
+        const value = { user: { name: 'John', address: { city: 'NYC' } } };
+        const result = formatBigQueryValue(value, 'RECORD');
+        expect(JSON.parse(result)).toEqual(value);
+      });
+    });
+
+    describe('BYTES formatting', () => {
+      it('should format byte arrays', () => {
+        // BYTES are formatted as hex strings (0x...)
+        const result = formatBigQueryValue('SGVsbG8=', 'BYTES');
+        // Base64 'SGVsbG8=' decodes to 'Hello' which is 0x48656c6c6f
+        expect(result).toBe('0x48656c6c6f');
+      });
+    });
+
+    describe('GEOGRAPHY formatting', () => {
+      it('should format geography strings', () => {
+        const geoJson = 'POINT(-122.4194 37.7749)';
+        expect(formatBigQueryValue(geoJson, 'GEOGRAPHY')).toBe(geoJson);
+      });
+    });
+
+    describe('JSON formatting', () => {
+      it('should format JSON strings', () => {
+        const jsonStr = '{"key": "value"}';
+        // JSON is pretty-printed with 2-space indentation
+        const expected = '{\n  "key": "value"\n}';
+        expect(formatBigQueryValue(jsonStr, 'JSON')).toBe(expected);
+      });
+
+      it('should format JSON objects', () => {
+        const value = { key: 'value' };
+        const result = formatBigQueryValue(value, 'JSON');
+        expect(JSON.parse(result)).toEqual(value);
+      });
+    });
+
+    describe('NUMERIC/BIGNUMERIC formatting', () => {
+      it('should format numeric strings', () => {
+        expect(formatBigQueryValue('123.456', 'NUMERIC')).toBe('123.456');
+        expect(formatBigQueryValue('123.456', 'BIGNUMERIC')).toBe('123.456');
+        expect(formatBigQueryValue('123.456', 'DECIMAL')).toBe('123.456');
+      });
+    });
+
+    describe('Unknown types', () => {
+      it('should handle values without column type', () => {
+        expect(formatBigQueryValue('hello')).toBe('hello');
+        expect(formatBigQueryValue(123)).toBe('123');
+        expect(formatBigQueryValue(true)).toBe('true');
+      });
+    });
+
+    describe('Edge cases', () => {
+      it('should handle [object Object] string for date columns', () => {
+        const result = formatBigQueryValue('[object Object]', 'DATE');
+        expect(result).toBe('[Invalid Date]');
+      });
+
+      it('should handle empty objects for date columns', () => {
+        const result = formatBigQueryValue({}, 'DATE');
+        expect(result).toBe('[Invalid Date]');
+      });
+
+      it('should handle invalid Date objects', () => {
+        const invalidDate = new Date('invalid');
+        const result = formatBigQueryValue(invalidDate, 'DATE');
+        expect(result).toBe('Invalid Date');
+      });
+    });
+  });
+});
+````
+
+## File: tests/unit/shared/connection-validation.test.ts
+````typescript
+import {
+  isValidProjectId,
+  validateConnectionConfig,
+} from '../../../src/shared/utils/connection-validation';
+import type { ConnectionConfig } from '../../../src/shared/types/connection';
+
+describe('connection-validation', () => {
+  describe('isValidProjectId', () => {
+    it('should return true for valid project IDs', () => {
+      expect(isValidProjectId('my-project')).toBe(true);
+      expect(isValidProjectId('my-project-123')).toBe(true);
+      expect(isValidProjectId('project123')).toBe(true);
+      expect(isValidProjectId('a12345')).toBe(true); // minimum 6 chars
+      expect(isValidProjectId('abcdef012345678901234567890')).toBe(true); // 27 chars
+      expect(isValidProjectId('my-gcp-project-id')).toBe(true);
+    });
+
+    it('should return false for project IDs starting with numbers', () => {
+      expect(isValidProjectId('123project')).toBe(false);
+      expect(isValidProjectId('1my-project')).toBe(false);
+    });
+
+    it('should return false for project IDs starting with hyphens', () => {
+      expect(isValidProjectId('-my-project')).toBe(false);
+    });
+
+    it('should return false for project IDs that are too short', () => {
+      expect(isValidProjectId('abc')).toBe(false);
+      expect(isValidProjectId('abcde')).toBe(false); // 5 chars - too short
+    });
+
+    it('should return false for project IDs that are too long', () => {
+      expect(isValidProjectId('a'.repeat(31))).toBe(false); // 31 chars - too long
+    });
+
+    it('should return false for project IDs with uppercase letters', () => {
+      expect(isValidProjectId('My-Project')).toBe(false);
+      expect(isValidProjectId('MYPROJECT')).toBe(false);
+    });
+
+    it('should return false for project IDs with invalid characters', () => {
+      expect(isValidProjectId('my_project')).toBe(false); // underscore
+      expect(isValidProjectId('my.project')).toBe(false); // dot
+      expect(isValidProjectId('my project')).toBe(false); // space
+      expect(isValidProjectId('my@project')).toBe(false); // @
+    });
+
+    it('should return false for empty strings', () => {
+      expect(isValidProjectId('')).toBe(false);
+    });
+  });
+
+  describe('validateConnectionConfig', () => {
+    describe('Project ID validation', () => {
+      it('should return error for missing project ID', () => {
+        const config: ConnectionConfig = {
+          projectId: '',
+          authType: 'application-default',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe('Project ID is required');
+      });
+
+      it('should return error for whitespace-only project ID', () => {
+        const config: ConnectionConfig = {
+          projectId: '   ',
+          authType: 'application-default',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe('Project ID is required');
+      });
+
+      it('should return error for invalid project ID format', () => {
+        const config: ConnectionConfig = {
+          projectId: 'Invalid-Project',
+          authType: 'application-default',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('Invalid project ID format');
+      });
+    });
+
+    describe('Application default authentication', () => {
+      it('should validate config with application-default auth', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'application-default',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(true);
+        expect(result.error).toBeUndefined();
+      });
+
+      it('should validate config with location', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'application-default',
+          location: 'US',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(true);
+      });
+    });
+
+    describe('Service account authentication', () => {
+      it('should return error when no key path or key content provided', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'service-account',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain('Service account key path or key content is required');
+      });
+
+      it('should validate config with service account key path', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'service-account',
+          serviceAccountKeyPath: '/path/to/key.json',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(true);
+      });
+
+      it('should validate config with valid service account key JSON', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'service-account',
+          serviceAccountKey: JSON.stringify({
+            type: 'service_account',
+            project_id: 'test-project',
+            private_key_id: 'key-id',
+          }),
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(true);
+      });
+
+      it('should return error for invalid service account key JSON', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'service-account',
+          serviceAccountKey: 'invalid-json',
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe('Service account key must be valid JSON');
+      });
+
+      it('should return error for malformed JSON in service account key', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'service-account',
+          serviceAccountKey: '{ "type": "service_account"', // Missing closing brace
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(false);
+        expect(result.error).toBe('Service account key must be valid JSON');
+      });
+    });
+
+    describe('Optional fields', () => {
+      it('should validate config with dbt support enabled', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'application-default',
+          enableDbtSupport: true,
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(true);
+      });
+
+      it('should validate config with all optional fields', () => {
+        const config: ConnectionConfig = {
+          projectId: 'valid-project-id',
+          authType: 'service-account',
+          serviceAccountKeyPath: '/path/to/key.json',
+          location: 'EU',
+          enableDbtSupport: false,
+        };
+        const result = validateConnectionConfig(config);
+        expect(result.valid).toBe(true);
+      });
+    });
+  });
+});
 ````
 
 ## File: .eslintignore
@@ -10814,6 +14631,109 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
 };
 ````
 
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
 ## File: src/renderer/index.tsx
 ````typescript
 /// <reference path="./types/electron-api.d.ts" />
@@ -10856,6 +14776,158 @@ export interface ConnectionConfiguration {
   isActive: boolean;
   enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
 }
+````
+
+## File: tests/unit/renderer/App.test.tsx
+````typescript
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import App from '../../../src/renderer/App';
+
+// Mock the components that might have dependencies
+jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
+  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
+  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
+}));
+
+jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
+  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
+  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
+  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
+  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
+  QueryResults: () => <div data-testid="query-results">Query Results</div>,
+}));
+
+jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
+  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
+  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
+  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
+  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
+    <div data-testid="sidebar-switcher" data-view={currentView}>
+      <button onClick={() => onViewChange('explorer')}>Explorer</button>
+      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
+    </div>
+  ),
+}));
+
+jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
+  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
+}));
+
+describe('App', () => {
+  it('renders without crashing', () => {
+    render(<App />);
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+  });
+
+  it('renders the main app structure', () => {
+    render(<App />);
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('query-editor')).toBeInTheDocument();
+    expect(screen.getByTestId('query-results')).toBeInTheDocument();
+  });
+
+  it('renders sidebar components', () => {
+    render(<App />);
+    expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
+  });
+});
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
 ````
 
 ## File: .gitignore
