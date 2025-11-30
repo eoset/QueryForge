@@ -51,6 +51,8 @@ The content is organized as follows:
   workflows/
     repomix.yml
     test.yml
+.husky/
+  pre-commit
 .specify/
   memory/
     constitution.md
@@ -1821,6 +1823,11 @@ jobs:
       - name: Fail if tests failed
         if: steps.test.outcome == 'failure'
         run: exit 1
+````
+
+## File: .husky/pre-commit
+````
+npm test
 ````
 
 ## File: .specify/memory/constitution.md
@@ -24837,7 +24844,8 @@ export default App;
     "run:packaged": "node -e \"const {execSync} = require('child_process'); const path = require('path'); if (process.platform === 'darwin') { execSync('open dist/mac-arm64/QueryForge.app', {stdio: 'inherit'}); } else if (process.platform === 'win32') { execSync('start dist\\\\win-unpacked\\\\QueryForge.exe', {stdio: 'inherit'}); } else { execSync('dist/linux-unpacked/query-forge', {stdio: 'inherit'}); }\"",
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx,json,css}\"",
-    "test": "jest"
+    "test": "jest",
+    "prepare": "husky"
   },
   "keywords": [
     "bigquery",
@@ -24881,6 +24889,7 @@ export default App;
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^4.6.0",
     "html-webpack-plugin": "^5.6.5",
+    "husky": "^9.1.7",
     "identity-obj-proxy": "^3.0.0",
     "jest": "^30.2.0",
     "jest-environment-jsdom": "^30.2.0",
