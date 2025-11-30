@@ -47,6 +47,9 @@ The content is organized as follows:
     speckit.taskstoissues.md
   rules/
     specify-rules.mdc
+.github/
+  workflows/
+    repomix.yml
 .specify/
   memory/
     constitution.md
@@ -63,8 +66,6 @@ The content is organized as follows:
     plan-template.md
     spec-template.md
     tasks-template.md
-assets/
-  image-85756224-4a0f-48d2-985f-9dcde19e8fc5.png
 specs/
   001-bigquery-browser/
     checklists/
@@ -180,12 +181,9 @@ tests/
 .gitignore
 .prettierignore
 .prettierrc.json
-donation_qr.png
 eslint.config.js
 jest.config.js
 package.json
-queryforge_icon.icns
-queryforge_icon.png
 README.md
 tsconfig.json
 webpack.renderer.config.js
@@ -1647,6 +1645,55 @@ TypeScript 5.x, Node.js 18+: Follow standard conventions
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
+````
+
+## File: .github/workflows/repomix.yml
+````yaml
+name: Run Repomix on Main Push
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  run-repomix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install repomix
+        run: npm install -g repomix
+
+      - name: Run repomix
+        run: repomix --style markdown --output repomix-output.md
+
+      - name: Check if repomix output changed
+        run: |
+          if git diff --quiet; then
+            echo "no_changes=true" >> $GITHUB_ENV
+          else
+            echo "no_changes=false" >> $GITHUB_ENV
+          fi
+
+      - name: Commit and push changes
+        if: env.no_changes == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add repomix-output.md
+          git commit -m "Update repomix output"
+          git push origin main
 ````
 
 ## File: .specify/memory/constitution.md
@@ -15607,6 +15654,1044 @@ if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
 }
 ````
 
+## File: src/renderer/components/DatasetTree/DatasetTree.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
+import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
+import type { Dataset, Table } from '../../../shared/types/dataset';
+import './DatasetTree.css';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  expanded?: boolean;
+  loading?: boolean;
+}
+
+interface DatasetTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
+  const connection = useConnectionStore((state) => state.connection);
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    dataset: Dataset;
+    table: Table;
+  } | null>(null);
+  const [sampleDataModal, setSampleDataModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+
+  const loadDatasets = useCallback(async () => {
+    if (!connection || !window.electronAPI) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const datasetList = await window.electronAPI.bigquery.listDatasets();
+      const datasetsWithState = datasetList.map((ds) => ({
+        ...ds,
+        expanded: false,
+        loading: false,
+      }));
+      setDatasets(datasetsWithState);
+      
+      // Also store in metadata store for completion provider
+      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
+      
+      // Preload tables for all datasets in the background
+      datasetList.forEach((dataset) => {
+        window.electronAPI!.bigquery
+          .listTables(dataset.id)
+          .then((tables) => {
+            setDatasetTables(dataset.id, tables);
+          })
+          .catch((err) => {
+            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
+          });
+      });
+    } catch (err: any) {
+      setError(err.message || 'Failed to load datasets');
+      console.error('Failed to load datasets:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connection, setMetadataDatasets, setDatasetTables]);
+
+  useEffect(() => {
+    if (connection) {
+      loadDatasets();
+    } else {
+      setDatasets([]);
+    }
+  }, [connection, loadDatasets]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadDatasets, isLoading);
+    }
+  }, [onRefreshReady, loadDatasets, isLoading]);
+
+  const toggleDataset = async (datasetId: string) => {
+    if (!window.electronAPI) return;
+
+    setDatasets((prev) =>
+      prev.map((ds) => {
+        if (ds.id === datasetId) {
+          if (ds.expanded) {
+            // Collapse
+            return { ...ds, expanded: false };
+          } else {
+            // Expand - load tables if not already loaded
+            if (!ds.tables) {
+              // Set loading state
+              const updated = { ...ds, expanded: true, loading: true };
+              
+              // Load tables
+              window.electronAPI.bigquery
+                .listTables(datasetId)
+                .then((tables) => {
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, tables, loading: false }
+                        : d
+                    )
+                  );
+                  // Also store in metadata store
+                  setDatasetTables(datasetId, tables);
+                })
+                .catch((err) => {
+                  console.error('Failed to load tables:', err);
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, loading: false }
+                        : d
+                    )
+                  );
+                });
+              
+              return updated;
+            }
+            return { ...ds, expanded: true };
+          }
+        }
+        return ds;
+      })
+    );
+  };
+
+  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    // Handle Ctrl/Cmd+click to insert SELECT statement
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
+      const selectStatement = `SELECT * FROM ${tableRef}`;
+      window.dispatchEvent(
+        new CustomEvent('insertTableReference', { detail: selectStatement })
+      );
+    }
+    // Regular left click does nothing (removed table insertion feature)
+  };
+
+  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
+    if (event.ctrlKey || event.metaKey) {
+      if (onShowSchema && connection?.projectId) {
+        onShowSchema(connection.projectId, dataset.id, table.id);
+      }
+      return;
+    }
+    
+    // Show context menu
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      dataset,
+      table,
+    });
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu || !connection) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const queryText = `SELECT * FROM ${tableRef}`;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, queryText);
+    updateTab(newTabId, {
+      title: `${dataset.name}.${table.name}`,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleShowSchema = () => {
+    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
+    
+    const { dataset, table } = contextMenu;
+    onShowSchema(connection.projectId, dataset.id, table.id);
+    setContextMenu(null);
+  };
+
+  const handleViewSampleData = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setSampleDataModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleViewDefinition = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setViewDefinitionModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleAddWithJoin = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
+    
+    // Get the active tab's query
+    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
+    const currentQuery = activeTab?.queryText || '';
+    
+    let newQuery: string;
+    
+    if (!currentQuery.trim()) {
+      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
+      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
+    } else {
+      const trimmedQuery = currentQuery.trim();
+      const upperQuery = trimmedQuery.toUpperCase();
+      
+      // Check if there's already a FROM clause
+      const fromMatch = upperQuery.match(/\bFROM\b/i);
+      
+      if (fromMatch) {
+        // There's already a FROM clause, add JOIN
+        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
+        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
+        
+        if (clauseMatch && clauseMatch.index !== undefined) {
+          // Insert JOIN before the clause
+          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
+          const afterClause = trimmedQuery.substring(clauseMatch.index);
+          // Find the last table reference to use in JOIN condition
+          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
+          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
+            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
+            : 't1';
+          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        } else {
+          // No WHERE/ORDER/etc clause, append JOIN at the end
+          // Try to find the first table alias from FROM clause
+          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
+          const firstTableAlias = fromTableMatch?.[1] || 't1';
+          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        }
+      } else {
+        // No FROM clause found, add FROM (can't add JOIN without a first table)
+        // Check if it starts with SELECT
+        if (upperQuery.startsWith('SELECT')) {
+          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
+        } else {
+          // Not a SELECT query, prepend SELECT and add FROM
+          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
+        }
+      }
+    }
+    
+    // Update the active tab, or create a new one if none exists
+    if (activeTab) {
+      setTabQuery(activeTab.id, newQuery);
+    } else {
+      const newTabId = createTab();
+      setTabQuery(newTabId, newQuery);
+    }
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter datasets and tables based on search term
+  const filteredDatasets = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return datasets;
+    }
+
+    const searchLower = searchTerm.toLowerCase().trim();
+    
+    return datasets
+      .filter((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+        return datasetMatches || matchingTables.length > 0;
+      })
+      .map((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+
+        return {
+          ...dataset,
+          // Auto-expand if searching and there are matching tables or dataset matches
+          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
+          // Show all tables if dataset name matches, otherwise show only matching tables
+          // Prefer local tables if available, otherwise use metadata tables
+          tables: datasetMatches 
+            ? (localTables.length > 0 ? localTables : allTables)
+            : matchingTables.length > 0 
+              ? matchingTables 
+              : (localTables.length > 0 ? localTables : allTables),
+        };
+      });
+  }, [datasets, searchTerm, getDatasetTables]);
+
+  if (!connection) {
+    return (
+      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <div className="dataset-tree-empty">Not connected</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="dataset-tree-search">
+            <input
+              type="text"
+              className="dataset-tree-search-input"
+              placeholder="Search datasets and tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                // Prevent closing context menu when typing in search
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="dataset-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="dataset-tree-content">
+            {isLoading && datasets.length === 0 && (
+              <div className="dataset-tree-loading">Loading datasets...</div>
+            )}
+            {error && <div className="dataset-tree-error">{error}</div>}
+            {filteredDatasets.length === 0 && !isLoading && !error && (
+              <div className="dataset-tree-empty">
+                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
+              </div>
+            )}
+            {filteredDatasets.map((dataset) => (
+            <div key={dataset.id} className="dataset-item">
+              <div
+                className="dataset-header"
+                onClick={() => toggleDataset(dataset.id)}
+              >
+                <span className="dataset-icon">
+                  {dataset.expanded ? '▼' : '▶'}
+                </span>
+                <span className="dataset-name">{dataset.name}</span>
+              </div>
+              {dataset.expanded && (
+                <div className="dataset-tables">
+                  {dataset.loading ? (
+                    <div className="table-loading">Loading tables...</div>
+                  ) : (
+                    dataset.tables?.map((table) => (
+                      <div
+                        key={table.id}
+                        className="table-item"
+                        onClick={(e) => handleTableClick(e, dataset, table)}
+                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
+                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
+                      >
+                        <span className="table-icon">
+                          {table.type === 'VIEW' ? '📄' : '🗄'}
+                        </span>
+                        <span className="table-name">{table.name}</span>
+                      </div>
+                    ))
+                  )}
+                  {dataset.tables && dataset.tables.length === 0 && (
+                    <div className="table-empty">No tables</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleAddWithJoin}>
+            Add with JOIN
+          </div>
+          <div className="context-menu-item" onClick={handleViewSampleData}>
+            View sample data
+          </div>
+          {contextMenu.table.type === 'VIEW' && (
+            <div className="context-menu-item" onClick={handleViewDefinition}>
+              Show view definition
+            </div>
+          )}
+          {onShowSchema && connection?.projectId && (
+            <div className="context-menu-item" onClick={handleShowSchema}>
+              Show schema
+            </div>
+          )}
+        </div>
+      )}
+      {sampleDataModal && (
+        <SampleDataModal
+          projectId={sampleDataModal.projectId}
+          datasetId={sampleDataModal.datasetId}
+          tableId={sampleDataModal.tableId}
+          onClose={() => setSampleDataModal(null)}
+        />
+      )}
+      {viewDefinitionModal && (
+        <ViewDefinitionModal
+          projectId={viewDefinitionModal.projectId}
+          datasetId={viewDefinitionModal.datasetId}
+          tableId={viewDefinitionModal.tableId}
+          onClose={() => setViewDefinitionModal(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
+    prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.tsx
+````typescript
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { RowContextMenu } from './RowContextMenu';
+import { CanvasTable } from './CanvasTable';
+import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import './QueryResults.css';
+
+const ROWS_PER_PAGE = 200;
+
+export const QueryResults: React.FC = () => {
+  // Use separate selectors to ensure reactivity for each property
+  const activeTabId = useTabsStore((state) => state.activeTabId);
+  const activeTab = useTabsStore((state) => {
+    if (!activeTabId) return null;
+    return state.tabs.find((t) => t.id === activeTabId) || null;
+  });
+  
+  // All hooks must be called before any conditional returns
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rowIndex?: number;
+    columnIndex?: number;
+    isRowNumberColumn?: boolean;
+  } | null>(null);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const error = activeTab?.error;
+  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!activeTabId || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(activeTabId)
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [activeTabId, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(activeTabId, currentPage)
+      .then((pageRows: Row[] | null) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Reset column widths when results change (use jobId as stable identifier)
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
+  
+  useEffect(() => {
+    if (resultsJobId !== undefined) {
+      setColumnWidths({});
+      setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
+    }
+  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
+
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      rowIndex,
+      isRowNumberColumn,
+    });
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
+    // Escape commas, quotes, and newlines in values
+    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
+      return `"${formatted.replace(/"/g, '""')}"`;
+    }
+    return formatted;
+  }, [formatValue]);
+
+  const handleCopyRowValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
+
+    // Use sorted rows from results (which matches what's displayed)
+    const rowIndex = contextMenu.rowIndex;
+    const row = results.rows[rowIndex];
+    
+    if (!row) return;
+
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
+
+    // Format: header1,header2,header3\nvalue1,value2,value3
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleCopyColumnValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
+
+    const columnIndex = contextMenu.columnIndex;
+    const column = results.columns[columnIndex];
+    
+    if (!column) return;
+
+    // Get header
+    const header = formatCSVValue(column.name);
+    
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+
+    // Format: header\nvalue1\nvalue2\nvalue3...
+    const csvText = [header, ...values].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      columnIndex,
+    });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Now we can do conditional returns after all hooks
+  if (error) {
+    return (
+      <div className="query-results">
+        <div className="error-results">
+          <strong>Error:</strong> {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!resultsMetadata) {
+    // Show "Executing query..." when status is running, otherwise show default message
+    const message = executionStatus === 'running' 
+      ? 'Executing query...' 
+      : isLoadingCache
+      ? 'Loading results...'
+      : 'Execute a query to see results here.';
+    
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>{message}</div>
+          {(executionStatus === 'running' || isLoadingCache) && (
+            <div className="query-spinner-container">
+              <div className="query-spinner"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if we have columns and rows to display
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
+
+  if (!hasColumns && !hasRows) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
+            )}
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">No data to display (empty result set).</div>
+      </div>
+    );
+  }
+
+  if (!hasColumns) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
+            )}
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">Error: No column information available.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="query-results">
+      <div className="results-header">
+        <div className="results-info">
+          <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+          {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+            <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
+          )}
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+        </div>
+      </div>
+      <div className="results-table-container">
+        {hasRows && results ? (
+          <CanvasTable
+            results={results}
+            columnWidths={columnWidths}
+            onColumnResize={handleColumnResize}
+            onRowContextMenu={handleRowContextMenu}
+            onColumnContextMenu={handleColumnContextMenu}
+            formatValue={formatValue}
+            currentPage={currentPage}
+            rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
+          />
+        ) : (
+          <div className="no-rows-message">No rows returned</div>
+        )}
+      </div>
+      {hasRows && totalPages > 1 && (
+        <div className="results-pagination">
+          <button
+            className="pagination-button"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+            title="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+          </span>
+          <button
+            className="pagination-button"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+            title="Next page"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {contextMenu && (
+        <RowContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
+        />
+      )}
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/utils/bigquery-completions.ts
 ````typescript
 /**
@@ -17536,6 +18621,9 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
   };
 }
 
+// Track whether completion provider has been registered to avoid duplicates
+let completionProviderRegistered = false;
+
 /**
  * Registers BigQuery language support with Monaco Editor
  */
@@ -17543,6 +18631,11 @@ export function registerBigQueryLanguage(
   monaco?: typeof import('monaco-editor'),
   getProjectId?: () => string | null
 ): void {
+  // Avoid registering multiple completion providers (which causes duplicate suggestions)
+  if (completionProviderRegistered) {
+    return;
+  }
+  
   // Use provided monaco instance or try to get from window
   const monacoInstance = monaco || (typeof window !== 'undefined' ? (window as any).monaco : null);
   
@@ -17567,1052 +18660,14 @@ export function registerBigQueryLanguage(
   });
 
   // Register completion provider for SQL language
-  // Check if already registered to avoid duplicate registrations
   const providers = monacoInstance.languages.getLanguages();
   const sqlLanguage = providers.find((lang: { id: string }) => lang.id === 'sql');
   
   if (sqlLanguage) {
     monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
+    completionProviderRegistered = true;
   }
 }
-````
-
-## File: src/renderer/components/DatasetTree/DatasetTree.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
-import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
-import type { Dataset, Table } from '../../../shared/types/dataset';
-import './DatasetTree.css';
-
-interface DatasetWithTables extends Dataset {
-  tables?: Table[];
-  expanded?: boolean;
-  loading?: boolean;
-}
-
-interface DatasetTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
-}
-
-const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
-  const connection = useConnectionStore((state) => state.connection);
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    dataset: Dataset;
-    table: Table;
-  } | null>(null);
-  const [sampleDataModal, setSampleDataModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-
-  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
-
-  const loadDatasets = useCallback(async () => {
-    if (!connection || !window.electronAPI) {
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const datasetList = await window.electronAPI.bigquery.listDatasets();
-      const datasetsWithState = datasetList.map((ds) => ({
-        ...ds,
-        expanded: false,
-        loading: false,
-      }));
-      setDatasets(datasetsWithState);
-      
-      // Also store in metadata store for completion provider
-      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
-      
-      // Preload tables for all datasets in the background
-      datasetList.forEach((dataset) => {
-        window.electronAPI!.bigquery
-          .listTables(dataset.id)
-          .then((tables) => {
-            setDatasetTables(dataset.id, tables);
-          })
-          .catch((err) => {
-            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
-          });
-      });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load datasets');
-      console.error('Failed to load datasets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [connection, setMetadataDatasets, setDatasetTables]);
-
-  useEffect(() => {
-    if (connection) {
-      loadDatasets();
-    } else {
-      setDatasets([]);
-    }
-  }, [connection, loadDatasets]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadDatasets, isLoading);
-    }
-  }, [onRefreshReady, loadDatasets, isLoading]);
-
-  const toggleDataset = async (datasetId: string) => {
-    if (!window.electronAPI) return;
-
-    setDatasets((prev) =>
-      prev.map((ds) => {
-        if (ds.id === datasetId) {
-          if (ds.expanded) {
-            // Collapse
-            return { ...ds, expanded: false };
-          } else {
-            // Expand - load tables if not already loaded
-            if (!ds.tables) {
-              // Set loading state
-              const updated = { ...ds, expanded: true, loading: true };
-              
-              // Load tables
-              window.electronAPI.bigquery
-                .listTables(datasetId)
-                .then((tables) => {
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, tables, loading: false }
-                        : d
-                    )
-                  );
-                  // Also store in metadata store
-                  setDatasetTables(datasetId, tables);
-                })
-                .catch((err) => {
-                  console.error('Failed to load tables:', err);
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, loading: false }
-                        : d
-                    )
-                  );
-                });
-              
-              return updated;
-            }
-            return { ...ds, expanded: true };
-          }
-        }
-        return ds;
-      })
-    );
-  };
-
-  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    // Handle Ctrl/Cmd+click to insert SELECT statement
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
-      const selectStatement = `SELECT * FROM ${tableRef}`;
-      window.dispatchEvent(
-        new CustomEvent('insertTableReference', { detail: selectStatement })
-      );
-    }
-    // Regular left click does nothing (removed table insertion feature)
-  };
-
-  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
-    if (event.ctrlKey || event.metaKey) {
-      if (onShowSchema && connection?.projectId) {
-        onShowSchema(connection.projectId, dataset.id, table.id);
-      }
-      return;
-    }
-    
-    // Show context menu
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      dataset,
-      table,
-    });
-  };
-
-  const handleOpenInNewTab = () => {
-    if (!contextMenu || !connection) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const queryText = `SELECT * FROM ${tableRef}`;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, queryText);
-    updateTab(newTabId, {
-      title: `${dataset.name}.${table.name}`,
-    });
-    
-    setContextMenu(null);
-  };
-
-  const handleShowSchema = () => {
-    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
-    
-    const { dataset, table } = contextMenu;
-    onShowSchema(connection.projectId, dataset.id, table.id);
-    setContextMenu(null);
-  };
-
-  const handleViewSampleData = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setSampleDataModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
-
-  const handleViewDefinition = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setViewDefinitionModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
-
-  const handleAddWithJoin = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
-    
-    // Get the active tab's query
-    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
-    const currentQuery = activeTab?.queryText || '';
-    
-    let newQuery: string;
-    
-    if (!currentQuery.trim()) {
-      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
-      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
-    } else {
-      const trimmedQuery = currentQuery.trim();
-      const upperQuery = trimmedQuery.toUpperCase();
-      
-      // Check if there's already a FROM clause
-      const fromMatch = upperQuery.match(/\bFROM\b/i);
-      
-      if (fromMatch) {
-        // There's already a FROM clause, add JOIN
-        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
-        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
-        
-        if (clauseMatch && clauseMatch.index !== undefined) {
-          // Insert JOIN before the clause
-          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
-          const afterClause = trimmedQuery.substring(clauseMatch.index);
-          // Find the last table reference to use in JOIN condition
-          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
-          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
-            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
-            : 't1';
-          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        } else {
-          // No WHERE/ORDER/etc clause, append JOIN at the end
-          // Try to find the first table alias from FROM clause
-          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
-          const firstTableAlias = fromTableMatch?.[1] || 't1';
-          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        }
-      } else {
-        // No FROM clause found, add FROM (can't add JOIN without a first table)
-        // Check if it starts with SELECT
-        if (upperQuery.startsWith('SELECT')) {
-          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
-        } else {
-          // Not a SELECT query, prepend SELECT and add FROM
-          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
-        }
-      }
-    }
-    
-    // Update the active tab, or create a new one if none exists
-    if (activeTab) {
-      setTabQuery(activeTab.id, newQuery);
-    } else {
-      const newTabId = createTab();
-      setTabQuery(newTabId, newQuery);
-    }
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter datasets and tables based on search term
-  const filteredDatasets = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return datasets;
-    }
-
-    const searchLower = searchTerm.toLowerCase().trim();
-    
-    return datasets
-      .filter((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-        return datasetMatches || matchingTables.length > 0;
-      })
-      .map((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-
-        return {
-          ...dataset,
-          // Auto-expand if searching and there are matching tables or dataset matches
-          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
-          // Show all tables if dataset name matches, otherwise show only matching tables
-          // Prefer local tables if available, otherwise use metadata tables
-          tables: datasetMatches 
-            ? (localTables.length > 0 ? localTables : allTables)
-            : matchingTables.length > 0 
-              ? matchingTables 
-              : (localTables.length > 0 ? localTables : allTables),
-        };
-      });
-  }, [datasets, searchTerm, getDatasetTables]);
-
-  if (!connection) {
-    return (
-      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-        {!collapsed && (
-          <div className="dataset-tree-empty">Not connected</div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="dataset-tree-search">
-            <input
-              type="text"
-              className="dataset-tree-search-input"
-              placeholder="Search datasets and tables..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                // Prevent closing context menu when typing in search
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="dataset-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="dataset-tree-content">
-            {isLoading && datasets.length === 0 && (
-              <div className="dataset-tree-loading">Loading datasets...</div>
-            )}
-            {error && <div className="dataset-tree-error">{error}</div>}
-            {filteredDatasets.length === 0 && !isLoading && !error && (
-              <div className="dataset-tree-empty">
-                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
-              </div>
-            )}
-            {filteredDatasets.map((dataset) => (
-            <div key={dataset.id} className="dataset-item">
-              <div
-                className="dataset-header"
-                onClick={() => toggleDataset(dataset.id)}
-              >
-                <span className="dataset-icon">
-                  {dataset.expanded ? '▼' : '▶'}
-                </span>
-                <span className="dataset-name">{dataset.name}</span>
-              </div>
-              {dataset.expanded && (
-                <div className="dataset-tables">
-                  {dataset.loading ? (
-                    <div className="table-loading">Loading tables...</div>
-                  ) : (
-                    dataset.tables?.map((table) => (
-                      <div
-                        key={table.id}
-                        className="table-item"
-                        onClick={(e) => handleTableClick(e, dataset, table)}
-                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
-                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
-                      >
-                        <span className="table-icon">
-                          {table.type === 'VIEW' ? '📄' : '🗄'}
-                        </span>
-                        <span className="table-name">{table.name}</span>
-                      </div>
-                    ))
-                  )}
-                  {dataset.tables && dataset.tables.length === 0 && (
-                    <div className="table-empty">No tables</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleOpenInNewTab}>
-            Open in new tab
-          </div>
-          <div className="context-menu-item" onClick={handleAddWithJoin}>
-            Add with JOIN
-          </div>
-          <div className="context-menu-item" onClick={handleViewSampleData}>
-            View sample data
-          </div>
-          {contextMenu.table.type === 'VIEW' && (
-            <div className="context-menu-item" onClick={handleViewDefinition}>
-              Show view definition
-            </div>
-          )}
-          {onShowSchema && connection?.projectId && (
-            <div className="context-menu-item" onClick={handleShowSchema}>
-              Show schema
-            </div>
-          )}
-        </div>
-      )}
-      {sampleDataModal && (
-        <SampleDataModal
-          projectId={sampleDataModal.projectId}
-          datasetId={sampleDataModal.datasetId}
-          tableId={sampleDataModal.tableId}
-          onClose={() => setSampleDataModal(null)}
-        />
-      )}
-      {viewDefinitionModal && (
-        <ViewDefinitionModal
-          projectId={viewDefinitionModal.projectId}
-          datasetId={viewDefinitionModal.datasetId}
-          tableId={viewDefinitionModal.tableId}
-          onClose={() => setViewDefinitionModal(null)}
-        />
-      )}
-    </div>
-  );
-};
-
-export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
-  // Only re-render if these props change
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
-    prevProps.onShowSchema === nextProps.onShowSchema
-  );
-});
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.tsx
-````typescript
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import { RowContextMenu } from './RowContextMenu';
-import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import './QueryResults.css';
-
-const ROWS_PER_PAGE = 200;
-
-export const QueryResults: React.FC = () => {
-  // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
-  const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
-  });
-  
-  // All hooks must be called before any conditional returns
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [currentPage, setCurrentPage] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    rowIndex?: number;
-    columnIndex?: number;
-    isRowNumberColumn?: boolean;
-  } | null>(null);
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-  
-  // Store metadata and current page separately for efficient cache access
-  const [resultsMetadata, setResultsMetadata] = useState<{
-    columns: any[];
-    totalRows: number;
-    rowsReturned: number;
-    executionTimeMs: number;
-    bytesProcessed?: number;
-    jobId: string;
-    hasMore: boolean;
-  } | null>(null);
-  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
-  const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isLoadingPage, setIsLoadingPage] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  
-  // Load metadata from cache when tab changes or when execution completes
-  useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // If query is running, don't load from cache (wait for new results)
-    if (executionStatus === 'running') {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // Load metadata from cache
-    setIsLoadingCache(true);
-    window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
-      .then((metadata: {
-        columns: ColumnMetadata[];
-        totalRows: number;
-        rowsReturned: number;
-        executionTimeMs: number;
-        bytesProcessed?: number;
-        jobId: string;
-        hasMore: boolean;
-      } | null) => {
-        if (metadata) {
-          setResultsMetadata(metadata);
-          setIsLoadingCache(false);
-        } else {
-          setResultsMetadata(null);
-          setCurrentPageRows([]);
-          setIsLoadingCache(false);
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load results metadata from cache:', err);
-        setResultsMetadata(null);
-        setCurrentPageRows([]);
-        setIsLoadingCache(false);
-      });
-  }, [activeTabId, executionStatus]);
-  
-  // Load current page from cache when metadata or page changes
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    setIsLoadingPage(true);
-    window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
-      .then((pageRows: Row[] | null) => {
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        } else {
-          setCurrentPageRows([]);
-        }
-        setIsLoadingPage(false);
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load page from cache:', err);
-        setCurrentPageRows([]);
-        setIsLoadingPage(false);
-      });
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Prefetch adjacent pages for smoother navigation
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      return;
-    }
-    
-    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
-    
-    // Prefetch next page if available
-    if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-    
-    // Prefetch previous page if available
-    if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = resultsMetadata?.jobId;
-  const resultsColumnCount = resultsMetadata?.columns?.length;
-  
-  useEffect(() => {
-    if (resultsJobId !== undefined) {
-      setColumnWidths({});
-      setCurrentPage(1); // Reset to first page when results change
-      setSortColumn(null); // Reset sorting when results change
-      setSortDirection(null);
-    }
-  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = React.useMemo(() => {
-    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
-      return currentPageRows;
-    }
-
-    const sorted = [...currentPageRows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = resultsMetadata?.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
-
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: sortedRows, // Use sorted rows instead of currentPageRows
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      rowIndex,
-      isRowNumberColumn,
-    });
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    // Pass both type and name to formatter for better date detection
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
-    const formatted = formatValue(val, columnType, columnName);
-    // Escape commas, quotes, and newlines in values
-    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
-      return `"${formatted.replace(/"/g, '""')}"`;
-    }
-    return formatted;
-  }, [formatValue]);
-
-  const handleCopyRowValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
-
-    // Use sorted rows from results (which matches what's displayed)
-    const rowIndex = contextMenu.rowIndex;
-    const row = results.rows[rowIndex];
-    
-    if (!row) return;
-
-    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => {
-      const col = results.columns[idx];
-      return formatCSVValue(val, col?.type, col?.name);
-    });
-
-    // Format: header1,header2,header3\nvalue1,value2,value3
-    const csvText = [headers.join(','), values.join(',')].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleCopyColumnValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
-
-    const columnIndex = contextMenu.columnIndex;
-    const column = results.columns[columnIndex];
-    
-    if (!column) return;
-
-    // Get header
-    const header = formatCSVValue(column.name);
-    
-    // Get all values for this column from sorted rows (matches what's displayed)
-    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
-
-    // Format: header\nvalue1\nvalue2\nvalue3...
-    const csvText = [header, ...values].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      columnIndex,
-    });
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  // Pagination calculations - use metadata for total rows, current page rows are already loaded
-  const totalRows = resultsMetadata?.rowsReturned || 0;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Now we can do conditional returns after all hooks
-  if (error) {
-    return (
-      <div className="query-results">
-        <div className="error-results">
-          <strong>Error:</strong> {error}
-        </div>
-      </div>
-    );
-  }
-
-  if (!resultsMetadata) {
-    // Show "Executing query..." when status is running, otherwise show default message
-    const message = executionStatus === 'running' 
-      ? 'Executing query...' 
-      : isLoadingCache
-      ? 'Loading results...'
-      : 'Execute a query to see results here.';
-    
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>{message}</div>
-          {(executionStatus === 'running' || isLoadingCache) && (
-            <div className="query-spinner-container">
-              <div className="query-spinner"></div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-  
-  // Show loading indicator while page is loading
-  if (isLoadingPage && currentPageRows.length === 0) {
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>Loading page {currentPage}...</div>
-          <div className="query-spinner-container">
-            <div className="query-spinner"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if we have columns and rows to display
-  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
-  const hasRows = currentPageRows && currentPageRows.length > 0;
-
-  if (!hasColumns && !hasRows) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-            )}
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">No data to display (empty result set).</div>
-      </div>
-    );
-  }
-
-  if (!hasColumns) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-            )}
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">Error: No column information available.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="query-results">
-      <div className="results-header">
-        <div className="results-info">
-          <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-          {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-            <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-          )}
-          <span> • {resultsMetadata.executionTimeMs}ms</span>
-          {resultsMetadata.bytesProcessed && (
-            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-          )}
-        </div>
-      </div>
-      <div className="results-table-container">
-        {hasRows && results ? (
-          <CanvasTable
-            results={results}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-            onRowContextMenu={handleRowContextMenu}
-            onColumnContextMenu={handleColumnContextMenu}
-            formatValue={formatValue}
-            currentPage={currentPage}
-            rowsPerPage={ROWS_PER_PAGE}
-            sortColumn={sortColumn}
-            sortDirection={sortDirection}
-            onSortColumn={handleSortColumn}
-          />
-        ) : (
-          <div className="no-rows-message">No rows returned</div>
-        )}
-      </div>
-      {hasRows && totalPages > 1 && (
-        <div className="results-pagination">
-          <button
-            className="pagination-button"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
-          <span className="pagination-info">
-            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      {contextMenu && (
-        <RowContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={
-            contextMenu.columnIndex !== undefined 
-              ? 'Copy column values (with header)' 
-              : contextMenu.isRowNumberColumn 
-                ? 'Copy row as CSV' 
-                : 'Copy values (with headers)'
-          }
-        />
-      )}
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/components/QueryEditor/QueryEditor.css
@@ -20885,7 +20940,14 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
       columnName = '';
     }
     
-    if (columnName && columnName !== '*') {
+    // Collect column refs for validation:
+    // - Non-* columns: always collect for column name validation
+    // - * columns with alias (e.g., da.*): collect to validate alias exists
+    // - Bare * without alias: skip (no validation needed)
+    const hasAlias = node.table ? true : false;
+    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
+    
+    if (shouldCollect) {
       refs.push({
         alias: node.table ? stripIdentifierQuotes(node.table) : null,
         column: columnName,
@@ -21247,6 +21309,12 @@ export const QueryEditor: React.FC = () => {
             column: location.column,
             length: location.length,
           });
+          continue;
+        }
+
+        // For alias.* patterns (e.g., da.*), we've validated the alias exists above.
+        // The * means "all columns" which is always valid syntax, so skip column validation.
+        if (columnRef.column === '*') {
           continue;
         }
 
