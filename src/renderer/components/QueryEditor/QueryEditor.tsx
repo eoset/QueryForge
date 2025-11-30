@@ -1815,19 +1815,33 @@ export const QueryEditor: React.FC = () => {
     // Get project ID from connection
     const projectId = connection?.projectId || 'project';
     
+    // Get all cached tables for ref() lookup
+    const allTables = useBigQueryMetadataStore.getState().getAllTables();
+    
     // Pattern to match {{ source('DATASET', 'TABLE') }}
     const dbtSourcePattern = /\{\{\s*source\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}/g;
     
-    // Pattern to match {{ ref('TABLE') }} - assumes same dataset
+    // Pattern to match {{ ref('TABLE') }} - search in cached tables to find the dataset
     const dbtRefPattern = /\{\{\s*ref\s*\(\s*'([^']+)'\s*\)\s*\}\}/g;
     
     let result = sql.replace(dbtSourcePattern, (_, datasetId, tableId) => {
       return `${projectId}.${datasetId}.${tableId}`;
     });
     
-    result = result.replace(dbtRefPattern, (_, tableId) => {
-      // For ref(), we don't know the dataset, so just use the table name
-      // This is a simplified handling
+    result = result.replace(dbtRefPattern, (match, tableId) => {
+      // Search for the table in cached metadata
+      const tableIdLower = tableId.toLowerCase();
+      const foundTable = allTables.find(
+        (t) => t.table.id.toLowerCase() === tableIdLower
+      );
+      
+      if (foundTable) {
+        // Found the table - return full path with project, dataset, and table
+        return `${projectId}.${foundTable.dataset}.${foundTable.table.id}`;
+      }
+      
+      // Table not found in cache - keep original ref syntax as a warning
+      // or return just the table name as fallback
       return tableId;
     });
     
