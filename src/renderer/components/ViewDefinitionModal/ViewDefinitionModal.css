@@ -61,10 +61,11 @@
 
 .view-definition-modal-content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .view-definition-actions {
@@ -88,25 +89,13 @@
   background-color: #005a9e;
 }
 
-.view-definition-code {
-  background-color: #252526;
+.view-definition-editor {
+  flex: 1;
+  min-height: 400px;
+  height: 100%;
   border: 1px solid #3e3e42;
   border-radius: 3px;
-  padding: 1rem;
-  margin: 0;
-  overflow: auto;
-  flex: 1;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  color: #cccccc;
-}
-
-.view-definition-code code {
-  display: block;
-  white-space: pre;
-  word-wrap: normal;
-  overflow-x: auto;
+  overflow: hidden;
 }
 
 .view-definition-loading {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
 import './ViewDefinitionModal.css';
 
 interface ViewDefinitionModalProps {
@@ -91,9 +92,29 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
                   Copy to Clipboard
                 </button>
               </div>
-              <pre className="view-definition-code">
-                <code>{definition}</code>
-              </pre>
+              <div className="view-definition-editor">
+                <Editor
+                  height="400px"
+                  language="sql"
+                  value={definition}
+                  theme="vs-dark"
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    folding: true,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    renderLineHighlight: 'none',
+                    scrollbar: {
+                      vertical: 'auto',
+                      horizontal: 'auto',
+                    },
+                  }}
+                />
+              </div>
             </>
           )}
         </div>
