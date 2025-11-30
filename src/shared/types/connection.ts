@@ -8,6 +8,7 @@ export interface ConnectionConfig {
   serviceAccountKeyPath?: string;
   serviceAccountKey?: string; // JSON string content
   location?: string; // BigQuery location (defaults to 'EU')
+  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
 }
 
 export interface ConnectionConfiguration {
@@ -17,5 +18,6 @@ export interface ConnectionConfiguration {
   location?: string; // BigQuery location (defaults to 'EU')
   lastConnected?: string; // ISO timestamp
   isActive: boolean;
+  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
 }
 

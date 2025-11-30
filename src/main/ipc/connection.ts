@@ -59,6 +59,7 @@ export function registerConnectionHandlers(): void {
         location: config.location || 'EU', // Default to EU if not specified
         lastConnected: new Date().toISOString(),
         isActive: true,
+        enableDbtSupport: config.enableDbtSupport || false,
       };
 
       // Save connection to persistent storage
@@ -133,6 +134,7 @@ export function registerConnectionHandlers(): void {
         authType: saved.authType,
         serviceAccountKeyPath: saved.serviceAccountKeyPath,
         location: saved.location || 'EU',
+        enableDbtSupport: saved.enableDbtSupport,
       };
 
       // If using service account key content (not file path), decrypt it

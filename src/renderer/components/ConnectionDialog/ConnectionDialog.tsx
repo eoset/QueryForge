@@ -16,6 +16,7 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
   const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
   const [serviceAccountKey, setServiceAccountKey] = useState('');
   const [location, setLocation] = useState('EU');
+  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
 
@@ -30,6 +31,7 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
           setAuthType(saved.authType);
           setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
           setLocation(saved.location || 'EU');
+          setEnableDbtSupport(saved.enableDbtSupport || false);
           // Note: We don't load the service account key content for security reasons
           // User needs to re-enter it or use the file path
         }
@@ -50,6 +52,7 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
       serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
       serviceAccountKey: serviceAccountKey.trim() || undefined,
       location: location.trim() || 'EU',
+      enableDbtSupport,
     };
 
     // Validate configuration
@@ -181,6 +184,19 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
             </div>
           </>
         )}
+
+        <div className="form-group checkbox-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={enableDbtSupport}
+              onChange={(e) => setEnableDbtSupport(e.target.checked)}
+              disabled={isConnecting}
+            />
+            Enable dbt syntax support
+          </label>
+          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
+        </div>
 
         {error && <div className="error-message">{error}</div>}
 

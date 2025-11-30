@@ -651,7 +651,10 @@ export const QueryEditor: React.FC = () => {
 
   // Helper function to count SELECT statements in SQL text (ignoring comments and strings)
   const countSelectStatements = (sql: string): number => {
-    // Remove comments and string literals to avoid false positives
+    // Count only top-level SELECT statements (not CTEs or subqueries)
+    // A top-level SELECT is one that starts a new statement, not inside parentheses
+    
+    // Remove comments first
     let cleanedSql = sql;
     
     // Remove single-line comments (--)
@@ -661,15 +664,74 @@ export const QueryEditor: React.FC = () => {
     cleanedSql = cleanedSql.replace(/\/\*[\s\S]*?\*\//g, '');
     
     // Remove string literals (single quotes, double quotes, backticks)
-    // This is a simplified approach - handle escaped quotes
     cleanedSql = cleanedSql.replace(/'([^'\\]|\\.)*'/g, "''");
     cleanedSql = cleanedSql.replace(/"([^"\\]|\\.)*"/g, '""');
     cleanedSql = cleanedSql.replace(/`([^`\\]|\\.)*`/g, '``');
     
-    // Count SELECT statements (case-insensitive, whole word)
-    const selectRegex = /\bSELECT\b/gi;
-    const matches = cleanedSql.match(selectRegex);
-    return matches ? matches.length : 0;
+    // Now count top-level statements by tracking parenthesis depth
+    // A SELECT at depth 0 that is not preceded by WITH...AS is a top-level statement
+    let depth = 0;
+    let topLevelCount = 0;
+    let i = 0;
+    let inWithClause = false;
+    
+    // Normalize whitespace for easier matching
+    cleanedSql = cleanedSql.replace(/\s+/g, ' ').trim();
+    
+    while (i < cleanedSql.length) {
+      const char = cleanedSql[i];
+      
+      if (char === '(') {
+        depth++;
+        i++;
+        continue;
+      }
+      
+      if (char === ')') {
+        depth--;
+        // When we exit the outermost parenthesis after a WITH clause CTE definition,
+        // we're still in the WITH clause until we hit the main SELECT
+        i++;
+        continue;
+      }
+      
+      // Check for WITH keyword at depth 0 (start of CTE)
+      if (depth === 0) {
+        const remainingUpper = cleanedSql.substring(i).toUpperCase();
+        
+        // Check for WITH keyword (start of CTE)
+        if (remainingUpper.match(/^WITH\b/)) {
+          inWithClause = true;
+          i += 4;
+          continue;
+        }
+        
+        // Check for SELECT keyword
+        if (remainingUpper.match(/^SELECT\b/)) {
+          if (inWithClause) {
+            // This SELECT is the main query after WITH clause - count it
+            topLevelCount++;
+            inWithClause = false;
+          } else {
+            // This is a standalone SELECT statement
+            topLevelCount++;
+          }
+          i += 6;
+          continue;
+        }
+        
+        // Check for semicolon (statement separator) - reset state for next statement
+        if (char === ';') {
+          inWithClause = false;
+          i++;
+          continue;
+        }
+      }
+      
+      i++;
+    }
+    
+    return topLevelCount;
   };
 
   // Validate SQL syntax and set markers in Monaco Editor
@@ -2116,14 +2178,16 @@ export const QueryEditor: React.FC = () => {
         >
           Expand *
         </button>
-        <button
-          onClick={handleDbtify}
-          disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
-          className="dbtify-button"
-          title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
-        >
-          {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
-        </button>
+        {connection?.enableDbtSupport && (
+          <button
+            onClick={handleDbtify}
+            disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
+            className="dbtify-button"
+            title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
+          >
+            {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+          </button>
+        )}
         <button onClick={handleOpenSaveDialog} disabled={!activeTab || !queryText.trim()} className="save-button">
           {activeTab?.savedQueryId ? 'Update' : 'Save'}
         </button>
