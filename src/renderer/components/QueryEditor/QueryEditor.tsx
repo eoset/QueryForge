@@ -468,6 +468,7 @@ export const QueryEditor: React.FC = () => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
     errorMessage: string | null;
@@ -1950,6 +1951,14 @@ export const QueryEditor: React.FC = () => {
           sqlText: queryText,
           description: saveDescription.trim() || undefined,
         });
+        // Update tab title in case name changed
+        updateTab(activeTab.id, {
+          title: saveName.trim(),
+          isModified: false,
+        });
+        // Show success feedback
+        setSaveSuccessMessage('Query updated successfully');
+        setTimeout(() => setSaveSuccessMessage(null), 3000);
       } else {
         // Save new query
         const saved = await saveQuery({
@@ -1962,6 +1971,9 @@ export const QueryEditor: React.FC = () => {
           title: saved.name,
           isModified: false,
         });
+        // Show success feedback
+        setSaveSuccessMessage('Query saved successfully');
+        setTimeout(() => setSaveSuccessMessage(null), 3000);
       }
       setShowSaveDialog(false);
       setSaveName('');
@@ -2950,7 +2962,12 @@ export const QueryEditor: React.FC = () => {
             </div>
             <div className="editor-status-bar">
               <div className="status-left">
-                {completedQueryText !== null && queryText === completedQueryText ? (
+                {saveSuccessMessage ? (
+                  <span className="status-text status-valid">
+                    <span className="status-indicator status-indicator-valid"></span>
+                    {saveSuccessMessage}
+                  </span>
+                ) : completedQueryText !== null && queryText === completedQueryText ? (
                   <span className="status-text status-valid">
                     <span className="status-indicator status-indicator-valid"></span>
                     Query completed{completedQueryExecutionTime !== null ? ` in ${formatExecutionTime(completedQueryExecutionTime)}` : ''}
