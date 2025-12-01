@@ -22,6 +22,7 @@ export interface TableAliasInfo {
   alias: string;
   datasetId?: string;
   tableId?: string;
+  cteColumns?: string[];
 }
 
 export interface ColumnValidationIssue {
@@ -170,6 +171,60 @@ export const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = fa
 };
 
 /**
+ * Extracts output column names from a CTE's SELECT clause.
+ * Returns the column aliases (AS names) or the column names if no alias is specified.
+ */
+export const extractCteColumnNames = (cteAst: any): string[] => {
+  const columns: string[] = [];
+  
+  if (!cteAst || !Array.isArray(cteAst.columns)) {
+    return columns;
+  }
+  
+  for (const col of cteAst.columns) {
+    // Skip SELECT * - we can't determine column names without schema
+    if (col === '*' || (col?.expr?.type === 'star')) {
+      continue;
+    }
+    
+    // Check for explicit alias (AS clause)
+    const alias = col?.as || col?.alias;
+    if (alias) {
+      const aliasName = typeof alias === 'string' ? alias : alias?.value;
+      if (aliasName) {
+        columns.push(stripIdentifierQuotes(aliasName));
+        continue;
+      }
+    }
+    
+    // No alias - try to get column name from expression
+    const expr = col?.expr ?? col;
+    
+    // Column reference: { type: 'column_ref', column: 'name' } or { type: 'column_ref', column: { expr: { value: 'name' } } }
+    if (expr?.type === 'column_ref') {
+      let columnName: string | undefined;
+      if (typeof expr.column === 'string') {
+        columnName = expr.column;
+      } else if (expr.column?.expr?.value) {
+        columnName = expr.column.expr.value;
+      } else if (expr.column?.column) {
+        columnName = expr.column.column;
+      }
+      if (columnName) {
+        columns.push(stripIdentifierQuotes(columnName));
+      }
+    }
+    // Function call without alias - use function name (common in BigQuery)
+    else if (expr?.type === 'function' || expr?.type === 'aggr_func') {
+      // Function calls without alias are hard to reference, skip them
+      // BigQuery would use the function expression as the column name
+    }
+  }
+  
+  return columns;
+};
+
+/**
  * Builds a map of table aliases and unique tables from a SELECT statement AST.
  */
 export const buildTableAliasMapFromSelect = (
@@ -181,7 +236,7 @@ export const buildTableAliasMapFromSelect = (
   const aliasMap = new Map<string, TableAliasInfo>();
   const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
 
-  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string }) => {
+  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string; cteColumns?: string[] }) => {
     const cleanAlias = stripIdentifierQuotes(aliasName);
     if (!cleanAlias) return;
     const key = cleanAlias.toLowerCase();
@@ -191,6 +246,8 @@ export const buildTableAliasMapFromSelect = (
         alias: cleanAlias,
         datasetId: info.datasetId,
         tableId: info.tableId,
+        // Preserve cteColumns from existing entry if not provided in new info
+        cteColumns: info.cteColumns ?? existing?.cteColumns,
       });
     }
   };
@@ -309,7 +366,10 @@ export const buildTableAliasMapFromSelect = (
       // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
       const cteName = cte?.name?.value || cte?.name;
       if (cteName) {
-        registerAlias(cteName, {});
+        // Extract the column names from the CTE's SELECT clause
+        const cteAst = cte?.stmt?.ast;
+        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
+        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
       }
     }
   }
