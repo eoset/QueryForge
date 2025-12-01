@@ -1,7 +1,7 @@
 .sidebar-switcher {
   display: flex;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
   padding: 0.25rem;
   gap: 0.25rem;
 }
@@ -10,7 +10,7 @@
   flex: 1;
   background-color: transparent;
   border: none;
-  color: #858585;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.75rem;
   font-weight: 400;
@@ -22,12 +22,14 @@
 }
 
 .sidebar-switcher-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .sidebar-switcher-button.active {
-  background-color: #1e1e1e;
-  color: #ffffff;
+  background-color: var(--bg-primary);
+  color: var(--text-active);
+  font-weight: 500;
+  border-bottom: 2px solid var(--accent-primary);
 }
 

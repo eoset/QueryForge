@@ -2,6 +2,27 @@ import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
 import { ColumnSortMenu } from './ColumnSortMenu';
 
+// Helper to read CSS custom property values
+const getCSSVar = (name: string): string => {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+};
+
+// Theme colors derived from CSS variables
+const getThemeColors = () => ({
+  bgColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  headerBgColor: getCSSVar('--bg-tertiary') || '#2d2d30',
+  borderColor: getCSSVar('--border-primary') || '#3e3e42',
+  textColor: getCSSVar('--text-primary') || '#cccccc',
+  headerTextColor: getCSSVar('--text-primary') || '#cccccc',
+  hoverColor: getCSSVar('--bg-hover') || '#2a2d2e',
+  evenRowColor: getCSSVar('--bg-secondary') || '#252526',
+  oddRowColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  accentColor: getCSSVar('--accent-primary') || '#007acc',
+  secondaryTextColor: getCSSVar('--text-secondary') || '#858585',
+  scrollbarThumb: getCSSVar('--bg-scrollbar-thumb') || '#424242',
+  scrollbarTrack: getCSSVar('--bg-scrollbar') || '#1e1e1e',
+});
+
 interface CanvasTableProps {
   results: QueryResult;
   columnWidths: { [key: number]: number };
@@ -70,6 +91,25 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     // Results.rows already contains only the current page, so use it directly
     return results.rows || [];
   }, [results.rows]);
+
+  // Theme colors state - re-read when theme changes
+  const [themeColors, setThemeColors] = useState(getThemeColors);
+  
+  // Watch for theme changes via data-theme attribute
+  useEffect(() => {
+    const updateColors = () => {
+      setThemeColors(getThemeColors());
+    };
+    
+    // Initial update
+    updateColors();
+    
+    // Watch for attribute changes on document.documentElement
+    const observer = new MutationObserver(updateColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
 
   // Memory management: Limit cache size and clear when data changes significantly
   const formattedCellsRef = useRef<Map<string, string>>(new Map());
@@ -328,18 +368,11 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     ctx.scale(dpr, dpr);
 
     // Clear canvas and fill with background color
-    ctx.fillStyle = '#1e1e1e';
+    ctx.fillStyle = themeColors.bgColor;
     ctx.fillRect(0, 0, containerWidth, containerHeight);
 
-    // Colors
-    const bgColor = '#1e1e1e';
-    const headerBgColor = '#1a1a1a';
-    const borderColor = '#3e3e42';
-    const textColor = '#cccccc';
-    const headerTextColor = '#cccccc';
-    const hoverColor = '#2a2d2e';
-    const evenRowColor = '#252526';
-    const oddRowColor = '#1e1e1e';
+    // Use theme colors
+    const { bgColor, headerBgColor, borderColor, textColor, headerTextColor, hoverColor, evenRowColor, oddRowColor, accentColor, secondaryTextColor } = themeColors;
 
     // Calculate visible area - account for header height
     // Only rows that would be visible below the header should be considered
@@ -513,7 +546,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       
       // Draw resize handle
       if (resizingColumn === -1 || hoveredColumn === -1) {
-        ctx.fillStyle = resizingColumn === -1 ? '#007acc' : '#007acc80';
+        ctx.fillStyle = resizingColumn === -1 ? accentColor : `${accentColor}80`;
         ctx.fillRect(
           rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
           0,
@@ -586,7 +619,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         }
         
         // Draw dropdown arrow indicator (always visible)
-        ctx.fillStyle = sortColumn === idx ? '#007acc' : '#858585';
+        ctx.fillStyle = sortColumn === idx ? accentColor : secondaryTextColor;
         ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         const dropdownIcon = sortColumn === idx 
           ? (sortDirection === 'asc' ? '↑' : '↓')
@@ -596,7 +629,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
         // Draw resize handle
         if (resizingColumn === idx || hoveredColumn === idx) {
-          ctx.fillStyle = resizingColumn === idx ? '#007acc' : '#007acc80';
+          ctx.fillStyle = resizingColumn === idx ? accentColor : `${accentColor}80`;
           const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
           ctx.fillRect(
             handleX,
@@ -621,6 +654,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     drawCellText,
     selectionStart,
     selectionEnd,
+    themeColors,
+    sortColumn,
+    sortDirection,
   ]);
 
   // Handle scroll
@@ -1100,7 +1136,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         height: '100%',
         position: 'relative',
         overflow: 'hidden',
-        backgroundColor: '#1e1e1e',
+        backgroundColor: themeColors.bgColor,
       }}
     >
       {/* Scrollable container - this handles all scrolling */}
@@ -1121,7 +1157,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           position: 'relative',
           // Ensure scrollbars are always visible
           scrollbarWidth: 'thin',
-          scrollbarColor: '#424242 #1e1e1e',
+          scrollbarColor: `${themeColors.scrollbarThumb} ${themeColors.scrollbarTrack}`,
           // Force scrollbars to be visible (especially on macOS)
           WebkitOverflowScrolling: 'touch',
         }}
@@ -1147,7 +1183,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           left: 0,
           pointerEvents: 'none',
           overflow: 'hidden',
-          backgroundColor: '#1e1e1e',
+          backgroundColor: themeColors.bgColor,
         }}
       >
         <canvas

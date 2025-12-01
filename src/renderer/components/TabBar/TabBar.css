@@ -1,7 +1,7 @@
 .tab-bar {
   display: flex;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
   align-items: center;
   height: 35px;
 }
@@ -18,15 +18,15 @@
   display: flex;
   align-items: center;
   padding: 0 0.75rem;
-  background-color: #2d2d30;
-  border-right: 1px solid #3e3e42;
+  background-color: var(--bg-tertiary);
+  border-right: 1px solid var(--border-primary);
   cursor: pointer;
   user-select: none;
   min-width: 120px;
   max-width: 200px;
   position: relative;
   height: 35px;
-  color: #cccccc;
+  color: var(--text-primary);
   transition: background-color 0.15s ease;
 }
 
@@ -39,13 +39,14 @@
 }
 
 .tab:hover {
-  background-color: #2a2d2e;
+  background-color: var(--bg-hover);
 }
 
 .tab.active {
-  background-color: #1e1e1e;
-  border-bottom: 1px solid #007acc;
-  color: #ffffff;
+  background-color: var(--bg-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  color: var(--text-active);
+  font-weight: 500;
 }
 
 .tab.dragging {
@@ -54,7 +55,7 @@
 }
 
 .tab.drag-over {
-  border-left: 2px solid #007acc;
+  border-left: 2px solid var(--accent-primary);
   padding-left: calc(0.75rem - 2px);
 }
 
@@ -71,7 +72,7 @@
 }
 
 .modified-indicator {
-  color: #007acc;
+  color: var(--accent-primary);
   margin-left: 0.25rem;
   font-size: 0.75rem;
 }
@@ -82,7 +83,7 @@
   border: none;
   cursor: pointer;
   font-size: 1rem;
-  color: #858585;
+  color: var(--text-secondary);
   padding: 0;
   width: 18px;
   height: 18px;
@@ -94,7 +95,7 @@
 }
 
 .tab-close:hover {
-  background-color: #e81123;
+  background-color: var(--accent-close-hover);
   color: white;
 }
 
@@ -105,17 +106,17 @@
 
 .tab-close:disabled:hover {
   background-color: transparent;
-  color: #858585;
+  color: var(--text-secondary);
 }
 
 .new-tab-button {
   padding: 0 0.75rem;
   background: none;
   border: none;
-  border-left: 1px solid #3e3e42;
+  border-left: 1px solid var(--border-primary);
   cursor: pointer;
   font-size: 1.25rem;
-  color: #858585;
+  color: var(--text-secondary);
   font-weight: 300;
   height: 35px;
   display: flex;
@@ -125,7 +126,7 @@
 }
 
 .new-tab-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 

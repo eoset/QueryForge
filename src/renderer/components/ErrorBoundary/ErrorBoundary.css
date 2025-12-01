@@ -6,19 +6,19 @@
   padding: 2rem;
   height: 100vh;
   text-align: center;
-  background-color: #1e1e1e;
-  color: #cccccc;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 .error-boundary h2 {
-  color: #f48771;
+  color: var(--text-error);
   margin-bottom: 1rem;
   font-weight: 400;
 }
 
 .error-boundary details {
-  background-color: #252526;
-  border: 1px solid #3e3e42;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
   padding: 1rem;
   margin: 1rem 0;
@@ -26,13 +26,13 @@
   text-align: left;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 0.8125rem;
-  color: #cccccc;
+  color: var(--text-primary);
 }
 
 .error-boundary button {
   padding: 0.75rem 1.5rem;
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
   border: none;
   border-radius: 3px;
   cursor: pointer;
@@ -42,6 +42,6 @@
 }
 
 .error-boundary button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 

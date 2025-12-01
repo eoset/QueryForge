@@ -1,0 +1,117 @@
+/* Theme CSS Variables - Dark Theme (Default) and Light Theme */
+
+:root {
+  /* Dark theme (default) - Cursor-inspired colors */
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d30;
+  --bg-input: #3c3c3c;
+  --bg-hover: #2a2d2e;
+  --bg-active: #094771;
+  --bg-active-hover: #0e639c;
+  --bg-scrollbar: #1e1e1e;
+  --bg-scrollbar-thumb: #424242;
+  --bg-scrollbar-thumb-hover: #4e4e4e;
+  --bg-scrollbar-thumb-active: #5e5e5e;
+  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --bg-error: #3a1d1d;
+  
+  --border-primary: #3e3e42;
+  --border-error: #6a1f1f;
+  --border-active: #007acc;
+  
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-white: #ffffff;
+  --text-active: #ffffff;
+  --text-disabled: #6e6e6e;
+  --text-error: #f48771;
+  --text-success: #4ec9b0;
+  --text-warning: #dcdcaa;
+  --text-type: #569cd6;
+  --text-keyword: #c586c0;
+  --text-link: #007acc;
+  --text-tags: #4ec9b0;
+  
+  --accent-primary: #007acc;
+  --accent-primary-hover: #1177bb;
+  --accent-success: #0e7c3c;
+  --accent-success-hover: #0f8f45;
+  --accent-danger: #a1260d;
+  --accent-danger-hover: #c72e0f;
+  --accent-close-hover: #e81123;
+  --accent-orange: #ff694a;
+  --accent-orange-hover: #ff8566;
+  
+  --button-secondary: #3e3e42;
+  --button-secondary-hover: #4a4a4a;
+  
+  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.4);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.5);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* Field mode badges */
+  --badge-required-bg: rgba(244, 135, 113, 0.15);
+  --badge-required-text: #f48771;
+  --badge-repeated-bg: rgba(197, 134, 192, 0.15);
+  --badge-repeated-text: #c586c0;
+}
+
+/* Light theme */
+[data-theme='light'] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f3f3;
+  --bg-tertiary: #e8e8e8;
+  --bg-input: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-active: #0078d4;
+  --bg-active-hover: #106ebe;
+  --bg-scrollbar: #f3f3f3;
+  --bg-scrollbar-thumb: #c1c1c1;
+  --bg-scrollbar-thumb-hover: #a8a8a8;
+  --bg-scrollbar-thumb-active: #909090;
+  --bg-overlay: rgba(0, 0, 0, 0.4);
+  --bg-error: #fde7e9;
+  
+  --border-primary: #d4d4d4;
+  --border-error: #f1707b;
+  --border-active: #0078d4;
+  
+  --text-primary: #333333;
+  --text-secondary: #6e6e6e;
+  --text-white: #ffffff;
+  --text-active: #0078d4;
+  --text-disabled: #a0a0a0;
+  --text-error: #d32f2f;
+  --text-success: #107c10;
+  --text-warning: #795e26;
+  --text-type: #0451a5;
+  --text-keyword: #af00db;
+  --text-link: #0078d4;
+  --text-tags: #107c10;
+  
+  --accent-primary: #0078d4;
+  --accent-primary-hover: #106ebe;
+  --accent-success: #107c10;
+  --accent-success-hover: #0e6b0e;
+  --accent-danger: #d32f2f;
+  --accent-danger-hover: #b71c1c;
+  --accent-close-hover: #d32f2f;
+  --accent-orange: #d83b01;
+  --accent-orange-hover: #ea4300;
+  
+  --button-secondary: #e1e1e1;
+  --button-secondary-hover: #d1d1d1;
+  
+  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.15);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.2);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Field mode badges */
+  --badge-required-bg: rgba(211, 47, 47, 0.1);
+  --badge-required-text: #d32f2f;
+  --badge-repeated-bg: rgba(175, 0, 219, 0.1);
+  --badge-repeated-text: #af00db;
+}

@@ -13,13 +13,17 @@ import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
 import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
 import './App.css';
+
+type Theme = 'dark' | 'light';
 
 const App: React.FC = () => {
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [showSavedQueries, setShowSavedQueries] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
   const [editorHeight, setEditorHeight] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
@@ -61,7 +65,7 @@ const App: React.FC = () => {
   } | null>(null);
 
   useEffect(() => {
-    // Load saved sidebar widths on mount
+    // Load saved sidebar widths and theme on mount
     if (window.electronAPI) {
       window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
         // Ensure minimum width of 268px
@@ -74,8 +78,23 @@ const App: React.FC = () => {
         setRightSidebarWidth(width);
         resizeStartWidthRightRef.current = width;
       });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
     }
   }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
 
   // Handle sidebar collapse/expand
   const handleLeftSidebarToggle = useCallback(() => {
@@ -142,14 +161,18 @@ const App: React.FC = () => {
       const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
         useTabsStore.getState().createTab();
       });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
 
       return () => {
         removeHelpListener();
         removeAboutListener();
         removeNewTabListener();
+        removeToggleThemeListener();
       };
     }
-  }, []);
+  }, [handleToggleTheme]);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -395,7 +418,7 @@ const App: React.FC = () => {
           )}
           <div className="app-editor-results" ref={editorResultsRef}>
             <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor />
+              <QueryEditor theme={theme} />
             </div>
             <div
               className="resize-handle-horizontal"

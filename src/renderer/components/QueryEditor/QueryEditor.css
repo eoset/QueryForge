@@ -2,15 +2,15 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #1e1e1e;
+  background-color: var(--bg-primary);
 }
 
 .query-editor-toolbar {
   display: flex;
   gap: 0.5rem;
   padding: 0.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
   align-items: center;
   height: 35px;
   position: relative;
@@ -22,8 +22,8 @@
   border: none;
   border-radius: 3px;
   cursor: pointer;
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
   font-size: 0.8125rem;
   transition: background-color 0.15s ease;
   display: inline-flex;
@@ -32,21 +32,22 @@
 }
 
 .query-editor-toolbar button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .query-editor-toolbar button:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
-  background-color: #3e3e42;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
 }
 
 .query-editor-toolbar .run-button {
-  background-color: #0e639c;
+  background-color: var(--accent-primary);
 }
 
 .query-editor-toolbar .run-button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .query-editor-toolbar .arrow-icon {
@@ -55,51 +56,51 @@
 }
 
 .query-editor-toolbar .format-button {
-  background-color: #3e3e42;
-  color: #cccccc;
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
 }
 
 .query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
+  background-color: var(--button-secondary-hover);
 }
 
 .query-editor-toolbar .expand-button {
-  background-color: #3e3e42;
-  color: #cccccc;
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
 }
 
 .query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
+  background-color: var(--button-secondary-hover);
 }
 
 .query-editor-toolbar .dbtify-button {
-  background-color: #ff694a;
-  color: #ffffff;
+  background-color: var(--accent-orange);
+  color: var(--text-white);
 }
 
 .query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: #ff8566;
+  background-color: var(--accent-orange-hover);
 }
 
 .query-editor-toolbar .save-button {
-  background-color: #0e7c3c;
+  background-color: var(--accent-success);
 }
 
 .query-editor-toolbar .save-button:hover {
-  background-color: #0f8f45;
+  background-color: var(--accent-success-hover);
 }
 
 .query-editor-toolbar .cancel-button {
-  background-color: #a1260d;
+  background-color: var(--accent-danger);
 }
 
 .query-editor-toolbar .cancel-button:hover {
-  background-color: #c72e0f;
+  background-color: var(--accent-danger-hover);
 }
 
 .connection-warning {
-  color: #dcdcaa;
-  background-color: #3e3e42;
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
   padding: 0.25rem 0.5rem;
   border-radius: 3px;
   font-size: 0.8125rem;
@@ -108,12 +109,12 @@
 }
 
 .error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
+  background-color: var(--bg-error);
+  color: var(--text-error);
   padding: 0.75rem;
   margin: 0.5rem;
   border-radius: 3px;
-  border: 1px solid #6a1f1f;
+  border: 1px solid var(--border-error);
 }
 
 .editor-container {
@@ -168,15 +169,15 @@
 }
 
 .editor-status-bar {
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
   padding: 0.375rem 0.75rem;
   min-height: 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 0.75rem;
-  color: #858585;
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 
@@ -215,19 +216,19 @@
 }
 
 .editor-status-bar .status-indicator-valid {
-  background-color: #4ec9b0;
+  background-color: var(--text-success);
 }
 
 .editor-status-bar .status-indicator-invalid {
-  background-color: #f48771;
+  background-color: var(--text-error);
 }
 
 .editor-status-bar .status-valid {
-  color: #4ec9b0;
+  color: var(--text-success);
 }
 
 .editor-status-bar .status-invalid {
-  color: #f48771;
+  color: var(--text-error);
 }
 
 .editor-status-bar .status-error-message {
@@ -252,8 +253,8 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #858585;
-  background-color: #1e1e1e;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
 }
 
 .save-dialog-overlay {
@@ -262,7 +263,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -270,18 +271,18 @@
 }
 
 .save-dialog {
-  background: #252526;
+  background: var(--bg-secondary);
   border-radius: 4px;
   padding: 1.5rem;
   min-width: 400px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
 }
 
 .save-dialog h3 {
   margin: 0 0 1rem 0;
-  color: #ffffff;
+  color: var(--text-white);
   font-size: 1.125rem;
   font-weight: 400;
 }
@@ -294,7 +295,7 @@
   display: block;
   margin-bottom: 0.5rem;
   font-weight: 400;
-  color: #cccccc;
+  color: var(--text-primary);
   font-size: 0.8125rem;
 }
 
@@ -302,16 +303,16 @@
 .save-dialog .form-group textarea {
   width: 100%;
   padding: 0.5rem;
-  border: 1px solid #3e3e42;
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
   font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
 }
 
 .save-dialog .form-group input:focus,
 .save-dialog .form-group textarea:focus {
-  outline: 1px solid #007acc;
+  outline: 1px solid var(--accent-primary);
   outline-offset: -1px;
 }
 
@@ -337,25 +338,26 @@
 }
 
 .save-dialog .dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
 }
 
 .save-dialog .dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
+  background-color: var(--button-secondary-hover);
 }
 
 .save-dialog .dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
 }
 
 .save-dialog .dialog-actions button:last-child:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .save-dialog .dialog-actions button:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
+  color: var(--text-disabled);
 }
 

@@ -464,7 +464,11 @@ const buildTableAliasMapFromSelect = (
   return { aliasMap, uniqueTables };
 };
 
-export const QueryEditor: React.FC = () => {
+interface QueryEditorProps {
+  theme?: 'dark' | 'light';
+}
+
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
@@ -2855,7 +2859,7 @@ export const QueryEditor: React.FC = () => {
               <Editor
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
-                theme="vs-dark"
+                theme={theme === 'light' ? 'light' : 'vs-dark'}
                 value={queryText}
                 onChange={handleQueryChange}
               beforeMount={(monaco) => {

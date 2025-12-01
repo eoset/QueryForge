@@ -7,10 +7,13 @@ interface WindowBounds {
   y?: number;
 }
 
+export type Theme = 'dark' | 'light';
+
 interface UISettingsData {
   leftSidebarWidth: number;
   rightSidebarWidth: number;
   windowBounds?: WindowBounds;
+  theme: Theme;
 }
 
 const store = new Store<UISettingsData>({
@@ -22,6 +25,7 @@ const store = new Store<UISettingsData>({
       width: 1200,
       height: 800,
     },
+    theme: 'dark',
   },
 }) as Store<UISettingsData> & {
   get(key: 'leftSidebarWidth'): number;
@@ -30,6 +34,8 @@ const store = new Store<UISettingsData>({
   set(key: 'rightSidebarWidth', value: number): void;
   get(key: 'windowBounds'): WindowBounds | undefined;
   set(key: 'windowBounds', value: WindowBounds): void;
+  get(key: 'theme'): Theme;
+  set(key: 'theme', value: Theme): void;
 };
 
 export function getLeftSidebarWidth(): number {
@@ -54,5 +60,13 @@ export function getWindowBounds(): WindowBounds | undefined {
 
 export function setWindowBounds(bounds: WindowBounds): void {
   store.set('windowBounds', bounds);
+}
+
+export function getTheme(): Theme {
+  return store.get('theme') || 'dark';
+}
+
+export function setTheme(theme: Theme): void {
+  store.set('theme', theme);
 }
 

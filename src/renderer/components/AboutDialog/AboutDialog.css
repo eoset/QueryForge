@@ -4,7 +4,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,14 +12,14 @@
 }
 
 .about-dialog {
-  background: #252526;
+  background: var(--bg-secondary);
   border-radius: 4px;
   padding: 2rem;
   min-width: 400px;
   max-width: 500px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
 }
@@ -28,7 +28,7 @@
   margin: 0 0 1.5rem 0;
   font-size: 1.125rem;
   font-weight: 400;
-  color: #ffffff;
+  color: var(--text-white);
 }
 
 .about-content {
@@ -45,20 +45,20 @@
 .app-name {
   font-size: 1.5rem;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-white);
   margin: 0;
 }
 
 .app-description {
   font-size: 0.9375rem;
-  color: #cccccc;
+  color: var(--text-primary);
   line-height: 1.5;
   margin: 0;
 }
 
 .app-version {
   font-size: 0.875rem;
-  color: #858585;
+  color: var(--text-secondary);
   margin: 0;
 }
 
@@ -69,7 +69,7 @@
   gap: 0.5rem;
   margin-top: 1.5rem;
   padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
+  border-top: 1px solid var(--border-primary);
 }
 
 .dialog-actions button {
@@ -79,12 +79,12 @@
   cursor: pointer;
   font-size: 0.8125rem;
   transition: background-color 0.15s ease;
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
 }
 
 .dialog-actions button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .donation-button {
