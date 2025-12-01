@@ -143,6 +143,12 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
     return;
   }
 
+  // Skip subqueries - they have their own scope and should be validated separately
+  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
+  if (node.type === 'select') {
+    return;
+  }
+
   if (node.type === 'column_ref') {
     // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
     let columnName: string;
@@ -633,6 +639,76 @@ export const QueryEditor: React.FC = () => {
     // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
     const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
     await validateScope(selectAst, aliasMap, uniqueTables);
+
+    // Helper function to collect all subqueries from an AST node
+    const collectSubqueries = (node: any, subqueries: any[]) => {
+      if (!node) return;
+      
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          collectSubqueries(child, subqueries);
+        }
+        return;
+      }
+      
+      if (typeof node !== 'object') return;
+      
+      // Found a subquery
+      if (node.type === 'select') {
+        subqueries.push(node);
+        // Don't recurse into the subquery here - it will be processed separately
+        return;
+      }
+      
+      // Recurse into child properties
+      for (const key of Object.keys(node)) {
+        if (key === 'location' || key === 'loc') continue;
+        collectSubqueries(node[key], subqueries);
+      }
+    };
+
+    // Recursively validate subqueries within the AST
+    const validateSubqueries = async (ast: any) => {
+      const subqueries: any[] = [];
+      
+      // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
+      collectSubqueries(ast.where, subqueries);
+      collectSubqueries(ast.having, subqueries);
+      if (Array.isArray(ast.columns)) {
+        for (const col of ast.columns) {
+          collectSubqueries(col?.expr ?? col, subqueries);
+        }
+      }
+      // Also check JOIN ON conditions for subqueries
+      if (Array.isArray(ast.from)) {
+        for (const fromItem of ast.from) {
+          if (fromItem?.on) {
+            collectSubqueries(fromItem.on, subqueries);
+          }
+        }
+      }
+      
+      // Validate each subquery with its own scope
+      for (const subquery of subqueries) {
+        const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
+        await validateScope(subquery, subAliasMap, subUniqueTables);
+        // Recursively validate nested subqueries
+        await validateSubqueries(subquery);
+      }
+    };
+
+    // Validate subqueries in CTEs
+    if (Array.isArray(selectAst?.with)) {
+      for (const cte of selectAst.with) {
+        const cteAst = cte?.stmt?.ast;
+        if (cteAst) {
+          await validateSubqueries(cteAst);
+        }
+      }
+    }
+
+    // Validate subqueries in the main query
+    await validateSubqueries(selectAst);
 
     return issues;
   }, [getTableFields]);
