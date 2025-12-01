@@ -167,6 +167,7 @@ src/
     App.tsx
     index.html
     index.tsx
+    themes.css
   shared/
     types/
       bigquery.ts
@@ -7328,35 +7329,6 @@ export function registerTabsHandlers(): void {
 }
 ````
 
-## File: src/main/ipc/ui-settings.ts
-````typescript
-import { ipcMain } from 'electron';
-import {
-  getLeftSidebarWidth,
-  setLeftSidebarWidth,
-  getRightSidebarWidth,
-  setRightSidebarWidth,
-} from '../storage/ui-settings-store';
-
-export function registerUISettingsHandlers(): void {
-  ipcMain.handle('ui-settings:getLeftSidebarWidth', async () => {
-    return getLeftSidebarWidth();
-  });
-
-  ipcMain.handle('ui-settings:setLeftSidebarWidth', async (_event, width: number) => {
-    setLeftSidebarWidth(width);
-  });
-
-  ipcMain.handle('ui-settings:getRightSidebarWidth', async () => {
-    return getRightSidebarWidth();
-  });
-
-  ipcMain.handle('ui-settings:setRightSidebarWidth', async (_event, width: number) => {
-    setRightSidebarWidth(width);
-  });
-}
-````
-
 ## File: src/main/storage/connection-store.ts
 ````typescript
 import Store from 'electron-store';
@@ -7810,117 +7782,6 @@ export function saveTabs(tabs: QueryTab[], activeTabId: string | null): void {
 }
 ````
 
-## File: src/main/storage/ui-settings-store.ts
-````typescript
-import Store from 'electron-store';
-
-interface WindowBounds {
-  width: number;
-  height: number;
-  x?: number;
-  y?: number;
-}
-
-interface UISettingsData {
-  leftSidebarWidth: number;
-  rightSidebarWidth: number;
-  windowBounds?: WindowBounds;
-}
-
-const store = new Store<UISettingsData>({
-  name: 'ui-settings',
-  defaults: {
-    leftSidebarWidth: 250,
-    rightSidebarWidth: 300,
-    windowBounds: {
-      width: 1200,
-      height: 800,
-    },
-  },
-}) as Store<UISettingsData> & {
-  get(key: 'leftSidebarWidth'): number;
-  set(key: 'leftSidebarWidth', value: number): void;
-  get(key: 'rightSidebarWidth'): number;
-  set(key: 'rightSidebarWidth', value: number): void;
-  get(key: 'windowBounds'): WindowBounds | undefined;
-  set(key: 'windowBounds', value: WindowBounds): void;
-};
-
-export function getLeftSidebarWidth(): number {
-  return store.get('leftSidebarWidth') || 250;
-}
-
-export function setLeftSidebarWidth(width: number): void {
-  store.set('leftSidebarWidth', width);
-}
-
-export function getRightSidebarWidth(): number {
-  return store.get('rightSidebarWidth') || 300;
-}
-
-export function setRightSidebarWidth(width: number): void {
-  store.set('rightSidebarWidth', width);
-}
-
-export function getWindowBounds(): WindowBounds | undefined {
-  return store.get('windowBounds');
-}
-
-export function setWindowBounds(bounds: WindowBounds): void {
-  store.set('windowBounds', bounds);
-}
-````
-
-## File: src/renderer/components/ErrorBoundary/ErrorBoundary.css
-````css
-.error-boundary {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  height: 100vh;
-  text-align: center;
-  background-color: #1e1e1e;
-  color: #cccccc;
-}
-
-.error-boundary h2 {
-  color: #f48771;
-  margin-bottom: 1rem;
-  font-weight: 400;
-}
-
-.error-boundary details {
-  background-color: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  padding: 1rem;
-  margin: 1rem 0;
-  max-width: 800px;
-  text-align: left;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 0.8125rem;
-  color: #cccccc;
-}
-
-.error-boundary button {
-  padding: 0.75rem 1.5rem;
-  background-color: #0e639c;
-  color: #ffffff;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  margin-top: 1rem;
-  transition: background-color 0.15s ease;
-}
-
-.error-boundary button:hover {
-  background-color: #1177bb;
-}
-````
-
 ## File: src/renderer/components/ErrorBoundary/ErrorBoundary.tsx
 ````typescript
 import React, { Component, ErrorInfo, ReactNode } from 'react';
@@ -7966,361 +7827,6 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return this.props.children;
   }
-}
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.css
-````css
-.query-results {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  background-color: #1e1e1e;
-}
-
-.results-header {
-  padding: 0.5rem 1rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-}
-
-.results-info {
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.results-info span {
-  margin-right: 0.5rem;
-}
-
-.results-table-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: #1e1e1e;
-  position: relative;
-}
-
-.canvas-table-container {
-  width: 100%;
-  height: 100%;
-  overflow-x: scroll;
-  overflow-y: scroll;
-  background-color: #1e1e1e;
-  /* Ensure scrollbars are always visible when content overflows */
-  scrollbar-width: thin;
-  scrollbar-color: #424242 #1e1e1e;
-  /* Force scrollbars to be visible on macOS and Windows */
-  -webkit-overflow-scrolling: touch;
-  /* Force scrollbars to always be visible (not auto-hide on macOS) */
-  overflow: -moz-scrollbars-vertical;
-  overflow: -moz-scrollbars-horizontal;
-}
-
-.canvas-table-container::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-  -webkit-appearance: none;
-  /* Force scrollbars to always be visible on macOS */
-  display: block;
-}
-
-.canvas-table-container::-webkit-scrollbar-track {
-  background: #1e1e1e;
-  border: 1px solid #2d2d30;
-  /* Ensure track is always visible */
-  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 6px;
-  border: 2px solid #1e1e1e;
-  min-height: 20px;
-  min-width: 20px;
-  /* Make thumb more visible */
-  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:hover {
-  background: #4e4e4e;
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:active {
-  background: #5e5e5e;
-}
-
-.canvas-table-container::-webkit-scrollbar-corner {
-  background: #1e1e1e;
-}
-
-.no-rows-message {
-  padding: 2rem;
-  text-align: center;
-  color: #858585;
-  background-color: #1e1e1e;
-}
-
-.results-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  color: #cccccc;
-}
-
-.results-table thead {
-  position: sticky;
-  top: 0;
-  background-color: #252526;
-  z-index: 1;
-}
-
-.results-table th {
-  padding: 0;
-  text-align: left;
-  font-weight: 600;
-  border-bottom: 1px solid #3e3e42;
-  border-right: 1px solid #3e3e42;
-  background-color: #252526;
-  font-size: 0.75rem;
-  color: #cccccc;
-  position: relative;
-  min-width: 50px;
-}
-
-.results-table th:last-child {
-  border-right: none;
-}
-
-.results-table th .th-content {
-  padding: 0.375rem 0.5rem;
-  display: flex;
-  align-items: center;
-  position: relative;
-  height: 100%;
-}
-
-.results-table th .resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-  background-color: transparent;
-  z-index: 2;
-  transition: background-color 0.15s ease;
-}
-
-.results-table th .resize-handle:hover {
-  background-color: #007acc;
-}
-
-.results-table th:last-child .resize-handle {
-  display: none;
-}
-
-.results-table td {
-  padding: 0.375rem 0.5rem;
-  border-bottom: 1px solid #3e3e42;
-  border-right: 1px solid #3e3e42;
-  font-size: 0.75rem;
-  color: #cccccc;
-}
-
-.results-table td:last-child {
-  border-right: none;
-}
-
-.results-table tbody tr:nth-child(even) {
-  background-color: #252526;
-}
-
-.results-table tbody tr:nth-child(odd) {
-  background-color: #1e1e1e;
-}
-
-.results-table tbody tr:hover {
-  background-color: #2a2d2e;
-}
-
-.no-results {
-  padding: 2rem;
-  text-align: center;
-  color: #858585;
-  background-color: #1e1e1e;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  min-height: 200px;
-}
-
-.query-spinner-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 0.5rem;
-}
-
-.query-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid #3e3e42;
-  border-top-color: #007acc;
-  border-radius: 50%;
-  animation: query-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes query-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.error-results {
-  padding: 2rem;
-  background-color: #3a1d1d;
-  color: #f48771;
-  border-radius: 3px;
-  margin: 1rem;
-  border: 1px solid #6a1f1f;
-}
-
-.results-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 200px;
-  gap: 1rem;
-  padding: 2rem;
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 6px;
-  background-color: #3e3e42;
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: #007acc;
-  border-radius: 3px;
-  width: 0%;
-  animation: progress-bar-animation 1.5s ease-in-out infinite;
-  display: block;
-}
-
-@keyframes progress-bar-animation {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: #858585;
-  font-size: 0.8125rem;
-}
-
-.results-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.pagination-button {
-  background: transparent;
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 1rem;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  padding: 0;
-  line-height: 1;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  border-color: #007acc;
-  color: #ffffff;
-}
-
-.pagination-button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  color: #858585;
-  font-size: 0.75rem;
-  min-width: 100px;
-  text-align: center;
-}
-````
-
-## File: src/renderer/components/QueryResults/RowContextMenu.css
-````css
-.row-context-menu {
-  position: fixed;
-  background-color: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  z-index: 1000;
-  min-width: 200px;
-  padding: 0.25rem 0;
-}
-
-.context-menu-item {
-  width: 100%;
-  padding: 0.5rem 1rem;
-  background: transparent;
-  border: none;
-  color: #cccccc;
-  text-align: left;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover {
-  background-color: #2a2d2e;
-}
-
-.context-menu-item:active {
-  background-color: #007acc;
 }
 ````
 
@@ -8408,188 +7914,6 @@ export const RowContextMenu: React.FC<ContextMenuProps> = ({
     </div>
   );
 };
-````
-
-## File: src/renderer/components/SavedQueries/SavedQueries.css
-````css
-.saved-queries-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.saved-queries-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 600px;
-  max-width: 800px;
-  max-height: 80vh;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  display: flex;
-  flex-direction: column;
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-}
-
-.saved-queries-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: #ffffff;
-}
-
-.search-container {
-  margin-bottom: 1rem;
-}
-
-.search-input {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
-}
-
-.search-input:focus {
-  outline: 1px solid #007acc;
-  outline-offset: -1px;
-}
-
-.loading,
-.no-queries {
-  padding: 2rem;
-  text-align: center;
-  color: #858585;
-}
-
-.queries-list {
-  flex: 1;
-  overflow-y: auto;
-  margin-bottom: 1rem;
-}
-
-.query-item {
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-  background-color: #2d2d30;
-  transition: background-color 0.15s ease;
-}
-
-.query-item:hover {
-  background-color: #323233;
-}
-
-.query-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-
-.query-name {
-  margin: 0;
-  font-size: 0.9375rem;
-  color: #ffffff;
-  font-weight: 400;
-}
-
-.query-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.load-button,
-.delete-button {
-  padding: 0.25rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.load-button {
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.load-button:hover {
-  background-color: #1177bb;
-}
-
-.delete-button {
-  background-color: #a1260d;
-  color: #ffffff;
-}
-
-.delete-button:hover {
-  background-color: #c72e0f;
-}
-
-.query-description {
-  margin: 0.5rem 0;
-  color: #858585;
-  font-size: 0.8125rem;
-}
-
-.query-meta {
-  display: flex;
-  gap: 1rem;
-  font-size: 0.8125rem;
-  color: #858585;
-  margin-bottom: 0.5rem;
-}
-
-.query-tags {
-  color: #4ec9b0;
-}
-
-.query-preview {
-  background-color: #1e1e1e;
-  padding: 0.5rem;
-  border-radius: 3px;
-  font-size: 0.75rem;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  color: #cccccc;
-  overflow-x: auto;
-  margin: 0;
-  border: 1px solid #3e3e42;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  background-color: #3e3e42;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.dialog-actions button:hover {
-  background-color: #4a4a4a;
-}
 ````
 
 ## File: src/renderer/components/SavedQueries/SavedQueries.tsx
@@ -8709,219 +8033,6 @@ export const SavedQueries: React.FC<SavedQueriesProps> = ({ onClose }) => {
     </div>
   );
 };
-````
-
-## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
-````css
-.schema-sidebar {
-  width: 100%;
-  height: 100%;
-  background-color: #252526;
-  border-left: 1px solid #3e3e42;
-  display: flex;
-  flex-direction: column;
-  color: #cccccc;
-}
-
-.schema-sidebar-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  height: 35px;
-  gap: 0.5rem;
-}
-
-.schema-sidebar-title {
-  flex: 1;
-  min-width: 0;
-}
-
-.schema-sidebar-title-content {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.schema-sidebar-table-name {
-  font-size: 0.8125rem;
-  color: #cccccc;
-  font-weight: 400;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.schema-sidebar-table-path {
-  font-size: 0.625rem;
-  color: #858585;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 0.125rem;
-}
-
-.schema-sidebar-close {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.schema-sidebar-close:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.schema-sidebar-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
-
-.schema-metadata {
-  padding: 0.75rem 0.5rem;
-  border-bottom: 1px solid #3e3e42;
-  background-color: #1e1e1e;
-}
-
-.schema-metadata-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.375rem 0;
-  font-size: 0.75rem;
-  gap: 0.5rem;
-}
-
-.schema-metadata-item:first-child {
-  padding-top: 0;
-}
-
-.schema-metadata-item:last-child {
-  padding-bottom: 0;
-}
-
-.schema-metadata-label {
-  color: #858585;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.schema-metadata-value {
-  color: #cccccc;
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.schema-sidebar-loading,
-.schema-sidebar-error,
-.schema-sidebar-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.schema-sidebar-error {
-  color: #f48771;
-}
-
-.schema-fields {
-  display: flex;
-  flex-direction: column;
-}
-
-.schema-field-item {
-  user-select: none;
-}
-
-.schema-field-row {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: default;
-  color: #cccccc;
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.schema-field-row:hover {
-  background-color: #2a2d2e;
-}
-
-.schema-field-icon {
-  font-size: 0.625rem;
-  color: #858585;
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.schema-field-icon-spacer {
-  width: 12px;
-  display: inline-block;
-  flex-shrink: 0;
-}
-
-.schema-field-name {
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #cccccc;
-  min-width: 0;
-}
-
-.schema-field-type {
-  flex-shrink: 0;
-  color: #569cd6;
-  font-size: 0.75rem;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  margin-left: auto;
-}
-
-.schema-field-mode {
-  flex-shrink: 0;
-  font-size: 0.625rem;
-  padding: 0.125rem 0.25rem;
-  border-radius: 2px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.schema-field-mode-required {
-  background-color: rgba(244, 135, 113, 0.15);
-  color: #f48771;
-}
-
-.schema-field-mode-repeated {
-  background-color: rgba(197, 134, 192, 0.15);
-  color: #c586c0;
-}
-
-.schema-field-nested {
-  padding-left: 0;
-}
 ````
 
 ## File: src/renderer/components/SchemaSidebar/SchemaSidebar.tsx
@@ -11110,298 +10221,118 @@ export function getActiveConnection(): ConnectionConfiguration | null {
 }
 ````
 
-## File: src/main/preload.ts
+## File: src/main/ipc/ui-settings.ts
 ````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
+import { ipcMain } from 'electron';
+import {
+  getLeftSidebarWidth,
+  setLeftSidebarWidth,
+  getRightSidebarWidth,
+  setRightSidebarWidth,
+  getTheme,
+  setTheme,
+  type Theme,
+} from '../storage/ui-settings-store';
 
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-  };
+export function registerUISettingsHandlers(): void {
+  ipcMain.handle('ui-settings:getLeftSidebarWidth', async () => {
+    return getLeftSidebarWidth();
+  });
 
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
+  ipcMain.handle('ui-settings:setLeftSidebarWidth', async (_event, width: number) => {
+    setLeftSidebarWidth(width);
+  });
 
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
+  ipcMain.handle('ui-settings:getRightSidebarWidth', async () => {
+    return getRightSidebarWidth();
+  });
 
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-  };
+  ipcMain.handle('ui-settings:setRightSidebarWidth', async (_event, width: number) => {
+    setRightSidebarWidth(width);
+  });
 
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
+  ipcMain.handle('ui-settings:getTheme', async () => {
+    return getTheme();
+  });
 
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-  };
-
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
-}
-
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-} as ElectronAPI);
-
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
+  ipcMain.handle('ui-settings:setTheme', async (_event, theme: Theme) => {
+    setTheme(theme);
+  });
 }
 ````
 
-## File: src/renderer/components/AboutDialog/AboutDialog.css
-````css
-.about-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+## File: src/main/storage/ui-settings-store.ts
+````typescript
+import Store from 'electron-store';
+
+interface WindowBounds {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
 }
 
-.about-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 400px;
-  max-width: 500px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  display: flex;
-  flex-direction: column;
+export type Theme = 'dark' | 'light';
+
+interface UISettingsData {
+  leftSidebarWidth: number;
+  rightSidebarWidth: number;
+  windowBounds?: WindowBounds;
+  theme: Theme;
 }
 
-.about-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: #ffffff;
+const store = new Store<UISettingsData>({
+  name: 'ui-settings',
+  defaults: {
+    leftSidebarWidth: 250,
+    rightSidebarWidth: 300,
+    windowBounds: {
+      width: 1200,
+      height: 800,
+    },
+    theme: 'dark',
+  },
+}) as Store<UISettingsData> & {
+  get(key: 'leftSidebarWidth'): number;
+  set(key: 'leftSidebarWidth', value: number): void;
+  get(key: 'rightSidebarWidth'): number;
+  set(key: 'rightSidebarWidth', value: number): void;
+  get(key: 'windowBounds'): WindowBounds | undefined;
+  set(key: 'windowBounds', value: WindowBounds): void;
+  get(key: 'theme'): Theme;
+  set(key: 'theme', value: Theme): void;
+};
+
+export function getLeftSidebarWidth(): number {
+  return store.get('leftSidebarWidth') || 250;
 }
 
-.about-content {
-  flex: 1;
-  padding-right: 0.5rem;
+export function setLeftSidebarWidth(width: number): void {
+  store.set('leftSidebarWidth', width);
 }
 
-.about-info {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+export function getRightSidebarWidth(): number {
+  return store.get('rightSidebarWidth') || 300;
 }
 
-.app-name {
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: #ffffff;
-  margin: 0;
+export function setRightSidebarWidth(width: number): void {
+  store.set('rightSidebarWidth', width);
 }
 
-.app-description {
-  font-size: 0.9375rem;
-  color: #cccccc;
-  line-height: 1.5;
-  margin: 0;
+export function getWindowBounds(): WindowBounds | undefined {
+  return store.get('windowBounds');
 }
 
-.app-version {
-  font-size: 0.875rem;
-  color: #858585;
-  margin: 0;
+export function setWindowBounds(bounds: WindowBounds): void {
+  store.set('windowBounds', bounds);
 }
 
-.dialog-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
+export function getTheme(): Theme {
+  return store.get('theme') || 'dark';
 }
 
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.dialog-actions button:hover {
-  background-color: #1177bb;
-}
-
-.donation-button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0070f3;
-  color: #ffffff;
-  text-decoration: none;
-  display: inline-block;
-  font-family: inherit;
-}
-
-.donation-button:hover {
-  background-color: #0051cc;
+export function setTheme(theme: Theme): void {
+  store.set('theme', theme);
 }
 ````
 
@@ -11477,152 +10408,6 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({ onClose }) => {
     </div>
   );
 };
-````
-
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
-````css
-.connection-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.connection-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 500px;
-  max-width: 600px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-}
-
-.connection-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: #ffffff;
-}
-
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: #cccccc;
-  font-size: 0.8125rem;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
-}
-
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus {
-  outline: 1px solid #007acc;
-  outline-offset: -1px;
-}
-
-.form-group textarea {
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  resize: vertical;
-}
-
-.error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
-  padding: 0.75rem;
-  border-radius: 3px;
-  margin-bottom: 1rem;
-  border: 1px solid #6a1f1f;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
-}
-
-.dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.dialog-actions button:last-child:hover {
-  background-color: #1177bb;
-}
-
-.dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.checkbox-group {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.checkbox-label {
-  display: flex !important;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  user-select: none;
-}
-
-.checkbox-label input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  cursor: pointer;
-  accent-color: #0e639c;
-}
-
-.field-hint {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: #8c8c8c;
-}
 ````
 
 ## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
@@ -11843,321 +10628,157 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
 };
 ````
 
-## File: src/renderer/components/DatasetTree/DatasetTree.css
+## File: src/renderer/components/ErrorBoundary/ErrorBoundary.css
 ````css
-.dataset-tree {
-  width: 100%;
-  flex: 1;
-  background-color: #252526;
-  border-right: 1px solid #3e3e42;
+.error-boundary {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.dataset-tree.collapsed {
-  min-width: 30px;
-  max-width: 30px;
-}
-
-.dataset-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  height: 35px;
-  gap: 0.5rem;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  padding: 2rem;
+  height: 100vh;
+  text-align: center;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
 }
 
-.collapse-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.dataset-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: #cccccc;
+.error-boundary h2 {
+  color: var(--text-error);
+  margin-bottom: 1rem;
   font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 
-.refresh-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
+.error-boundary details {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dataset-tree-search {
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.dataset-tree-search-input {
-  flex: 1;
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  color: #cccccc;
-  font-size: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.dataset-tree-search-input:focus {
-  border-color: #007acc;
-}
-
-.dataset-tree-search-input::placeholder {
-  color: #858585;
-}
-
-.dataset-tree-search-clear {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.dataset-tree-search-clear:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.dataset-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
-
-.dataset-tree-loading,
-.dataset-tree-error,
-.dataset-tree-empty {
   padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.dataset-tree-error {
-  color: #f48771;
-}
-
-.dataset-item {
-  user-select: none;
-}
-
-.dataset-header {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: pointer;
-  color: #cccccc;
+  margin: 1rem 0;
+  max-width: 800px;
+  text-align: left;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
+  color: var(--text-primary);
 }
 
-.dataset-header:hover {
-  background-color: #2a2d2e;
-}
-
-.dataset-icon {
-  font-size: 0.625rem;
-  color: #858585;
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-}
-
-.dataset-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dataset-tables {
-  padding-left: 1rem;
-}
-
-.table-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  padding-left: 1.5rem;
-  cursor: pointer;
-  color: #cccccc;
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.table-item:hover {
-  background-color: #2a2d2e;
-}
-
-.table-icon {
-  font-size: 0.75rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
-
-.table-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-loading,
-.table-empty {
-  padding: 0.5rem 1rem;
-  padding-left: 2rem;
-  font-size: 0.75rem;
-  color: #858585;
-  font-style: italic;
-}
-
-.context-menu {
-  background-color: #2d2d30;
-  border: 1px solid #3e3e42;
+.error-boundary button {
+  padding: 0.75rem 1.5rem;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  border: none;
   border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  min-width: 180px;
-  padding: 0.25rem 0;
-  z-index: 1000;
-  user-select: none;
-}
-
-.context-menu-item {
-  padding: 0.5rem 1rem;
-  color: #cccccc;
-  font-size: 0.8125rem;
   cursor: pointer;
+  font-size: 0.8125rem;
+  margin-top: 1rem;
   transition: background-color 0.15s ease;
 }
 
-.context-menu-item:hover {
-  background-color: #094771;
-}
-
-.context-menu-item:first-child {
-  border-top-left-radius: 3px;
-  border-top-right-radius: 3px;
-}
-
-.context-menu-item:last-child {
-  border-bottom-left-radius: 3px;
-  border-bottom-right-radius: 3px;
+.error-boundary button:hover {
+  background-color: var(--accent-primary-hover);
 }
 ````
 
-## File: src/renderer/components/QueryResults/ColumnSortMenu.css
-````css
-.column-sort-menu {
-  position: fixed;
-  background-color: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  min-width: 150px;
-  padding: 4px 0;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+## File: src/renderer/components/HelpDialog/HelpDialog.tsx
+````typescript
+import React, { useEffect } from 'react';
+import './HelpDialog.css';
+
+interface HelpDialogProps {
+  onClose: () => void;
 }
 
-.sort-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 12px;
-  background: none;
-  border: none;
-  color: #cccccc;
-  text-align: left;
-  cursor: pointer;
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
+interface Shortcut {
+  keys: string;
+  description: string;
+  category: string;
 }
 
-.sort-menu-item:hover {
-  background-color: #2a2d2e;
-}
+export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const modifierKey = isMac ? '⌘' : 'Ctrl';
 
-.sort-menu-item.active {
-  background-color: #094771;
-  color: #ffffff;
-}
+  const shortcuts: Shortcut[] = [
+    // Help
+    { keys: `${modifierKey} + ?`, description: 'Show keyboard shortcuts', category: 'Help' },
+    
+    // Tab Navigation
+    { keys: `${modifierKey} + T`, description: 'New Tab', category: 'Tab Navigation' },
+    { keys: `${modifierKey} + 1-9`, description: 'Switch to tab by number (1-9)', category: 'Tab Navigation' },
+    
+    // Query Editor
+    { keys: `${modifierKey} + Enter`, description: 'Execute query', category: 'Query Editor' },
+    { keys: `${modifierKey} + B`, description: 'Expand SELECT * to column list', category: 'Query Editor' },
+    
+    // Edit
+    { keys: `${modifierKey} + Z`, description: 'Undo', category: 'Edit' },
+    { keys: `${modifierKey} + Shift + Z`, description: 'Redo', category: 'Edit' },
+    { keys: `${modifierKey} + X`, description: 'Cut', category: 'Edit' },
+    { keys: `${modifierKey} + C`, description: 'Copy', category: 'Edit' },
+    { keys: `${modifierKey} + V`, description: 'Paste', category: 'Edit' },
+    
+    // View
+    { keys: `${modifierKey} + =`, description: 'Zoom In', category: 'View' },
+    { keys: `${modifierKey} + -`, description: 'Zoom Out', category: 'View' },
+    { keys: `${modifierKey} + 0`, description: 'Reset Zoom', category: 'View' },
+    { keys: `${modifierKey} + F11`, description: 'Toggle Full Screen', category: 'View' },
+    
+    // Application
+    { keys: isMac ? '⌘ + Q' : 'Ctrl + Q', description: 'Quit Application', category: 'Application' },
+  ];
 
-.sort-menu-item.active:hover {
-  background-color: #0e639c;
-}
+  const categories = Array.from(new Set(shortcuts.map(s => s.category)));
 
-.sort-icon {
-  font-size: 0.875rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
+  // Close dialog on Escape key
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  // Prevent closing when clicking inside the dialog
+  const handleDialogClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
+
+  return (
+    <div className="help-dialog-overlay" onClick={onClose}>
+      <div className="help-dialog" onClick={handleDialogClick}>
+        <h2>Keyboard Shortcuts</h2>
+        <div className="help-content">
+          {categories.map((category) => (
+            <div key={category} className="shortcut-category">
+              <h3>{category}</h3>
+              <div className="shortcut-list">
+                {shortcuts
+                  .filter((s) => s.category === category)
+                  .map((shortcut, index) => (
+                    <div key={index} className="shortcut-item">
+                      <div className="shortcut-keys">
+                        {shortcut.keys.split(' + ').map((key, i) => (
+                          <React.Fragment key={i}>
+                            <kbd>{key}</kbd>
+                            {i < shortcut.keys.split(' + ').length - 1 && <span> + </span>}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                      <div className="shortcut-description">{shortcut.description}</div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="dialog-actions">
+          <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/components/QueryResults/ColumnSortMenu.tsx
@@ -12263,176 +10884,260 @@ export const ColumnSortMenu: React.FC<ColumnSortMenuProps> = ({
 };
 ````
 
-## File: src/renderer/components/SampleDataModal/SampleDataModal.css
+## File: src/renderer/components/QueryResults/QueryResults.css
 ````css
-.sample-data-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-}
-
-.sample-data-modal {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  width: 90%;
-  max-width: 1400px;
-  height: 85%;
-  max-height: 900px;
+.query-results {
   display: flex;
   flex-direction: column;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
 }
 
-.sample-data-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  border-radius: 4px 4px 0 0;
+.results-header {
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
 }
 
-.sample-data-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #cccccc;
+.results-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
-.sample-data-modal-close {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1.5rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-  line-height: 1;
+.results-info span {
+  margin-right: 0.5rem;
 }
 
-.sample-data-modal-close:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.sample-data-modal-content {
+.results-table-container {
   flex: 1;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  padding: 1rem;
+  background-color: var(--bg-primary);
+  position: relative;
 }
 
-.sample-data-loading,
-.sample-data-error,
-.sample-data-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+.canvas-table-container {
+  width: 100%;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: scroll;
+  background-color: var(--bg-primary);
+  /* Ensure scrollbars are always visible when content overflows */
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
+  /* Force scrollbars to be visible on macOS and Windows */
+  -webkit-overflow-scrolling: touch;
+  /* Force scrollbars to always be visible (not auto-hide on macOS) */
+  overflow: -moz-scrollbars-vertical;
+  overflow: -moz-scrollbars-horizontal;
+}
+
+.canvas-table-container::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  -webkit-appearance: none;
+  /* Force scrollbars to always be visible on macOS */
+  display: block;
+}
+
+.canvas-table-container::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+  border: 1px solid var(--bg-tertiary);
+  /* Ensure track is always visible */
+  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--bg-primary);
+  min-height: 20px;
+  min-width: 20px;
+  /* Make thumb more visible */
+  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:active {
+  background: var(--bg-scrollbar-thumb-active);
+}
+
+.canvas-table-container::-webkit-scrollbar-corner {
+  background: var(--bg-primary);
+}
+
+.no-rows-message {
   padding: 2rem;
   text-align: center;
-  color: #858585;
-  gap: 1rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
 }
 
-.sample-data-error {
-  color: #f48771;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.sample-data-info {
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 0.75rem;
-  color: #858585;
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid #3e3e42;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  color: var(--text-primary);
 }
 
-.sample-data-info span {
-  margin-right: 0.75rem;
+.results-table thead {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-secondary);
+  z-index: 1;
 }
 
-.sample-data-canvas-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
+.results-table th {
+  padding: 0;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  position: relative;
+  min-width: 50px;
+}
+
+.results-table th:last-child {
+  border-right: none;
+}
+
+.results-table th .th-content {
+  padding: 0.375rem 0.5rem;
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 100%;
+}
+
+.results-table th .resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background-color: transparent;
+  z-index: 2;
+  transition: background-color 0.15s ease;
+}
+
+.results-table th .resize-handle:hover {
+  background-color: var(--accent-primary);
+}
+
+.results-table th:last-child .resize-handle {
+  display: none;
+}
+
+.results-table td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.results-table td:last-child {
+  border-right: none;
+}
+
+.results-table tbody tr:nth-child(even) {
+  background-color: var(--bg-secondary);
+}
+
+.results-table tbody tr:nth-child(odd) {
+  background-color: var(--bg-primary);
+}
+
+.results-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.no-results {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
   min-height: 200px;
 }
 
-.sample-data-pagination {
+.query-spinner-container {
   display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.query-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: query-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes query-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.error-results {
+  padding: 2rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  margin: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.results-loading {
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  flex: 1;
+  min-height: 200px;
   gap: 1rem;
-  padding: 0.75rem 0;
-  margin-top: 0.75rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.pagination-button {
-  background-color: #2d2d30;
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-  min-width: 32px;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: #3e3e42;
-  border-color: #007acc;
-}
-
-.pagination-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  font-size: 0.75rem;
-  color: #858585;
+  padding: 2rem;
 }
 
 .loading-progress-bar {
   width: 100%;
   max-width: 400px;
-  height: 4px;
-  background-color: #2d2d30;
-  border-radius: 2px;
+  height: 6px;
+  background-color: var(--border-primary);
+  border-radius: 3px;
   overflow: hidden;
+  position: relative;
 }
 
 .loading-progress-bar-fill {
   height: 100%;
-  background-color: #007acc;
-  animation: loading-progress 1.5s ease-in-out infinite;
+  background-color: var(--accent-primary);
+  border-radius: 3px;
+  width: 0%;
+  animation: progress-bar-animation 1.5s ease-in-out infinite;
+  display: block;
 }
 
-@keyframes loading-progress {
+@keyframes progress-bar-animation {
   0% {
     width: 0%;
     transform: translateX(0);
@@ -12448,8 +11153,89 @@ export const ColumnSortMenu: React.FC<ColumnSortMenuProps> = ({
 }
 
 .loading-text {
-  color: #858585;
-  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.results-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.pagination-button {
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.pagination-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  min-width: 100px;
+  text-align: center;
+}
+````
+
+## File: src/renderer/components/QueryResults/RowContextMenu.css
+````css
+.row-context-menu {
+  position: fixed;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-modal);
+  z-index: 1000;
+  min-width: 200px;
+  padding: 0.25rem 0;
+}
+
+.context-menu-item {
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item:active {
+  background-color: var(--accent-primary);
 }
 ````
 
@@ -12719,48 +11505,243 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
 };
 ````
 
-## File: src/renderer/components/SidebarHeader/SidebarHeader.css
+## File: src/renderer/components/SavedQueries/SavedQueries.css
 ````css
-.sidebar-header {
+.saved-queries-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.saved-queries-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 600px;
+  max-width: 800px;
+  max-height: 80vh;
+  box-shadow: var(--shadow-dialog);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.saved-queries-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: var(--text-white);
+}
+
+.search-container {
+  margin-bottom: 1rem;
+}
+
+.search-input {
+  width: 100%;
   padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.search-input:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.loading,
+.no-queries {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.queries-list {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+}
+
+.query-item {
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background-color: var(--bg-tertiary);
+  transition: background-color 0.15s ease;
+}
+
+.query-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.query-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.query-name {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--text-white);
+  font-weight: 400;
+}
+
+.query-actions {
+  display: flex;
   gap: 0.5rem;
-  height: 35px;
 }
 
-.sidebar-header-collapsed {
-  justify-content: center;
-}
-
-.collapse-button {
-  background: none;
+.load-button,
+.delete-button {
+  padding: 0.25rem 0.75rem;
   border: none;
-  color: #858585;
+  border-radius: 3px;
   cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.load-button {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.load-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.delete-button {
+  background-color: var(--accent-danger);
+  color: var(--text-white);
+}
+
+.delete-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.query-description {
+  margin: 0.5rem 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.query-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.query-tags {
+  color: var(--text-tags);
+}
+
+.query-preview {
+  background-color: var(--bg-primary);
+  padding: 0.5rem;
+  border-radius: 3px;
   font-size: 0.75rem;
-  padding: 0.25rem;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  color: var(--text-primary);
+  overflow-x: auto;
+  margin: 0;
+  border: 1px solid var(--border-primary);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.dialog-actions button:hover {
+  background-color: var(--button-secondary-hover);
+}
+````
+
+## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
+````css
+.schema-sidebar {
+  width: 100%;
+  height: 100%;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  color: var(--text-primary);
+}
+
+.schema-sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+  gap: 0.5rem;
 }
 
-.collapse-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
+.schema-sidebar-title {
+  flex: 1;
+  min-width: 0;
 }
 
-.refresh-button {
+.schema-sidebar-title-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.schema-sidebar-table-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schema-sidebar-table-path {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 0.125rem;
+}
+
+.schema-sidebar-close {
   background: none;
   border: none;
-  color: #858585;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.875rem;
   padding: 0.25rem;
@@ -12771,16 +11752,151 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
   height: 20px;
   border-radius: 3px;
   transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
 }
 
-.refresh-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  color: #cccccc;
+.schema-sidebar-close:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.schema-sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
+
+.schema-metadata {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-primary);
+}
+
+.schema-metadata-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.375rem 0;
+  font-size: 0.75rem;
+  gap: 0.5rem;
+}
+
+.schema-metadata-item:first-child {
+  padding-top: 0;
+}
+
+.schema-metadata-item:last-child {
+  padding-bottom: 0;
+}
+
+.schema-metadata-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.schema-metadata-value {
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.schema-sidebar-loading,
+.schema-sidebar-error,
+.schema-sidebar-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.schema-sidebar-error {
+  color: var(--text-error);
+}
+
+.schema-fields {
+  display: flex;
+  flex-direction: column;
+}
+
+.schema-field-item {
+  user-select: none;
+}
+
+.schema-field-row {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: default;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.schema-field-row:hover {
+  background-color: var(--bg-hover);
+}
+
+.schema-field-icon {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.schema-field-icon-spacer {
+  width: 12px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.schema-field-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.schema-field-type {
+  flex-shrink: 0;
+  color: var(--text-type);
+  font-size: 0.75rem;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  margin-left: auto;
+}
+
+.schema-field-mode {
+  flex-shrink: 0;
+  font-size: 0.625rem;
+  padding: 0.125rem 0.25rem;
+  border-radius: 2px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.schema-field-mode-required {
+  background-color: var(--badge-required-bg);
+  color: var(--badge-required-text);
+}
+
+.schema-field-mode-repeated {
+  background-color: var(--badge-repeated-bg);
+  color: var(--badge-repeated-text);
+}
+
+.schema-field-nested {
+  padding-left: 0;
 }
 ````
 
@@ -12840,42 +11956,6 @@ export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
 };
 ````
 
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
-````css
-.sidebar-switcher {
-  display: flex;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  padding: 0.25rem;
-  gap: 0.25rem;
-}
-
-.sidebar-switcher-button {
-  flex: 1;
-  background-color: transparent;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.75rem;
-  font-weight: 400;
-  padding: 0.5rem 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.sidebar-switcher-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.sidebar-switcher-button.active {
-  background-color: #1e1e1e;
-  color: #ffffff;
-}
-````
-
 ## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
 ````typescript
 import React from 'react';
@@ -12919,575 +11999,6 @@ export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
 };
 ````
 
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
-````css
-.view-definition-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.view-definition-modal-dialog {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  width: 90%;
-  max-width: 900px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-}
-
-.view-definition-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid #3e3e42;
-  background-color: #252526;
-}
-
-.view-definition-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #cccccc;
-}
-
-.view-definition-modal-close {
-  background: transparent;
-  border: none;
-  color: #858585;
-  font-size: 1.5rem;
-  cursor: pointer;
-  padding: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  transition: color 0.15s ease;
-}
-
-.view-definition-modal-close:hover {
-  color: #ffffff;
-}
-
-.view-definition-modal-content {
-  flex: 1;
-  overflow: hidden;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.view-definition-actions {
-  margin-bottom: 1rem;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.view-definition-copy-button {
-  background-color: #007acc;
-  color: #ffffff;
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.view-definition-copy-button:hover {
-  background-color: #005a9e;
-}
-
-.view-definition-editor {
-  flex: 1;
-  min-height: 400px;
-  height: 100%;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.view-definition-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 3rem;
-  color: #858585;
-}
-
-.view-definition-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid #3e3e42;
-  border-top-color: #007acc;
-  border-radius: 50%;
-  animation: view-definition-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes view-definition-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.view-definition-error {
-  padding: 1rem;
-  background-color: #3a1d1d;
-  color: #f48771;
-  border-radius: 3px;
-  border: 1px solid #6a1f1f;
-}
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
-import './ViewDefinitionModal.css';
-
-interface ViewDefinitionModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
-}
-
-export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const [definition, setDefinition] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const loadViewDefinition = async () => {
-      if (!window.electronAPI) {
-        setError('Electron API not available');
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-        setDefinition(result.definition);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load view definition');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadViewDefinition();
-  }, [datasetId, tableId]);
-
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleEscape);
-    return () => window.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(definition);
-  };
-
-  return (
-    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
-      <div className="view-definition-modal-dialog">
-        <div className="view-definition-modal-header">
-          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
-          <button className="view-definition-modal-close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="view-definition-modal-content">
-          {isLoading && (
-            <div className="view-definition-loading">
-              <div className="view-definition-spinner"></div>
-              <div>Loading view definition...</div>
-            </div>
-          )}
-          {error && (
-            <div className="view-definition-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          {!isLoading && !error && definition && (
-            <>
-              <div className="view-definition-actions">
-                <button onClick={handleCopy} className="view-definition-copy-button">
-                  Copy to Clipboard
-                </button>
-              </div>
-              <div className="view-definition-editor">
-                <Editor
-                  height="400px"
-                  language="sql"
-                  value={definition}
-                  theme="vs-dark"
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 13,
-                    lineNumbers: 'on',
-                    folding: true,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                    renderLineHighlight: 'none',
-                    scrollbar: {
-                      vertical: 'auto',
-                      horizontal: 'auto',
-                    },
-                  }}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: src/renderer/App.css
-````css
-* {
-  box-sizing: border-box;
-}
-
-html {
-  background-color: #1e1e1e;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  background-color: #1e1e1e;
-  color: #cccccc;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-}
-
-/* Global scrollbar styling to match Monaco Editor */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #424242 #1e1e1e;
-}
-
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-*::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-*::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 5px;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background: #4e4e4e;
-}
-
-*::-webkit-scrollbar-corner {
-  background: #1e1e1e;
-}
-
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-  background-color: #1e1e1e;
-  color: #cccccc;
-}
-
-.app-header {
-  background-color: #2d2d30;
-  color: #cccccc;
-  padding: 0.5rem 1rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #3e3e42;
-  height: 35px;
-}
-
-.app-header h1 {
-  margin: 0;
-  font-size: 0.875rem;
-  font-weight: 400;
-  color: #cccccc;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.connection-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  color: #858585;
-}
-
-.status-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: #6c757d;
-}
-
-.status-indicator.connected {
-  background-color: #4ec9b0;
-}
-
-.header-actions button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  background-color: transparent;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.header-actions button:hover {
-  background-color: #2a2d2e;
-}
-
-.app-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background-color: #1e1e1e;
-}
-
-.app-content {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-  background-color: #1e1e1e;
-}
-
-.app-editor-results {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-width: 0;
-  position: relative;
-}
-
-.query-section {
-  flex: 0 0 auto;
-  min-height: 200px;
-  max-height: 800px;
-  border-bottom: 1px solid #3e3e42;
-  overflow: hidden;
-}
-
-.resize-handle-horizontal {
-  height: 4px;
-  background-color: #3e3e42;
-  cursor: row-resize;
-  flex-shrink: 0;
-  position: relative;
-  transition: background-color 0.15s ease;
-}
-
-.resize-handle-horizontal:hover {
-  background-color: #007acc;
-}
-
-.resize-handle-horizontal::before {
-  content: '';
-  position: absolute;
-  top: -2px;
-  left: 0;
-  right: 0;
-  bottom: -2px;
-  cursor: row-resize;
-}
-
-.resize-handle-vertical {
-  width: 4px;
-  background-color: #3e3e42;
-  cursor: col-resize;
-  flex-shrink: 0;
-  position: relative;
-  transition: background-color 0.15s ease;
-}
-
-.resize-handle-vertical:hover {
-  background-color: #007acc;
-}
-
-.resize-handle-vertical::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -2px;
-  right: -2px;
-  bottom: 0;
-  cursor: col-resize;
-}
-
-.results-section {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  background-color: #1e1e1e;
-}
-````
-
 ## File: src/renderer/index.html
 ````html
 <!DOCTYPE html>
@@ -13527,6 +12038,127 @@ body {
   <div id="root"></div>
 </body>
 </html>
+````
+
+## File: src/renderer/themes.css
+````css
+/* Theme CSS Variables - Dark Theme (Default) and Light Theme */
+
+:root {
+  /* Dark theme (default) - Cursor-inspired colors */
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d30;
+  --bg-input: #3c3c3c;
+  --bg-hover: #2a2d2e;
+  --bg-active: #094771;
+  --bg-active-hover: #0e639c;
+  --bg-scrollbar: #1e1e1e;
+  --bg-scrollbar-thumb: #424242;
+  --bg-scrollbar-thumb-hover: #4e4e4e;
+  --bg-scrollbar-thumb-active: #5e5e5e;
+  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --bg-error: #3a1d1d;
+  
+  --border-primary: #3e3e42;
+  --border-error: #6a1f1f;
+  --border-active: #007acc;
+  
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-white: #ffffff;
+  --text-active: #ffffff;
+  --text-disabled: #6e6e6e;
+  --text-error: #f48771;
+  --text-success: #4ec9b0;
+  --text-warning: #dcdcaa;
+  --text-type: #569cd6;
+  --text-keyword: #c586c0;
+  --text-link: #007acc;
+  --text-tags: #4ec9b0;
+  
+  --accent-primary: #007acc;
+  --accent-primary-hover: #1177bb;
+  --accent-success: #0e7c3c;
+  --accent-success-hover: #0f8f45;
+  --accent-danger: #a1260d;
+  --accent-danger-hover: #c72e0f;
+  --accent-close-hover: #e81123;
+  --accent-orange: #ff694a;
+  --accent-orange-hover: #ff8566;
+  
+  --button-secondary: #3e3e42;
+  --button-secondary-hover: #4a4a4a;
+  
+  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.4);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.5);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* Field mode badges */
+  --badge-required-bg: rgba(244, 135, 113, 0.15);
+  --badge-required-text: #f48771;
+  --badge-repeated-bg: rgba(197, 134, 192, 0.15);
+  --badge-repeated-text: #c586c0;
+}
+
+/* Light theme */
+[data-theme='light'] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f3f3;
+  --bg-tertiary: #e8e8e8;
+  --bg-input: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-active: #0078d4;
+  --bg-active-hover: #106ebe;
+  --bg-scrollbar: #f3f3f3;
+  --bg-scrollbar-thumb: #c1c1c1;
+  --bg-scrollbar-thumb-hover: #a8a8a8;
+  --bg-scrollbar-thumb-active: #909090;
+  --bg-overlay: rgba(0, 0, 0, 0.4);
+  --bg-error: #fde7e9;
+  
+  --border-primary: #d4d4d4;
+  --border-error: #f1707b;
+  --border-active: #0078d4;
+  
+  --text-primary: #333333;
+  --text-secondary: #6e6e6e;
+  --text-white: #ffffff;
+  --text-active: #0078d4;
+  --text-disabled: #a0a0a0;
+  --text-error: #d32f2f;
+  --text-success: #107c10;
+  --text-warning: #795e26;
+  --text-type: #0451a5;
+  --text-keyword: #af00db;
+  --text-link: #0078d4;
+  --text-tags: #107c10;
+  
+  --accent-primary: #0078d4;
+  --accent-primary-hover: #106ebe;
+  --accent-success: #107c10;
+  --accent-success-hover: #0e6b0e;
+  --accent-danger: #d32f2f;
+  --accent-danger-hover: #b71c1c;
+  --accent-close-hover: #d32f2f;
+  --accent-orange: #d83b01;
+  --accent-orange-hover: #ea4300;
+  
+  --button-secondary: #e1e1e1;
+  --button-secondary-hover: #d1d1d1;
+  
+  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.15);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.2);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Field mode badges */
+  --badge-required-bg: rgba(211, 47, 47, 0.1);
+  --badge-required-text: #d32f2f;
+  --badge-repeated-bg: rgba(175, 0, 219, 0.1);
+  --badge-repeated-text: #af00db;
+}
 ````
 
 ## File: src/shared/types/connection.ts
@@ -18109,527 +16741,275 @@ module.exports = (env, argv) => {
 };
 ````
 
-## File: src/main/main.ts
+## File: src/main/preload.ts
 ````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers } from './ipc/results-cache';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-store';
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
 
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
   };
 
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
 
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
+  };
+}
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
     },
-  };
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+} as ElectronAPI);
 
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
   }
 }
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-});
 ````
 
-## File: src/renderer/components/HelpDialog/HelpDialog.css
+## File: src/renderer/components/AboutDialog/AboutDialog.css
 ````css
-.help-dialog-overlay {
+.about-dialog-overlay {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
 }
 
-.help-dialog {
-  background: #252526;
+.about-dialog {
+  background: var(--bg-secondary);
   border-radius: 4px;
   padding: 2rem;
-  min-width: 600px;
-  max-width: 700px;
-  max-height: 80vh;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
-.help-dialog h2 {
+.about-dialog h2 {
   margin: 0 0 1.5rem 0;
   font-size: 1.125rem;
   font-weight: 400;
-  color: #ffffff;
+  color: var(--text-white);
 }
 
-.help-content {
+.about-content {
   flex: 1;
-  overflow-y: auto;
   padding-right: 0.5rem;
 }
 
-.help-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.help-content::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.help-content::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 4px;
-}
-
-.help-content::-webkit-scrollbar-thumb:hover {
-  background: #4e4e4e;
-}
-
-.shortcut-category {
-  margin-bottom: 2rem;
-}
-
-.shortcut-category:last-child {
-  margin-bottom: 0;
-}
-
-.shortcut-category h3 {
-  margin: 0 0 0.75rem 0;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #ffffff;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.shortcut-list {
+.about-info {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 1rem;
 }
 
-.shortcut-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #2d2d30;
+.app-name {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-white);
+  margin: 0;
 }
 
-.shortcut-item:last-child {
-  border-bottom: none;
+.app-description {
+  font-size: 0.9375rem;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin: 0;
 }
 
-.shortcut-keys {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  flex-shrink: 0;
-  margin-right: 1rem;
-}
-
-.shortcut-keys kbd {
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  background-color: #3c3c3c;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: #cccccc;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  min-width: 1.5rem;
-  text-align: center;
-}
-
-.shortcut-keys span {
-  color: #858585;
-  font-size: 0.75rem;
-}
-
-.shortcut-description {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: #cccccc;
-  text-align: right;
+.app-version {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 0;
 }
 
 .dialog-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
   margin-top: 1.5rem;
   padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
+  border-top: 1px solid var(--border-primary);
 }
 
 .dialog-actions button {
@@ -18639,12 +17019,12 @@ app.on('will-quit', () => {
   cursor: pointer;
   font-size: 0.8125rem;
   transition: background-color 0.15s ease;
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
 }
 
 .dialog-actions button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .donation-button {
@@ -18666,441 +17046,92 @@ app.on('will-quit', () => {
 }
 ````
 
-## File: src/renderer/components/HelpDialog/HelpDialog.tsx
-````typescript
-import React, { useEffect } from 'react';
-import './HelpDialog.css';
-
-interface HelpDialogProps {
-  onClose: () => void;
-}
-
-interface Shortcut {
-  keys: string;
-  description: string;
-  category: string;
-}
-
-export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
-  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-  const modifierKey = isMac ? '⌘' : 'Ctrl';
-
-  const shortcuts: Shortcut[] = [
-    // Help
-    { keys: `${modifierKey} + ?`, description: 'Show keyboard shortcuts', category: 'Help' },
-    
-    // Tab Navigation
-    { keys: `${modifierKey} + T`, description: 'New Tab', category: 'Tab Navigation' },
-    { keys: `${modifierKey} + 1-9`, description: 'Switch to tab by number (1-9)', category: 'Tab Navigation' },
-    
-    // Query Editor
-    { keys: `${modifierKey} + Enter`, description: 'Execute query', category: 'Query Editor' },
-    { keys: `${modifierKey} + B`, description: 'Expand SELECT * to column list', category: 'Query Editor' },
-    
-    // Edit
-    { keys: `${modifierKey} + Z`, description: 'Undo', category: 'Edit' },
-    { keys: `${modifierKey} + Shift + Z`, description: 'Redo', category: 'Edit' },
-    { keys: `${modifierKey} + X`, description: 'Cut', category: 'Edit' },
-    { keys: `${modifierKey} + C`, description: 'Copy', category: 'Edit' },
-    { keys: `${modifierKey} + V`, description: 'Paste', category: 'Edit' },
-    
-    // View
-    { keys: `${modifierKey} + =`, description: 'Zoom In', category: 'View' },
-    { keys: `${modifierKey} + -`, description: 'Zoom Out', category: 'View' },
-    { keys: `${modifierKey} + 0`, description: 'Reset Zoom', category: 'View' },
-    { keys: `${modifierKey} + F11`, description: 'Toggle Full Screen', category: 'View' },
-    
-    // Application
-    { keys: isMac ? '⌘ + Q' : 'Ctrl + Q', description: 'Quit Application', category: 'Application' },
-  ];
-
-  const categories = Array.from(new Set(shortcuts.map(s => s.category)));
-
-  // Close dialog on Escape key
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  // Prevent closing when clicking inside the dialog
-  const handleDialogClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-  };
-
-  return (
-    <div className="help-dialog-overlay" onClick={onClose}>
-      <div className="help-dialog" onClick={handleDialogClick}>
-        <h2>Keyboard Shortcuts</h2>
-        <div className="help-content">
-          {categories.map((category) => (
-            <div key={category} className="shortcut-category">
-              <h3>{category}</h3>
-              <div className="shortcut-list">
-                {shortcuts
-                  .filter((s) => s.category === category)
-                  .map((shortcut, index) => (
-                    <div key={index} className="shortcut-item">
-                      <div className="shortcut-keys">
-                        {shortcut.keys.split(' + ').map((key, i) => (
-                          <React.Fragment key={i}>
-                            <kbd>{key}</kbd>
-                            {i < shortcut.keys.split(' + ').length - 1 && <span> + </span>}
-                          </React.Fragment>
-                        ))}
-                      </div>
-                      <div className="shortcut-description">{shortcut.description}</div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="dialog-actions">
-          <button onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/QueryEditor/QueryEditor.css
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
 ````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: #1e1e1e;
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: #0e639c;
-  color: #ffffff;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background-color: #3e3e42;
-}
-
-.query-editor-toolbar .run-button {
-  background-color: #0e639c;
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: #ff694a;
-  color: #ffffff;
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: #ff8566;
-}
-
-.query-editor-toolbar .save-button {
-  background-color: #0e7c3c;
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: #0f8f45;
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: #a1260d;
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: #c72e0f;
-}
-
-.connection-warning {
-  color: #dcdcaa;
-  background-color: #3e3e42;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid #6a1f1f;
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: #858585;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: #4ec9b0;
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: #f48771;
-}
-
-.editor-status-bar .status-valid {
-  color: #4ec9b0;
-}
-
-.editor-status-bar .status-invalid {
-  color: #f48771;
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #858585;
-  background-color: #1e1e1e;
-}
-
-.save-dialog-overlay {
+.connection-dialog-overlay {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  z-index: 1000;
 }
 
-.save-dialog {
-  background: #252526;
+.connection-dialog {
+  background: var(--bg-secondary);
   border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
+  padding: 2rem;
+  min-width: 500px;
+  max-width: 600px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
 }
 
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: #ffffff;
+.connection-dialog h2 {
+  margin: 0 0 1.5rem 0;
   font-size: 1.125rem;
   font-weight: 400;
+  color: var(--text-white);
 }
 
-.save-dialog .form-group {
+.form-group {
   margin-bottom: 1rem;
 }
 
-.save-dialog .form-group label {
+.form-group label {
   display: block;
   margin-bottom: 0.5rem;
   font-weight: 400;
-  color: #cccccc;
+  color: var(--text-primary);
   font-size: 0.8125rem;
 }
 
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
+.form-group input,
+.form-group select,
+.form-group textarea {
   width: 100%;
   padding: 0.5rem;
-  border: 1px solid #3e3e42;
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
   font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
 }
 
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid #007acc;
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
   outline-offset: -1px;
 }
 
-.save-dialog .form-group textarea {
-  font-family: inherit;
+.form-group textarea {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   resize: vertical;
 }
 
-.save-dialog .dialog-actions {
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  border-radius: 3px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
-  margin-top: 1rem;
+  margin-top: 1.5rem;
 }
 
-.save-dialog .dialog-actions button {
+.dialog-actions button {
   padding: 0.5rem 1rem;
   border: none;
   border-radius: 3px;
@@ -19109,27 +17140,546 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
   transition: background-color 0.15s ease;
 }
 
-.save-dialog .dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
+.dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
 }
 
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
+.dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
 }
 
-.save-dialog .dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
+.dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
 }
 
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: #1177bb;
+.dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
 }
 
-.save-dialog .dialog-actions button:disabled {
+.dialog-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.checkbox-group {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-primary);
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+````
+
+## File: src/renderer/components/DatasetTree/DatasetTree.css
+````css
+.dataset-tree {
+  width: 100%;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.dataset-tree.collapsed {
+  min-width: 30px;
+  max-width: 30px;
+}
+
+.dataset-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+  gap: 0.5rem;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dataset-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dataset-tree-search {
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dataset-tree-search-input {
+  flex: 1;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  padding: 0.375rem 0.5rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.dataset-tree-search-input:focus {
+  border-color: var(--accent-primary);
+}
+
+.dataset-tree-search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.dataset-tree-search-clear {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.dataset-tree-search-clear:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dataset-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
+
+.dataset-tree-loading,
+.dataset-tree-error,
+.dataset-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.dataset-tree-error {
+  color: var(--text-error);
+}
+
+.dataset-item {
+  user-select: none;
+}
+
+.dataset-header {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.dataset-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.dataset-icon {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+.dataset-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-tables {
+  padding-left: 1rem;
+}
+
+.table-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  padding-left: 1.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.table-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.table-icon {
+  font-size: 0.75rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+.table-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-loading,
+.table-empty {
+  padding: 0.5rem 1rem;
+  padding-left: 2rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.context-menu {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  min-width: 180px;
+  padding: 0.25rem 0;
+  z-index: 1000;
+  user-select: none;
+}
+
+.context-menu-item {
+  padding: 0.5rem 1rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-active);
+}
+
+.context-menu-item:first-child {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.context-menu-item:last-child {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+````
+
+## File: src/renderer/components/HelpDialog/HelpDialog.css
+````css
+.help-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.help-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 600px;
+  max-width: 700px;
+  max-height: 80vh;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.help-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: var(--text-white);
+}
+
+.help-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.help-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.help-content::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+.help-content::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.help-content::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+.shortcut-category {
+  margin-bottom: 2rem;
+}
+
+.shortcut-category:last-child {
+  margin-bottom: 0;
+}
+
+.shortcut-category h3 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-white);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.shortcut-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--bg-tertiary);
+}
+
+.shortcut-item:last-child {
+  border-bottom: none;
+}
+
+.shortcut-keys {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  margin-right: 1rem;
+}
+
+.shortcut-keys kbd {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  min-width: 1.5rem;
+  text-align: center;
+}
+
+.shortcut-keys span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.shortcut-description {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.dialog-actions button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.donation-button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  background-color: #0070f3;
+  color: #ffffff;
+  text-decoration: none;
+  display: inline-block;
+  font-family: inherit;
+}
+
+.donation-button:hover {
+  background-color: #0051cc;
+}
+````
+
+## File: src/renderer/components/QueryResults/ColumnSortMenu.css
+````css
+.column-sort-menu {
+  position: fixed;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-dropdown);
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px 0;
+  font-size: 0.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+}
+
+.sort-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+}
+
+.sort-menu-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.sort-menu-item.active {
+  background-color: var(--bg-active);
+  color: var(--text-white);
+}
+
+.sort-menu-item.active:hover {
+  background-color: var(--bg-active-hover);
+}
+
+.sort-icon {
+  font-size: 0.875rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
 }
 ````
 
@@ -19627,137 +18177,687 @@ export const QueryResults: React.FC = () => {
 };
 ````
 
-## File: src/renderer/components/TabBar/TabBar.css
+## File: src/renderer/components/SampleDataModal/SampleDataModal.css
 ````css
-.tab-bar {
-  display: flex;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-}
-
-.tabs-container {
-  display: flex;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  align-items: center;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  background-color: #2d2d30;
-  border-right: 1px solid #3e3e42;
-  cursor: pointer;
-  user-select: none;
-  min-width: 120px;
-  max-width: 200px;
-  position: relative;
-  height: 35px;
-  color: #cccccc;
-  transition: background-color 0.15s ease;
-}
-
-.tab[draggable='true'] {
-  cursor: grab;
-}
-
-.tab[draggable='true']:active {
-  cursor: grabbing;
-}
-
-.tab:hover {
-  background-color: #2a2d2e;
-}
-
-.tab.active {
-  background-color: #1e1e1e;
-  border-bottom: 1px solid #007acc;
-  color: #ffffff;
-}
-
-.tab.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.tab.drag-over {
-  border-left: 2px solid #007acc;
-  padding-left: calc(0.75rem - 2px);
-}
-
-.tab.modified .tab-title::after {
-  content: '';
-}
-
-.tab-title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-}
-
-.modified-indicator {
-  color: #007acc;
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-}
-
-.tab-close {
-  margin-left: 0.5rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  color: #858585;
-  padding: 0;
-  width: 18px;
-  height: 18px;
+.sample-data-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 10000;
+}
+
+.sample-data-modal {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 1400px;
+  height: 85%;
+  max-height: 900px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.sample-data-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  border-radius: 4px 4px 0 0;
+}
+
+.sample-data-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sample-data-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.5rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.sample-data-modal-close:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sample-data-modal-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.sample-data-loading,
+.sample-data-error,
+.sample-data-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  gap: 1rem;
+}
+
+.sample-data-error {
+  color: var(--text-error);
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sample-data-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.sample-data-info span {
+  margin-right: 0.75rem;
+}
+
+.sample-data-canvas-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  min-height: 200px;
+}
+
+.sample-data-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.pagination-button {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  min-width: 32px;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--border-primary);
+  border-color: var(--accent-primary);
+}
+
+.pagination-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 4px;
+  background-color: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: var(--accent-primary);
+  animation: loading-progress 1.5s ease-in-out infinite;
+}
+
+@keyframes loading-progress {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+````
+
+## File: src/renderer/components/SidebarHeader/SidebarHeader.css
+````css
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  gap: 0.5rem;
+  height: 35px;
+}
+
+.sidebar-header-collapsed {
+  justify-content: center;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   border-radius: 3px;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.tab-close:hover {
-  background-color: #e81123;
-  color: white;
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.tab-close:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.tab-close:disabled:hover {
-  background-color: transparent;
-  color: #858585;
-}
-
-.new-tab-button {
-  padding: 0 0.75rem;
+.refresh-button {
   background: none;
   border: none;
-  border-left: 1px solid #3e3e42;
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 1.25rem;
-  color: #858585;
-  font-weight: 300;
-  height: 35px;
+  font-size: 0.875rem;
+  padding: 0.25rem;
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
   transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
 }
 
-.new-tab-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+````
+
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
+````css
+.sidebar-switcher {
+  display: flex;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  padding: 0.25rem;
+  gap: 0.25rem;
+}
+
+.sidebar-switcher-button {
+  flex: 1;
+  background-color: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  padding: 0.5rem 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-switcher-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-switcher-button.active {
+  background-color: var(--bg-primary);
+  color: var(--text-active);
+  font-weight: 500;
+  border-bottom: 2px solid var(--accent-primary);
+}
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
+````css
+.view-definition-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.view-definition-modal-dialog {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.view-definition-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.view-definition-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.view-definition-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+
+.view-definition-modal-close:hover {
+  color: var(--text-white);
+}
+
+.view-definition-modal-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.view-definition-actions {
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.view-definition-copy-button {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.view-definition-copy-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.view-definition-editor {
+  flex: 1;
+  min-height: 400px;
+  height: 100%;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-definition-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.view-definition-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: view-definition-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes view-definition-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.view-definition-error {
+  padding: 1rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+import './ViewDefinitionModal.css';
+
+interface ViewDefinitionModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [definition, setDefinition] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
+
+  // Listen for theme changes
+  useEffect(() => {
+    const updateTheme = () => {
+      const currentTheme = document.documentElement.getAttribute('data-theme');
+      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
+    };
+    
+    // Initial theme
+    updateTheme();
+    
+    // Watch for attribute changes
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const loadViewDefinition = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+        setDefinition(result.definition);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load view definition');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadViewDefinition();
+  }, [datasetId, tableId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(definition);
+  };
+
+  return (
+    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
+      <div className="view-definition-modal-dialog">
+        <div className="view-definition-modal-header">
+          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
+          <button className="view-definition-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="view-definition-modal-content">
+          {isLoading && (
+            <div className="view-definition-loading">
+              <div className="view-definition-spinner"></div>
+              <div>Loading view definition...</div>
+            </div>
+          )}
+          {error && (
+            <div className="view-definition-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && definition && (
+            <>
+              <div className="view-definition-actions">
+                <button onClick={handleCopy} className="view-definition-copy-button">
+                  Copy to Clipboard
+                </button>
+              </div>
+              <div className="view-definition-editor">
+                <Editor
+                  height="400px"
+                  language="sql"
+                  value={definition}
+                  theme={editorTheme}
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    folding: true,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    renderLineHighlight: 'none',
+                    scrollbar: {
+                      vertical: 'auto',
+                      horizontal: 'auto',
+                    },
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
 }
 ````
 
@@ -20393,6 +19493,205 @@ export const validateColumnReferences = async (
 };
 ````
 
+## File: src/renderer/App.css
+````css
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background-color: var(--bg-primary);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+}
+
+/* Global scrollbar styling to match Monaco Editor */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-scrollbar);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--bg-scrollbar);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 5px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--bg-scrollbar);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.app-header {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--text-secondary);
+}
+
+.status-indicator.connected {
+  background-color: var(--text-success);
+}
+
+.header-actions button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  background-color: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.header-actions button:hover {
+  background-color: var(--bg-hover);
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.app-editor-results {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  position: relative;
+}
+
+.query-section {
+  flex: 0 0 auto;
+  min-height: 200px;
+  max-height: 800px;
+  border-bottom: 1px solid var(--border-primary);
+  overflow: hidden;
+}
+
+.resize-handle-horizontal {
+  height: 4px;
+  background-color: var(--border-primary);
+  cursor: row-resize;
+  flex-shrink: 0;
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+
+.resize-handle-horizontal:hover {
+  background-color: var(--accent-primary);
+}
+
+.resize-handle-horizontal::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  cursor: row-resize;
+}
+
+.resize-handle-vertical {
+  width: 4px;
+  background-color: var(--border-primary);
+  cursor: col-resize;
+  flex-shrink: 0;
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+
+.resize-handle-vertical:hover {
+  background-color: var(--accent-primary);
+}
+
+.resize-handle-vertical::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -2px;
+  right: -2px;
+  bottom: 0;
+  cursor: col-resize;
+}
+
+.results-section {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+````
+
 ## File: src/shared/types/query.ts
 ````typescript
 /**
@@ -20557,104 +19856,6 @@ describe('App', () => {
 });
 ````
 
-## File: tests/setup.ts
-````typescript
-import '@testing-library/jest-dom';
-
-// Mock HTMLCanvasElement.getContext for jsdom
-HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
-  clearRect: jest.fn(),
-  fillRect: jest.fn(),
-  getImageData: jest.fn(),
-  putImageData: jest.fn(),
-  createImageData: jest.fn(),
-  setTransform: jest.fn(),
-  drawImage: jest.fn(),
-  save: jest.fn(),
-  restore: jest.fn(),
-  beginPath: jest.fn(),
-  moveTo: jest.fn(),
-  lineTo: jest.fn(),
-  closePath: jest.fn(),
-  stroke: jest.fn(),
-  fill: jest.fn(),
-  translate: jest.fn(),
-  scale: jest.fn(),
-  rotate: jest.fn(),
-  arc: jest.fn(),
-  measureText: jest.fn(() => ({ width: 0 })),
-  fillText: jest.fn(),
-  strokeText: jest.fn(),
-  clip: jest.fn(),
-})) as jest.Mock;
-
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
-};
-
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
-````
-
 ## File: .gitignore
 ````
 # Dependencies
@@ -20722,6 +19923,397 @@ Desktop.ini
 # Electron specific
 app/dist/
 release/
+````
+
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers } from './ipc/results-cache';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-store';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+});
 ````
 
 ## File: src/renderer/components/DatasetTree/DatasetTree.tsx
@@ -21268,237 +20860,369 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
 });
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+## File: src/renderer/components/QueryEditor/QueryEditor.css
 ````css
-.saved-queries-tree {
+.query-editor {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  background-color: #252526;
-  color: #cccccc;
-  border-right: 1px solid #3e3e42;
-  overflow: hidden;
-  min-height: 0;
+  height: 100%;
+  background-color: var(--bg-primary);
 }
 
-.saved-queries-tree.collapsed {
-  width: 30px;
-}
-
-.saved-queries-tree-header {
+.query-editor-toolbar {
   display: flex;
-  align-items: center;
+  gap: 0.5rem;
   padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  min-height: 35px;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  margin-right: 0.5rem;
-  display: flex;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
   align-items: center;
-  justify-content: center;
-  transition: background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.collapse-button:hover {
-  background-color: #3e3e42;
-}
-
-.saved-queries-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  font-weight: 400;
-  color: #cccccc;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.refresh-button:hover:not(:disabled) {
-  color: #cccccc;
-  background-color: #3e3e42;
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.saved-queries-tree-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid #3e3e42;
+  height: 35px;
   position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
 }
 
-.saved-queries-tree-search-input {
-  width: 100%;
-  padding: 0.375rem 0.5rem;
-  background-color: #3e3e42;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  color: #cccccc;
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-}
-
-.saved-queries-tree-search-input:focus {
-  outline: none;
-  border-color: #007acc;
-  background-color: #1e1e1e;
-}
-
-.saved-queries-tree-search-clear {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
   border: none;
-  color: #858585;
+  border-radius: 3px;
   cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
+}
+
+.query-editor-toolbar .run-button {
+  background-color: var(--accent-primary);
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: var(--accent-orange);
+  color: var(--text-white);
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: var(--accent-orange-hover);
+}
+
+.query-editor-toolbar .save-button {
+  background-color: var(--accent-success);
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: var(--accent-success-hover);
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: var(--accent-danger);
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.connection-warning {
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: var(--text-success);
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: var(--text-error);
+}
+
+.editor-status-bar .status-valid {
+  color: var(--text-success);
+}
+
+.editor-status-bar .status-invalid {
+  color: var(--text-error);
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s ease;
+  height: 100%;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
 }
 
-.saved-queries-tree-search-clear:hover {
-  color: #cccccc;
-}
-
-.saved-queries-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem;
-}
-
-.saved-queries-tree-loading,
-.saved-queries-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  color: #858585;
-  font-size: 0.8125rem;
-}
-
-.saved-query-item {
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
-  padding: 0.5rem;
-  cursor: pointer;
-  border-radius: 3px;
-  margin-bottom: 0.25rem;
-  transition: background-color 0.15s ease;
+  justify-content: center;
+  z-index: 2000;
 }
 
-.saved-query-item:hover {
-  background-color: #2a2d2e;
-}
-
-.saved-query-icon {
-  margin-right: 0.5rem;
-  font-size: 1rem;
-}
-
-.saved-query-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.saved-query-name {
-  font-size: 0.8125rem;
-  color: #cccccc;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.saved-query-description {
-  font-size: 0.75rem;
-  color: #858585;
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.context-menu {
-  background-color: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  min-width: 150px;
-}
-
-.context-menu-item {
-  padding: 0.5rem 0.75rem;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover:not(.disabled) {
-  background-color: #2a2d2e;
-}
-
-.context-menu-item.disabled {
-  color: #858585;
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* Query preview tooltip */
-.saved-query-tooltip {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
+.save-dialog {
+  background: var(--bg-secondary);
   border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
-  max-width: 400px;
-  min-width: 200px;
-  max-height: 300px;
-  overflow: hidden;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
 }
 
-.saved-query-tooltip-code {
-  margin: 0;
-  padding: 0.75rem;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: #d4d4d4;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  max-height: 284px;
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-white);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
 }
 ````
 
@@ -21759,1202 +21483,474 @@ export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, next
 });
 ````
 
-## File: src/renderer/components/QueryResults/CanvasTable.tsx
-````typescript
-import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
-import { ColumnSortMenu } from './ColumnSortMenu';
-
-interface CanvasTableProps {
-  results: QueryResult;
-  columnWidths: { [key: number]: number };
-  onColumnResize: (columnIndex: number, width: number) => void;
-  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
-  onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
-  formatValue: (value: any, columnType?: string, columnName?: string) => string;
-  currentPage: number;
-  rowsPerPage: number;
-  sortColumn: number | null;
-  sortDirection: 'asc' | 'desc' | null;
-  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
+## File: src/renderer/components/TabBar/TabBar.css
+````css
+.tab-bar {
+  display: flex;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
 }
 
-const ROW_HEIGHT = 24;
-const HEADER_HEIGHT = 28;
-const ROW_NUMBER_COLUMN_WIDTH = 80;
-const MIN_COLUMN_WIDTH = 50;
-const CELL_PADDING = 8;
-const RESIZE_HANDLE_WIDTH = 4;
-const SORT_ARROW_WIDTH = 16;
-const SORT_ARROW_HEIGHT = 16;
-
-export const CanvasTable: React.FC<CanvasTableProps> = ({
-  results,
-  columnWidths,
-  onColumnResize,
-  onRowContextMenu,
-  onColumnContextMenu,
-  formatValue,
-  currentPage,
-  rowsPerPage,
-  sortColumn,
-  sortDirection,
-  onSortColumn,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const canvasOverlayRef = useRef<HTMLDivElement>(null);
-  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
-  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
-  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
-  const resizeStartXRef = useRef(0);
-  const resizeStartWidthRef = useRef(0);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
-  
-  // Text selection state
-  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
-  const [isSelecting, setIsSelecting] = useState(false);
-  const selectionOverlayRef = useRef<HTMLDivElement>(null);
-  
-  // Sort menu state
-  const [sortMenu, setSortMenu] = useState<{
-    columnIndex: number;
-    x: number;
-    y: number;
-  } | null>(null);
-
-  // Results already contain only the current page rows (loaded from cache)
-  // Calculate startIndex for row numbering
-  const startIndex = (currentPage - 1) * rowsPerPage;
-  const paginatedRows = useMemo(() => {
-    // Results.rows already contains only the current page, so use it directly
-    return results.rows || [];
-  }, [results.rows]);
-
-  // Memory management: Limit cache size and clear when data changes significantly
-  const formattedCellsRef = useRef<Map<string, string>>(new Map());
-  const MAX_FORMATTED_CACHE_SIZE = 10000; // Limit to 10k cells to prevent memory issues
-  
-  // Pre-format all cell values to avoid expensive formatting during render
-  // This is the key optimization - format values once when data changes, not on every render
-  const formattedCells = useMemo(() => {
-    const formatted = new Map<string, string>();
-    paginatedRows.forEach((row, rowIdx) => {
-      row.values.forEach((value, colIdx) => {
-        const column = results.columns[colIdx];
-        const key = `${rowIdx}-${colIdx}`;
-        // Only format if within cache size limit
-        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
-          formatted.set(key, formatValue(value, column?.type, column?.name));
-        }
-      });
-    });
-    // Update ref for cleanup tracking
-    formattedCellsRef.current = formatted;
-    return formatted;
-  }, [paginatedRows, results.columns, formatValue]);
-  
-  // Clear caches when results change significantly (new jobId)
-  useEffect(() => {
-    formattedCellsRef.current.clear();
-    textMeasurementCache.current.clear();
-  }, [results.jobId]);
-
-  // Helper to get formatted value (with fallback for safety)
-  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
-    const key = `${rowIdx}-${colIdx}`;
-    const column = results.columns[colIdx];
-    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
-  }, [formattedCells, formatValue, results.columns]);
-
-  // Calculate column widths
-  const getColumnWidth = useCallback(
-    (columnIndex: number): number => {
-      if (columnIndex === -1) {
-        return columnWidths[-1] || ROW_NUMBER_COLUMN_WIDTH;
-      }
-      return columnWidths[columnIndex] || 150;
-    },
-    [columnWidths]
-  );
-
-  // Calculate total width - ensure it's at least as wide as viewport to enable scrolling
-  const totalWidth = useMemo(() => {
-    let width = getColumnWidth(-1);
-    results.columns.forEach((_, idx) => {
-      width += getColumnWidth(idx);
-    });
-    // Ensure minimum width to enable horizontal scrolling when content is wide
-    return Math.max(width, 100);
-  }, [results.columns, getColumnWidth]);
-
-  const totalHeight = HEADER_HEIGHT + paginatedRows.length * ROW_HEIGHT;
-
-  // Track container dimensions to determine if scrolling is needed
-  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
-
-  // Update container dimensions when it changes
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const updateDimensions = () => {
-      setContainerDimensions({
-        width: container.clientWidth,
-        height: container.clientHeight,
-      });
-    };
-
-    updateDimensions();
-    const resizeObserver = new ResizeObserver(updateDimensions);
-    resizeObserver.observe(container);
-
-    return () => resizeObserver.disconnect();
-  }, []);
-
-  // Cache for text measurements to avoid repeated measureText calls
-  const textMeasurementCache = useRef<Map<string, number>>(new Map());
-  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
-
-  // Measure text width with caching
-  const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
-    // Update context ref if changed
-    if (measureTextContextRef.current !== ctx) {
-      measureTextContextRef.current = ctx;
-      // Clear cache when context changes (e.g., font changes)
-      textMeasurementCache.current.clear();
-    }
-
-    // Use cache key based on text content
-    const cacheKey = text;
-    if (textMeasurementCache.current.has(cacheKey)) {
-      return textMeasurementCache.current.get(cacheKey)!;
-    }
-
-    const width = ctx.measureText(text).width;
-    // Limit cache size to prevent memory issues (keep last 1000 measurements)
-    if (textMeasurementCache.current.size > 1000) {
-      const firstKey = textMeasurementCache.current.keys().next().value;
-      if (firstKey !== undefined) {
-        textMeasurementCache.current.delete(firstKey);
-      }
-    }
-    textMeasurementCache.current.set(cacheKey, width);
-    return width;
-  }, []);
-
-  // Convert viewport coordinates to cell position
-  const getCellFromCoordinates = useCallback(
-    (x: number, y: number): { row: number; col: number } | null => {
-      // Don't allow selection in header
-      if (y < HEADER_HEIGHT) return null;
-      
-      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-      if (row < 0 || row >= paginatedRows.length) return null;
-
-      // Find column
-      let currentX = 0;
-      
-      // Check row number column
-      const rowNumWidth = getColumnWidth(-1);
-      if (x >= currentX && x < currentX + rowNumWidth) {
-        return { row, col: -1 };
-      }
-      currentX += rowNumWidth;
-
-      // Check data columns
-      for (let idx = 0; idx < results.columns.length; idx++) {
-        const colWidth = getColumnWidth(idx);
-        if (x >= currentX && x < currentX + colWidth) {
-          return { row, col: idx };
-        }
-        currentX += colWidth;
-      }
-
-      return null;
-    },
-    [paginatedRows.length, getColumnWidth, results.columns]
-  );
-
-  // Draw cell text with ellipsis - optimized with binary search for truncation
-  const drawCellText = useCallback(
-    (
-      ctx: CanvasRenderingContext2D,
-      text: string,
-      x: number,
-      y: number,
-      width: number,
-      color: string = '#cccccc',
-      align: 'left' | 'right' = 'left'
-    ) => {
-      ctx.fillStyle = color;
-      ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      const maxWidth = width - CELL_PADDING * 2;
-      const ellipsis = '...';
-      const ellipsisWidth = measureText(ellipsis, ctx);
-      
-      // Quick check - if text fits, draw it directly
-      const textWidth = measureText(text, ctx);
-      if (textWidth <= maxWidth) {
-        // Calculate x position based on alignment
-        const textX = align === 'right' 
-          ? x + width - CELL_PADDING - textWidth 
-          : x + CELL_PADDING;
-        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
-        return;
-      }
-      
-      // Binary search for optimal truncation point (much faster than linear character-by-character)
-      let left = 0;
-      let right = text.length;
-      let bestFit = 0;
-      
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        const testText = text.substring(0, mid);
-        const testWidth = measureText(testText, ctx);
-        
-        if (testWidth + ellipsisWidth <= maxWidth) {
-          bestFit = mid;
-          left = mid + 1;
-        } else {
-          right = mid - 1;
-        }
-      }
-      
-      const truncated = text.substring(0, bestFit);
-      const truncatedWidth = measureText(truncated + ellipsis, ctx);
-      // Calculate x position based on alignment for truncated text
-      const truncatedX = align === 'right'
-        ? x + width - CELL_PADDING - truncatedWidth
-        : x + CELL_PADDING;
-      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
-    },
-    [measureText]
-  );
-
-  // Render the canvas
-  const render = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const container = containerRef.current;
-    const wrapper = wrapperRef.current;
-    if (!container || !wrapper) return;
-
-    // Get viewport size from the scrolling container (accounts for scrollbars)
-    // Use clientWidth/clientHeight which excludes scrollbar width
-    const containerWidth = Math.max(1, container.clientWidth);
-    const containerHeight = Math.max(1, container.clientHeight);
-    
-    // Early return if dimensions are invalid
-    if (containerWidth <= 0 || containerHeight <= 0) {
-      return;
-    }
-
-    // Always set canvas size to match viewport exactly
-    const dpr = window.devicePixelRatio || 1;
-    const canvasWidth = Math.ceil(containerWidth * dpr);
-    const canvasHeight = Math.ceil(containerHeight * dpr);
-    
-    // Set canvas internal resolution and display size
-    // Only update if size actually changed to avoid unnecessary redraws
-    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
-      canvas.width = canvasWidth;
-      canvas.height = canvasHeight;
-    }
-    canvas.style.width = `${containerWidth}px`;
-    canvas.style.height = `${containerHeight}px`;
-    
-    // Update canvas overlay size to match canvas (excludes scrollbar area)
-    const canvasOverlay = canvasOverlayRef.current;
-    if (canvasOverlay) {
-      canvasOverlay.style.width = `${containerWidth}px`;
-      canvasOverlay.style.height = `${containerHeight}px`;
-    }
-    
-    // Update selection overlay size to match container
-    const selectionOverlay = selectionOverlayRef.current;
-    if (selectionOverlay) {
-      selectionOverlay.style.width = `${containerWidth}px`;
-      selectionOverlay.style.height = `${containerHeight}px`;
-    }
-    
-    // Reset transform and scale for high DPI
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-
-    // Clear canvas and fill with background color
-    ctx.fillStyle = '#1e1e1e';
-    ctx.fillRect(0, 0, containerWidth, containerHeight);
-
-    // Colors
-    const bgColor = '#1e1e1e';
-    const headerBgColor = '#1a1a1a';
-    const borderColor = '#3e3e42';
-    const textColor = '#cccccc';
-    const headerTextColor = '#cccccc';
-    const hoverColor = '#2a2d2e';
-    const evenRowColor = '#252526';
-    const oddRowColor = '#1e1e1e';
-
-    // Calculate visible area - account for header height
-    // Only rows that would be visible below the header should be considered
-    // Add small buffer (2 rows) for smoother scrolling
-    const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
-    const bufferRows = 2;
-    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
-    const visibleEndRow = Math.min(
-      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
-      paginatedRows.length
-    );
-
-    // Calculate column positions (relative to scroll position)
-    let currentX = 0;
-    const columnPositions: { [key: number]: number } = {};
-    
-    // Row number column
-    columnPositions[-1] = currentX - scrollLeft;
-    currentX += getColumnWidth(-1);
-
-    results.columns.forEach((_, idx) => {
-      columnPositions[idx] = currentX - scrollLeft;
-      currentX += getColumnWidth(idx);
-    });
-
-    // Draw rows first - ensure they never draw above the header
-    for (let rowIdx = visibleStartRow; rowIdx < visibleEndRow; rowIdx++) {
-      const row = paginatedRows[rowIdx];
-      if (!row) continue;
-
-      // Calculate row Y position relative to the canvas
-      const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
-      const actualRowNumber = startIndex + rowIdx + 1;
-      
-      // Skip rows that would be drawn above or overlapping the header
-      if (rowY < HEADER_HEIGHT) continue;
-
-      // Row background
-      const isEven = rowIdx % 2 === 0;
-      const isHovered = hoveredRow === rowIdx;
-      ctx.fillStyle = isHovered ? hoverColor : isEven ? evenRowColor : oddRowColor;
-      ctx.fillRect(0, rowY, containerWidth, ROW_HEIGHT);
-
-      // Row number cell
-      const rowNumX = columnPositions[-1];
-      if (rowNumX + getColumnWidth(-1) > 0 && rowNumX < containerWidth) {
-        ctx.strokeStyle = borderColor;
-        ctx.beginPath();
-        ctx.moveTo(rowNumX + getColumnWidth(-1), rowY);
-        ctx.lineTo(rowNumX + getColumnWidth(-1), rowY + ROW_HEIGHT);
-        ctx.stroke();
-
-        ctx.fillStyle = textColor;
-        drawCellText(
-          ctx,
-          actualRowNumber.toLocaleString(),
-          rowNumX,
-          rowY,
-          getColumnWidth(-1),
-          textColor,
-          'right' // Right-align row numbers
-        );
-      }
-
-      // Data cells - draw all columns that are at least partially visible
-      row.values.forEach((value, colIdx) => {
-        const colX = columnPositions[colIdx];
-        const colWidth = getColumnWidth(colIdx);
-
-        // Column is visible if any part of it is in the viewport
-        // Check if right edge is to the right of left edge of viewport AND
-        // left edge is to the left of right edge of viewport
-        if (colX + colWidth > 0 && colX < containerWidth) {
-          // Calculate visible portion of column
-          const visibleX = Math.max(0, colX);
-          const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
-          
-          // Draw vertical border on the right side of the cell
-          ctx.strokeStyle = borderColor;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(colX + colWidth, rowY);
-          ctx.lineTo(colX + colWidth, rowY + ROW_HEIGHT);
-          ctx.stroke();
-
-          // Draw left border if column starts off-screen
-          if (colX < 0 && colIdx === 0) {
-            ctx.beginPath();
-            ctx.moveTo(0, rowY);
-            ctx.lineTo(0, rowY + ROW_HEIGHT);
-            ctx.stroke();
-          }
-
-          // Draw cell content - use pre-formatted value
-          const column = results.columns[colIdx];
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
-          ctx.fillStyle = textColor;
-          // Check if column is INTEGER type for right alignment
-          const columnType = (column?.type || '').toUpperCase();
-          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
-          const textAlign = isIntegerColumn ? 'right' : 'left';
-          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign);
-        }
-      });
-
-      // Draw bottom border
-      ctx.strokeStyle = borderColor;
-      ctx.beginPath();
-      ctx.moveTo(0, rowY + ROW_HEIGHT);
-      ctx.lineTo(containerWidth, rowY + ROW_HEIGHT);
-      ctx.stroke();
-    }
-
-    // Draw selection highlights
-    if (selectionStart && selectionEnd) {
-      const startRow = Math.min(selectionStart.row, selectionEnd.row);
-      const endRow = Math.max(selectionStart.row, selectionEnd.row);
-      const startCol = Math.min(selectionStart.col, selectionEnd.col);
-      const endCol = Math.max(selectionStart.col, selectionEnd.col);
-
-      // Only draw selection for visible rows
-      const visibleStart = Math.max(startRow, visibleStartRow);
-      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
-
-      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
-        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
-        if (rowY < HEADER_HEIGHT) continue;
-
-        // Draw selection for each selected column in this row
-        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
-          const colX = columnPositions[colIdx];
-          const colWidth = getColumnWidth(colIdx);
-
-          // Only draw if column is visible
-          if (colX + colWidth > 0 && colX < containerWidth) {
-            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
-            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
-          }
-        }
-      }
-    }
-
-    // Draw header last so it's always on top (fixed position)
-    // Draw header background
-    ctx.fillStyle = headerBgColor;
-    ctx.fillRect(0, 0, containerWidth, HEADER_HEIGHT);
-
-    // Draw header border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, HEADER_HEIGHT);
-    ctx.lineTo(containerWidth, HEADER_HEIGHT);
-    ctx.stroke();
-
-    // Draw header cells
-    ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = headerTextColor;
-
-    // Row number header
-    const rowNumX = columnPositions[-1];
-    const rowNumWidth = getColumnWidth(-1);
-    // Check if column is visible (any part of it is in viewport)
-    if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
-      ctx.fillStyle = headerTextColor;
-      ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      // Draw header text at correct vertical position, right-aligned
-      const rowHeaderText = 'Row';
-      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
-      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
-      
-      // Draw resize handle
-      if (resizingColumn === -1 || hoveredColumn === -1) {
-        ctx.fillStyle = resizingColumn === -1 ? '#007acc' : '#007acc80';
-        ctx.fillRect(
-          rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
-          0,
-          RESIZE_HANDLE_WIDTH,
-          HEADER_HEIGHT
-        );
-      }
-    }
-
-    // Column headers - draw all columns that are at least partially visible
-    results.columns.forEach((col, idx) => {
-      const colX = columnPositions[idx];
-      const colWidth = getColumnWidth(idx);
-
-      // Column is visible if any part of it is in the viewport
-      // Check if right edge is to the right of left edge of viewport AND
-      // left edge is to the left of right edge of viewport
-      if (colX + colWidth > 0 && colX < containerWidth) {
-        // Calculate visible portion of column
-        const visibleX = Math.max(0, colX);
-        const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
-        
-        // Draw vertical border on the right side of the header
-        ctx.strokeStyle = borderColor;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(colX + colWidth, 0);
-        ctx.lineTo(colX + colWidth, HEADER_HEIGHT);
-        ctx.stroke();
-
-        // Draw left border if column starts off-screen
-        if (colX < 0) {
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(0, HEADER_HEIGHT);
-          ctx.stroke();
-        }
-
-        ctx.fillStyle = headerTextColor;
-        ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        // Column headers are always left-aligned regardless of data type
-        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
-        
-        // Draw header text directly with proper alignment and truncation
-        // Reserve space for dropdown arrow
-        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
-        const textWidth = measureText(col.name, ctx);
-        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
-        
-        if (textWidth <= maxWidth) {
-          // Text fits - always left-aligned
-          const textX = colX + CELL_PADDING;
-          ctx.fillText(col.name, textX, headerTextY);
-        } else {
-          // Truncate with ellipsis
-          const ellipsis = '...';
-          const ellipsisWidth = measureText(ellipsis, ctx);
-          let truncated = col.name;
-          let truncatedWidth = textWidth;
-          
-          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
-            truncated = truncated.slice(0, -1);
-            truncatedWidth = measureText(truncated, ctx);
-          }
-          
-          const finalWidth = truncatedWidth + ellipsisWidth;
-          // Always left-aligned
-          const textX = colX + CELL_PADDING;
-          ctx.fillText(truncated + ellipsis, textX, headerTextY);
-        }
-        
-        // Draw dropdown arrow indicator (always visible)
-        ctx.fillStyle = sortColumn === idx ? '#007acc' : '#858585';
-        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        const dropdownIcon = sortColumn === idx 
-          ? (sortDirection === 'asc' ? '↑' : '↓')
-          : '▼';
-        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
-        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
-
-        // Draw resize handle
-        if (resizingColumn === idx || hoveredColumn === idx) {
-          ctx.fillStyle = resizingColumn === idx ? '#007acc' : '#007acc80';
-          const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
-          ctx.fillRect(
-            handleX,
-            0,
-            RESIZE_HANDLE_WIDTH,
-            HEADER_HEIGHT
-          );
-        }
-      }
-    });
-  }, [
-    paginatedRows,
-    results.columns,
-    scrollTop,
-    scrollLeft,
-    hoveredRow,
-    hoveredColumn,
-    resizingColumn,
-    getColumnWidth,
-    getFormattedValue,
-    startIndex,
-    drawCellText,
-    selectionStart,
-    selectionEnd,
-  ]);
-
-  // Handle scroll
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-    setScrollLeft(e.currentTarget.scrollLeft);
-    // Close sort menu when scrolling (position would be incorrect)
-    setSortMenu(null);
-  }, []);
-
-  // Handle mouse move
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      // Check if over header
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        // Check which column
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        // Check row number column
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          foundColumn = -1;
-        }
-        currentX += rowNumWidth;
-
-        // Check data columns
-        if (foundColumn === null) {
-          results.columns.forEach((_, idx) => {
-            const colWidth = getColumnWidth(idx);
-            if (x >= currentX && x < currentX + colWidth) {
-              foundColumn = idx;
-            }
-            currentX += colWidth;
-          });
-        }
-
-        setHoveredColumn(foundColumn);
-        setHoveredRow(null);
-
-        // Update cursor for resize or sort
-        if (foundColumn !== null) {
-          let colX = 0;
-          if (foundColumn === -1) {
-            colX = 0;
-          } else {
-            colX = getColumnWidth(-1);
-            for (let i = 0; i < foundColumn; i++) {
-              colX += getColumnWidth(i);
-            }
-          }
-          const colWidth = getColumnWidth(foundColumn);
-          const handleX = colX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-          
-          if (x >= handleX - 5 && x <= handleX + 5) {
-            container.style.cursor = 'col-resize';
-          } else if (foundColumn !== -1) {
-            // Show pointer cursor for data column headers (to indicate sortable)
-            container.style.cursor = 'pointer';
-          } else {
-            container.style.cursor = 'default';
-          }
-        } else {
-          container.style.cursor = 'default';
-        }
-      } else if (y >= HEADER_HEIGHT) {
-        // Check which row
-        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          setHoveredRow(rowIndex);
-        } else {
-          setHoveredRow(null);
-        }
-        setHoveredColumn(null);
-        container.style.cursor = 'default';
-      }
-    },
-    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length]
-  );
-
-  // Handle mouse leave
-  const handleMouseLeave = useCallback(() => {
-    setHoveredRow(null);
-    setHoveredColumn(null);
-    const container = containerRef.current;
-    if (container) {
-      container.style.cursor = 'default';
-    }
-  }, []);
-
-  // Handle mouse down for resizing and selection
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      // Don't handle right-click (context menu) - let handleContextMenu deal with it
-      if (e.button === 2) return;
-      
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      // Handle selection in data area (not header)
-      if (y >= HEADER_HEIGHT) {
-        // Check if this is a data cell click (not a scrollbar click)
-        const cell = getCellFromCoordinates(x, y);
-        if (cell) {
-          setIsSelecting(true);
-          const cellPos = { ...cell, x, y };
-          setSelectionStart(cellPos);
-          setSelectionEnd(cellPos);
-          // Don't prevent default - allow normal behavior
-          return;
-        } else {
-          // Click outside cells - clear selection
-          setSelectionStart(null);
-          setSelectionEnd(null);
-          return;
-        }
-      }
-
-      // Handle sort menu click in header (but not on resize handle)
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        // Check row number column
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          // Row number column doesn't have sort menu
-          return;
-        }
-        currentX += rowNumWidth;
-
-        // Check data columns
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          if (x >= currentX && x < currentX + colWidth) {
-            // Check if click is on resize handle
-            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-            if (x < handleX - 5 || x > handleX + 5) {
-              // Not on resize handle - show sort menu for any click on header
-              foundColumn = idx;
-            }
-          }
-          currentX += colWidth;
-        });
-
-        if (foundColumn !== null) {
-          e.preventDefault();
-          e.stopPropagation();
-          const container = containerRef.current;
-          if (container) {
-            const rect = container.getBoundingClientRect();
-            // Calculate position for sort menu
-            // colX is in scroll coordinates, need to convert to viewport coordinates
-            let colX = getColumnWidth(-1);
-            for (let i = 0; i < foundColumn; i++) {
-              colX += getColumnWidth(i);
-            }
-            const colWidth = getColumnWidth(foundColumn);
-            // Convert scroll coordinates to viewport coordinates
-            const viewportColX = colX - scrollLeft;
-            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
-            const menuY = rect.top + HEADER_HEIGHT + 2;
-            setSortMenu({
-              columnIndex: foundColumn,
-              x: menuX,
-              y: menuY,
-            });
-          }
-          return;
-        }
-      }
-
-      // Only handle resize in header
-
-      // Check which column
-      let currentX = 0;
-      let foundColumn: number | null = null;
-
-      // Check row number column
-      const rowNumWidth = getColumnWidth(-1);
-      if (x >= currentX && x < currentX + rowNumWidth) {
-        const handleX = currentX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2;
-        if (x >= handleX - 5 && x <= handleX + 5) {
-          foundColumn = -1;
-        }
-      }
-      currentX += rowNumWidth;
-
-      // Check data columns
-      if (foundColumn === null) {
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-          if (x >= handleX - 5 && x <= handleX + 5) {
-            foundColumn = idx;
-          }
-          currentX += colWidth;
-        });
-      }
-
-      if (foundColumn !== null) {
-        e.preventDefault();
-        resizeStartXRef.current = e.clientX;
-        resizeStartWidthRef.current = getColumnWidth(foundColumn);
-        setResizingColumn(foundColumn);
-        // Clear selection when starting resize
-        setSelectionStart(null);
-        setSelectionEnd(null);
-        setIsSelecting(false);
-      } else {
-        // Click on header but not on resize handle - clear selection
-        setSelectionStart(null);
-        setSelectionEnd(null);
-        setIsSelecting(false);
-      }
-    },
-    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
-  );
-
-  // Handle context menu
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        // Header context menu
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          // Row number column doesn't have context menu
-          return;
-        }
-        currentX += rowNumWidth;
-
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          if (x >= currentX && x < currentX + colWidth) {
-            foundColumn = idx;
-          }
-          currentX += colWidth;
-        });
-
-        if (foundColumn !== null) {
-          onColumnContextMenu(e, foundColumn);
-        }
-      } else if (y >= HEADER_HEIGHT) {
-        // Row context menu
-        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          // Check if click is on the row number column
-          const rowNumWidth = getColumnWidth(-1);
-          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
-          onRowContextMenu(e, rowIndex, isRowNumberColumn);
-        }
-      }
-    },
-    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
-  );
-
-  // Extract selected text
-  const getSelectedText = useCallback((): string => {
-    if (!selectionStart || !selectionEnd) return '';
-
-    const startRow = Math.min(selectionStart.row, selectionEnd.row);
-    const endRow = Math.max(selectionStart.row, selectionEnd.row);
-    const startCol = Math.min(selectionStart.col, selectionEnd.col);
-    const endCol = Math.max(selectionStart.col, selectionEnd.col);
-
-    const selectedCells: string[] = [];
-
-    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
-      const row = paginatedRows[rowIdx];
-      if (!row) continue;
-
-      const rowValues: string[] = [];
-      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
-        if (colIdx === -1) {
-          // Row number
-          const actualRowNumber = startIndex + rowIdx + 1;
-          rowValues.push(actualRowNumber.toLocaleString());
-        } else {
-          const value = row.values[colIdx];
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
-          rowValues.push(formattedValue);
-        }
-      }
-      selectedCells.push(rowValues.join('\t'));
-    }
-
-    return selectedCells.join('\n');
-  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
-
-  // Handle copy to clipboard
-  useEffect(() => {
-    const handleCopy = (e: KeyboardEvent) => {
-      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (selectionStart && selectionEnd) {
-          // Check if user is trying to copy from an input field or Monaco editor
-          const target = e.target as HTMLElement;
-          const isInputField = 
-            target.tagName === 'INPUT' || 
-            target.tagName === 'TEXTAREA' || 
-            target.isContentEditable ||
-            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
-            target.closest('.monaco-editor') !== null ||
-            target.closest('.editor-container') !== null;
-          
-          // Only handle copy from canvas if not copying from an input/editor
-          if (!isInputField) {
-            const text = getSelectedText();
-            if (text) {
-              e.preventDefault();
-              navigator.clipboard.writeText(text).catch((err) => {
-                console.error('Failed to copy to clipboard:', err);
-              });
-            }
-          }
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleCopy);
-    return () => window.removeEventListener('keydown', handleCopy);
-  }, [selectionStart, selectionEnd, getSelectedText]);
-
-
-  // Handle selection mouse move
-  const handleSelectionMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isSelecting || resizingColumn !== null) return;
-
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const viewportX = e.clientX - rect.left;
-      const viewportY = e.clientY - rect.top;
-      const x = viewportX + scrollLeft;
-      const y = viewportY + scrollTop;
-
-      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
-      const edgeThreshold = 20;
-      const isNearTop = viewportY < edgeThreshold;
-      const isNearBottom = viewportY > rect.height - edgeThreshold;
-      const isNearLeft = viewportX < edgeThreshold;
-      const isNearRight = viewportX > rect.width - edgeThreshold;
-
-      // Update selection if we can determine a cell
-      const cell = getCellFromCoordinates(x, y);
-      if (cell && selectionStart) {
-        setSelectionEnd({ ...cell, x, y });
-      } else if (selectionStart) {
-        // If outside cells but still selecting, extend selection to edge
-        // This allows selection to continue when dragging outside viewport
-        const lastCell = selectionEnd || selectionStart;
-        setSelectionEnd(lastCell);
-      }
-    },
-    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
-  );
-
-  // Handle selection mouse up
-  const handleSelectionMouseUp = useCallback(() => {
-    setIsSelecting(false);
-  }, []);
-
-  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
-  useEffect(() => {
-    if (!isSelecting) return;
-
-    const handleDocumentMouseUp = () => {
-      setIsSelecting(false);
-    };
-
-    document.addEventListener('mouseup', handleDocumentMouseUp);
-    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
-  }, [isSelecting]);
-
-  // Handle selection mouse leave
-  const handleSelectionMouseLeave = useCallback(() => {
-    setIsSelecting(false);
-  }, []);
-
-  // Handle resize mouse move
-  useEffect(() => {
-    if (resizingColumn === null) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const diff = e.clientX - resizeStartXRef.current;
-      const newWidth = Math.max(MIN_COLUMN_WIDTH, resizeStartWidthRef.current + diff);
-      onColumnResize(resizingColumn, newWidth);
-    };
-
-    const handleMouseUp = () => {
-      setResizingColumn(null);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove, { passive: false });
-    document.addEventListener('mouseup', handleMouseUp, { passive: false });
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [resizingColumn, onColumnResize]);
-
-  // Initial render when component mounts
-  useEffect(() => {
-    // Small delay to ensure DOM is ready
-    const timer = setTimeout(() => {
-      render();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Render on changes (including scroll) with throttling to reduce CPU usage
-  const renderTimeoutRef = useRef<number | null>(null);
-  useEffect(() => {
-    // Clear any pending render
-    if (renderTimeoutRef.current !== null) {
-      cancelAnimationFrame(renderTimeoutRef.current);
-    }
-
-    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
-    // but batch rapid scroll events
-    renderTimeoutRef.current = requestAnimationFrame(() => {
-      render();
-      renderTimeoutRef.current = null;
-    });
-
-    return () => {
-      if (renderTimeoutRef.current !== null) {
-        cancelAnimationFrame(renderTimeoutRef.current);
-        renderTimeoutRef.current = null;
-      }
-    };
-  }, [render, scrollTop, scrollLeft]);
-
-  // Handle window resize
-  useEffect(() => {
-    const handleResize = () => {
-      render();
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [render]);
-
-  return (
-    <div
-      ref={wrapperRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        position: 'relative',
-        overflow: 'hidden',
-        backgroundColor: '#1e1e1e',
-      }}
-    >
-      {/* Scrollable container - this handles all scrolling */}
-      {/* Ensure scrollbars are always visible when content overflows */}
-      <div
-        ref={containerRef}
-        className="canvas-table-container"
-        onScroll={handleScroll}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-        onMouseDown={handleMouseDown}
-        onContextMenu={handleContextMenu}
-        style={{
-          width: '100%',
-          height: '100%',
-          overflowX: 'scroll',
-          overflowY: 'scroll',
-          position: 'relative',
-          // Ensure scrollbars are always visible
-          scrollbarWidth: 'thin',
-          scrollbarColor: '#424242 #1e1e1e',
-          // Force scrollbars to be visible (especially on macOS)
-          WebkitOverflowScrolling: 'touch',
-        }}
-      >
-        {/* Spacer div to create scrollable area - this scrolls */}
-        <div
-          style={{
-            width: totalWidth,
-            height: totalHeight,
-            position: 'relative',
-            pointerEvents: 'none',
-          }}
-        />
-      </div>
-      {/* Canvas overlay - positioned fixed to outer container, does NOT scroll */}
-      {/* pointerEvents: 'none' allows scrolling and scrollbar interaction to work through it */}
-      {/* Size matches container.clientWidth/Height to exclude scrollbar area */}
-      <div
-        ref={canvasOverlayRef}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: 'none',
-          overflow: 'hidden',
-          backgroundColor: '#1e1e1e',
-        }}
-      >
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            pointerEvents: 'none',
-            width: '100%',
-            height: '100%',
-          }}
-        />
-      </div>
-      {/* Selection overlay - captures mouse events for text selection */}
-      {/* Only active when actively selecting to allow scrolling otherwise */}
-      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
-      <div
-        ref={selectionOverlayRef}
-        onMouseMove={handleSelectionMouseMove}
-        onMouseUp={handleSelectionMouseUp}
-        onMouseLeave={handleSelectionMouseLeave}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
-          cursor: isSelecting ? 'text' : 'default',
-          userSelect: 'none',
-        }}
-      />
-      {/* Sort menu */}
-      {sortMenu && (
-        <ColumnSortMenu
-          x={sortMenu.x}
-          y={sortMenu.y}
-          columnIndex={sortMenu.columnIndex}
-          currentSortColumn={sortColumn}
-          currentSortDirection={sortDirection}
-          onClose={() => setSortMenu(null)}
-          onSort={onSortColumn}
-        />
-      )}
-    </div>
-  );
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background-color: var(--bg-tertiary);
+  border-right: 1px solid var(--border-primary);
+  cursor: pointer;
+  user-select: none;
+  min-width: 120px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: var(--bg-hover);
+}
+
+.tab.active {
+  background-color: var(--bg-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  color: var(--text-active);
+  font-weight: 500;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid var(--accent-primary);
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: var(--accent-primary);
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  margin-left: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-close:hover {
+  background-color: var(--accent-close-hover);
+  color: white;
+}
+
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: var(--text-secondary);
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid var(--border-primary);
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getTheme: jest.fn().mockResolvedValue('dark'),
+    setTheme: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+    onToggleTheme: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
 };
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+````css
+.saved-queries-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-primary);
+  overflow: hidden;
+  min-height: 0;
+}
+
+.saved-queries-tree.collapsed {
+  width: 30px;
+}
+
+.saved-queries-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  min-height: 35px;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  margin-right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.collapse-button:hover {
+  background-color: var(--border-primary);
+}
+
+.saved-queries-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.refresh-button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background-color: var(--border-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.saved-queries-tree-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  position: relative;
+}
+
+.saved-queries-tree-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: var(--border-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
+
+.saved-queries-tree-search-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background-color: var(--bg-primary);
+}
+
+.saved-queries-tree-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.saved-queries-tree-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.saved-queries-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
+
+.saved-queries-tree-loading,
+.saved-queries-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.saved-query-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.saved-query-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.saved-query-icon {
+  margin-right: 0.5rem;
+  font-size: 1rem;
+}
+
+.saved-query-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-query-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-query-description {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Query preview tooltip */
+.saved-query-tooltip {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-tooltip);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.saved-query-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
 ````
 
 ## File: src/renderer/components/TabBar/TabBar.tsx
@@ -23680,6 +22676,1240 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
+````
+
+## File: src/renderer/components/QueryResults/CanvasTable.tsx
+````typescript
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
+import { ColumnSortMenu } from './ColumnSortMenu';
+
+// Helper to read CSS custom property values
+const getCSSVar = (name: string): string => {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+};
+
+// Theme colors derived from CSS variables
+const getThemeColors = () => ({
+  bgColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  headerBgColor: getCSSVar('--bg-tertiary') || '#2d2d30',
+  borderColor: getCSSVar('--border-primary') || '#3e3e42',
+  textColor: getCSSVar('--text-primary') || '#cccccc',
+  headerTextColor: getCSSVar('--text-primary') || '#cccccc',
+  hoverColor: getCSSVar('--bg-hover') || '#2a2d2e',
+  evenRowColor: getCSSVar('--bg-secondary') || '#252526',
+  oddRowColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  accentColor: getCSSVar('--accent-primary') || '#007acc',
+  secondaryTextColor: getCSSVar('--text-secondary') || '#858585',
+  scrollbarThumb: getCSSVar('--bg-scrollbar-thumb') || '#424242',
+  scrollbarTrack: getCSSVar('--bg-scrollbar') || '#1e1e1e',
+});
+
+interface CanvasTableProps {
+  results: QueryResult;
+  columnWidths: { [key: number]: number };
+  onColumnResize: (columnIndex: number, width: number) => void;
+  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
+  onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
+  formatValue: (value: any, columnType?: string, columnName?: string) => string;
+  currentPage: number;
+  rowsPerPage: number;
+  sortColumn: number | null;
+  sortDirection: 'asc' | 'desc' | null;
+  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
+}
+
+const ROW_HEIGHT = 24;
+const HEADER_HEIGHT = 28;
+const ROW_NUMBER_COLUMN_WIDTH = 80;
+const MIN_COLUMN_WIDTH = 50;
+const CELL_PADDING = 8;
+const RESIZE_HANDLE_WIDTH = 4;
+const SORT_ARROW_WIDTH = 16;
+const SORT_ARROW_HEIGHT = 16;
+
+export const CanvasTable: React.FC<CanvasTableProps> = ({
+  results,
+  columnWidths,
+  onColumnResize,
+  onRowContextMenu,
+  onColumnContextMenu,
+  formatValue,
+  currentPage,
+  rowsPerPage,
+  sortColumn,
+  sortDirection,
+  onSortColumn,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasOverlayRef = useRef<HTMLDivElement>(null);
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
+  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  
+  // Text selection state
+  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const selectionOverlayRef = useRef<HTMLDivElement>(null);
+  
+  // Sort menu state
+  const [sortMenu, setSortMenu] = useState<{
+    columnIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Results already contain only the current page rows (loaded from cache)
+  // Calculate startIndex for row numbering
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const paginatedRows = useMemo(() => {
+    // Results.rows already contains only the current page, so use it directly
+    return results.rows || [];
+  }, [results.rows]);
+
+  // Theme colors state - re-read when theme changes
+  const [themeColors, setThemeColors] = useState(getThemeColors);
+  
+  // Watch for theme changes via data-theme attribute
+  useEffect(() => {
+    const updateColors = () => {
+      setThemeColors(getThemeColors());
+    };
+    
+    // Initial update
+    updateColors();
+    
+    // Watch for attribute changes on document.documentElement
+    const observer = new MutationObserver(updateColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
+
+  // Memory management: Limit cache size and clear when data changes significantly
+  const formattedCellsRef = useRef<Map<string, string>>(new Map());
+  const MAX_FORMATTED_CACHE_SIZE = 10000; // Limit to 10k cells to prevent memory issues
+  
+  // Pre-format all cell values to avoid expensive formatting during render
+  // This is the key optimization - format values once when data changes, not on every render
+  const formattedCells = useMemo(() => {
+    const formatted = new Map<string, string>();
+    paginatedRows.forEach((row, rowIdx) => {
+      row.values.forEach((value, colIdx) => {
+        const column = results.columns[colIdx];
+        const key = `${rowIdx}-${colIdx}`;
+        // Only format if within cache size limit
+        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
+          formatted.set(key, formatValue(value, column?.type, column?.name));
+        }
+      });
+    });
+    // Update ref for cleanup tracking
+    formattedCellsRef.current = formatted;
+    return formatted;
+  }, [paginatedRows, results.columns, formatValue]);
+  
+  // Clear caches when results change significantly (new jobId)
+  useEffect(() => {
+    formattedCellsRef.current.clear();
+    textMeasurementCache.current.clear();
+  }, [results.jobId]);
+
+  // Helper to get formatted value (with fallback for safety)
+  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
+    const key = `${rowIdx}-${colIdx}`;
+    const column = results.columns[colIdx];
+    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
+  }, [formattedCells, formatValue, results.columns]);
+
+  // Calculate column widths
+  const getColumnWidth = useCallback(
+    (columnIndex: number): number => {
+      if (columnIndex === -1) {
+        return columnWidths[-1] || ROW_NUMBER_COLUMN_WIDTH;
+      }
+      return columnWidths[columnIndex] || 150;
+    },
+    [columnWidths]
+  );
+
+  // Calculate total width - ensure it's at least as wide as viewport to enable scrolling
+  const totalWidth = useMemo(() => {
+    let width = getColumnWidth(-1);
+    results.columns.forEach((_, idx) => {
+      width += getColumnWidth(idx);
+    });
+    // Ensure minimum width to enable horizontal scrolling when content is wide
+    return Math.max(width, 100);
+  }, [results.columns, getColumnWidth]);
+
+  const totalHeight = HEADER_HEIGHT + paginatedRows.length * ROW_HEIGHT;
+
+  // Track container dimensions to determine if scrolling is needed
+  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
+
+  // Update container dimensions when it changes
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateDimensions = () => {
+      setContainerDimensions({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    };
+
+    updateDimensions();
+    const resizeObserver = new ResizeObserver(updateDimensions);
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  // Cache for text measurements to avoid repeated measureText calls
+  const textMeasurementCache = useRef<Map<string, number>>(new Map());
+  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  // Measure text width with caching
+  const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
+    // Update context ref if changed
+    if (measureTextContextRef.current !== ctx) {
+      measureTextContextRef.current = ctx;
+      // Clear cache when context changes (e.g., font changes)
+      textMeasurementCache.current.clear();
+    }
+
+    // Use cache key based on text content
+    const cacheKey = text;
+    if (textMeasurementCache.current.has(cacheKey)) {
+      return textMeasurementCache.current.get(cacheKey)!;
+    }
+
+    const width = ctx.measureText(text).width;
+    // Limit cache size to prevent memory issues (keep last 1000 measurements)
+    if (textMeasurementCache.current.size > 1000) {
+      const firstKey = textMeasurementCache.current.keys().next().value;
+      if (firstKey !== undefined) {
+        textMeasurementCache.current.delete(firstKey);
+      }
+    }
+    textMeasurementCache.current.set(cacheKey, width);
+    return width;
+  }, []);
+
+  // Convert viewport coordinates to cell position
+  const getCellFromCoordinates = useCallback(
+    (x: number, y: number): { row: number; col: number } | null => {
+      // Don't allow selection in header
+      if (y < HEADER_HEIGHT) return null;
+      
+      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+      if (row < 0 || row >= paginatedRows.length) return null;
+
+      // Find column
+      let currentX = 0;
+      
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        return { row, col: -1 };
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      for (let idx = 0; idx < results.columns.length; idx++) {
+        const colWidth = getColumnWidth(idx);
+        if (x >= currentX && x < currentX + colWidth) {
+          return { row, col: idx };
+        }
+        currentX += colWidth;
+      }
+
+      return null;
+    },
+    [paginatedRows.length, getColumnWidth, results.columns]
+  );
+
+  // Draw cell text with ellipsis - optimized with binary search for truncation
+  const drawCellText = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      text: string,
+      x: number,
+      y: number,
+      width: number,
+      color: string = '#cccccc',
+      align: 'left' | 'right' = 'left'
+    ) => {
+      ctx.fillStyle = color;
+      ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      const maxWidth = width - CELL_PADDING * 2;
+      const ellipsis = '...';
+      const ellipsisWidth = measureText(ellipsis, ctx);
+      
+      // Quick check - if text fits, draw it directly
+      const textWidth = measureText(text, ctx);
+      if (textWidth <= maxWidth) {
+        // Calculate x position based on alignment
+        const textX = align === 'right' 
+          ? x + width - CELL_PADDING - textWidth 
+          : x + CELL_PADDING;
+        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
+        return;
+      }
+      
+      // Binary search for optimal truncation point (much faster than linear character-by-character)
+      let left = 0;
+      let right = text.length;
+      let bestFit = 0;
+      
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        const testText = text.substring(0, mid);
+        const testWidth = measureText(testText, ctx);
+        
+        if (testWidth + ellipsisWidth <= maxWidth) {
+          bestFit = mid;
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
+      }
+      
+      const truncated = text.substring(0, bestFit);
+      const truncatedWidth = measureText(truncated + ellipsis, ctx);
+      // Calculate x position based on alignment for truncated text
+      const truncatedX = align === 'right'
+        ? x + width - CELL_PADDING - truncatedWidth
+        : x + CELL_PADDING;
+      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
+    },
+    [measureText]
+  );
+
+  // Render the canvas
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const container = containerRef.current;
+    const wrapper = wrapperRef.current;
+    if (!container || !wrapper) return;
+
+    // Get viewport size from the scrolling container (accounts for scrollbars)
+    // Use clientWidth/clientHeight which excludes scrollbar width
+    const containerWidth = Math.max(1, container.clientWidth);
+    const containerHeight = Math.max(1, container.clientHeight);
+    
+    // Early return if dimensions are invalid
+    if (containerWidth <= 0 || containerHeight <= 0) {
+      return;
+    }
+
+    // Always set canvas size to match viewport exactly
+    const dpr = window.devicePixelRatio || 1;
+    const canvasWidth = Math.ceil(containerWidth * dpr);
+    const canvasHeight = Math.ceil(containerHeight * dpr);
+    
+    // Set canvas internal resolution and display size
+    // Only update if size actually changed to avoid unnecessary redraws
+    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+    }
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerHeight}px`;
+    
+    // Update canvas overlay size to match canvas (excludes scrollbar area)
+    const canvasOverlay = canvasOverlayRef.current;
+    if (canvasOverlay) {
+      canvasOverlay.style.width = `${containerWidth}px`;
+      canvasOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Update selection overlay size to match container
+    const selectionOverlay = selectionOverlayRef.current;
+    if (selectionOverlay) {
+      selectionOverlay.style.width = `${containerWidth}px`;
+      selectionOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Reset transform and scale for high DPI
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+
+    // Clear canvas and fill with background color
+    ctx.fillStyle = themeColors.bgColor;
+    ctx.fillRect(0, 0, containerWidth, containerHeight);
+
+    // Use theme colors
+    const { bgColor, headerBgColor, borderColor, textColor, headerTextColor, hoverColor, evenRowColor, oddRowColor, accentColor, secondaryTextColor } = themeColors;
+
+    // Calculate visible area - account for header height
+    // Only rows that would be visible below the header should be considered
+    // Add small buffer (2 rows) for smoother scrolling
+    const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
+    const bufferRows = 2;
+    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
+    const visibleEndRow = Math.min(
+      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
+      paginatedRows.length
+    );
+
+    // Calculate column positions (relative to scroll position)
+    let currentX = 0;
+    const columnPositions: { [key: number]: number } = {};
+    
+    // Row number column
+    columnPositions[-1] = currentX - scrollLeft;
+    currentX += getColumnWidth(-1);
+
+    results.columns.forEach((_, idx) => {
+      columnPositions[idx] = currentX - scrollLeft;
+      currentX += getColumnWidth(idx);
+    });
+
+    // Draw rows first - ensure they never draw above the header
+    for (let rowIdx = visibleStartRow; rowIdx < visibleEndRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
+
+      // Calculate row Y position relative to the canvas
+      const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+      const actualRowNumber = startIndex + rowIdx + 1;
+      
+      // Skip rows that would be drawn above or overlapping the header
+      if (rowY < HEADER_HEIGHT) continue;
+
+      // Row background
+      const isEven = rowIdx % 2 === 0;
+      const isHovered = hoveredRow === rowIdx;
+      ctx.fillStyle = isHovered ? hoverColor : isEven ? evenRowColor : oddRowColor;
+      ctx.fillRect(0, rowY, containerWidth, ROW_HEIGHT);
+
+      // Row number cell
+      const rowNumX = columnPositions[-1];
+      if (rowNumX + getColumnWidth(-1) > 0 && rowNumX < containerWidth) {
+        ctx.strokeStyle = borderColor;
+        ctx.beginPath();
+        ctx.moveTo(rowNumX + getColumnWidth(-1), rowY);
+        ctx.lineTo(rowNumX + getColumnWidth(-1), rowY + ROW_HEIGHT);
+        ctx.stroke();
+
+        ctx.fillStyle = textColor;
+        drawCellText(
+          ctx,
+          actualRowNumber.toLocaleString(),
+          rowNumX,
+          rowY,
+          getColumnWidth(-1),
+          textColor,
+          'right' // Right-align row numbers
+        );
+      }
+
+      // Data cells - draw all columns that are at least partially visible
+      row.values.forEach((value, colIdx) => {
+        const colX = columnPositions[colIdx];
+        const colWidth = getColumnWidth(colIdx);
+
+        // Column is visible if any part of it is in the viewport
+        // Check if right edge is to the right of left edge of viewport AND
+        // left edge is to the left of right edge of viewport
+        if (colX + colWidth > 0 && colX < containerWidth) {
+          // Calculate visible portion of column
+          const visibleX = Math.max(0, colX);
+          const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
+          
+          // Draw vertical border on the right side of the cell
+          ctx.strokeStyle = borderColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(colX + colWidth, rowY);
+          ctx.lineTo(colX + colWidth, rowY + ROW_HEIGHT);
+          ctx.stroke();
+
+          // Draw left border if column starts off-screen
+          if (colX < 0 && colIdx === 0) {
+            ctx.beginPath();
+            ctx.moveTo(0, rowY);
+            ctx.lineTo(0, rowY + ROW_HEIGHT);
+            ctx.stroke();
+          }
+
+          // Draw cell content - use pre-formatted value
+          const column = results.columns[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
+          ctx.fillStyle = textColor;
+          // Check if column is INTEGER type for right alignment
+          const columnType = (column?.type || '').toUpperCase();
+          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
+          const textAlign = isIntegerColumn ? 'right' : 'left';
+          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign);
+        }
+      });
+
+      // Draw bottom border
+      ctx.strokeStyle = borderColor;
+      ctx.beginPath();
+      ctx.moveTo(0, rowY + ROW_HEIGHT);
+      ctx.lineTo(containerWidth, rowY + ROW_HEIGHT);
+      ctx.stroke();
+    }
+
+    // Draw selection highlights
+    if (selectionStart && selectionEnd) {
+      const startRow = Math.min(selectionStart.row, selectionEnd.row);
+      const endRow = Math.max(selectionStart.row, selectionEnd.row);
+      const startCol = Math.min(selectionStart.col, selectionEnd.col);
+      const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+      // Only draw selection for visible rows
+      const visibleStart = Math.max(startRow, visibleStartRow);
+      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
+
+      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
+        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+        if (rowY < HEADER_HEIGHT) continue;
+
+        // Draw selection for each selected column in this row
+        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+          const colX = columnPositions[colIdx];
+          const colWidth = getColumnWidth(colIdx);
+
+          // Only draw if column is visible
+          if (colX + colWidth > 0 && colX < containerWidth) {
+            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
+            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
+          }
+        }
+      }
+    }
+
+    // Draw header last so it's always on top (fixed position)
+    // Draw header background
+    ctx.fillStyle = headerBgColor;
+    ctx.fillRect(0, 0, containerWidth, HEADER_HEIGHT);
+
+    // Draw header border
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, HEADER_HEIGHT);
+    ctx.lineTo(containerWidth, HEADER_HEIGHT);
+    ctx.stroke();
+
+    // Draw header cells
+    ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = headerTextColor;
+
+    // Row number header
+    const rowNumX = columnPositions[-1];
+    const rowNumWidth = getColumnWidth(-1);
+    // Check if column is visible (any part of it is in viewport)
+    if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
+      ctx.fillStyle = headerTextColor;
+      ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      // Draw header text at correct vertical position, right-aligned
+      const rowHeaderText = 'Row';
+      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
+      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
+      
+      // Draw resize handle
+      if (resizingColumn === -1 || hoveredColumn === -1) {
+        ctx.fillStyle = resizingColumn === -1 ? accentColor : `${accentColor}80`;
+        ctx.fillRect(
+          rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
+          0,
+          RESIZE_HANDLE_WIDTH,
+          HEADER_HEIGHT
+        );
+      }
+    }
+
+    // Column headers - draw all columns that are at least partially visible
+    results.columns.forEach((col, idx) => {
+      const colX = columnPositions[idx];
+      const colWidth = getColumnWidth(idx);
+
+      // Column is visible if any part of it is in the viewport
+      // Check if right edge is to the right of left edge of viewport AND
+      // left edge is to the left of right edge of viewport
+      if (colX + colWidth > 0 && colX < containerWidth) {
+        // Calculate visible portion of column
+        const visibleX = Math.max(0, colX);
+        const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
+        
+        // Draw vertical border on the right side of the header
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(colX + colWidth, 0);
+        ctx.lineTo(colX + colWidth, HEADER_HEIGHT);
+        ctx.stroke();
+
+        // Draw left border if column starts off-screen
+        if (colX < 0) {
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, HEADER_HEIGHT);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = headerTextColor;
+        ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        // Column headers are always left-aligned regardless of data type
+        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
+        
+        // Draw header text directly with proper alignment and truncation
+        // Reserve space for dropdown arrow
+        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
+        const textWidth = measureText(col.name, ctx);
+        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
+        
+        if (textWidth <= maxWidth) {
+          // Text fits - always left-aligned
+          const textX = colX + CELL_PADDING;
+          ctx.fillText(col.name, textX, headerTextY);
+        } else {
+          // Truncate with ellipsis
+          const ellipsis = '...';
+          const ellipsisWidth = measureText(ellipsis, ctx);
+          let truncated = col.name;
+          let truncatedWidth = textWidth;
+          
+          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
+            truncated = truncated.slice(0, -1);
+            truncatedWidth = measureText(truncated, ctx);
+          }
+          
+          const finalWidth = truncatedWidth + ellipsisWidth;
+          // Always left-aligned
+          const textX = colX + CELL_PADDING;
+          ctx.fillText(truncated + ellipsis, textX, headerTextY);
+        }
+        
+        // Draw dropdown arrow indicator (always visible)
+        ctx.fillStyle = sortColumn === idx ? accentColor : secondaryTextColor;
+        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const dropdownIcon = sortColumn === idx 
+          ? (sortDirection === 'asc' ? '↑' : '↓')
+          : '▼';
+        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
+        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
+
+        // Draw resize handle
+        if (resizingColumn === idx || hoveredColumn === idx) {
+          ctx.fillStyle = resizingColumn === idx ? accentColor : `${accentColor}80`;
+          const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
+          ctx.fillRect(
+            handleX,
+            0,
+            RESIZE_HANDLE_WIDTH,
+            HEADER_HEIGHT
+          );
+        }
+      }
+    });
+  }, [
+    paginatedRows,
+    results.columns,
+    scrollTop,
+    scrollLeft,
+    hoveredRow,
+    hoveredColumn,
+    resizingColumn,
+    getColumnWidth,
+    getFormattedValue,
+    startIndex,
+    drawCellText,
+    selectionStart,
+    selectionEnd,
+    themeColors,
+    sortColumn,
+    sortDirection,
+  ]);
+
+  // Handle scroll
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+    setScrollLeft(e.currentTarget.scrollLeft);
+    // Close sort menu when scrolling (position would be incorrect)
+    setSortMenu(null);
+  }, []);
+
+  // Handle mouse move
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      // Check if over header
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        // Check which column
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          foundColumn = -1;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        if (foundColumn === null) {
+          results.columns.forEach((_, idx) => {
+            const colWidth = getColumnWidth(idx);
+            if (x >= currentX && x < currentX + colWidth) {
+              foundColumn = idx;
+            }
+            currentX += colWidth;
+          });
+        }
+
+        setHoveredColumn(foundColumn);
+        setHoveredRow(null);
+
+        // Update cursor for resize or sort
+        if (foundColumn !== null) {
+          let colX = 0;
+          if (foundColumn === -1) {
+            colX = 0;
+          } else {
+            colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+          }
+          const colWidth = getColumnWidth(foundColumn);
+          const handleX = colX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+          
+          if (x >= handleX - 5 && x <= handleX + 5) {
+            container.style.cursor = 'col-resize';
+          } else if (foundColumn !== -1) {
+            // Show pointer cursor for data column headers (to indicate sortable)
+            container.style.cursor = 'pointer';
+          } else {
+            container.style.cursor = 'default';
+          }
+        } else {
+          container.style.cursor = 'default';
+        }
+      } else if (y >= HEADER_HEIGHT) {
+        // Check which row
+        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
+          setHoveredRow(rowIndex);
+        } else {
+          setHoveredRow(null);
+        }
+        setHoveredColumn(null);
+        container.style.cursor = 'default';
+      }
+    },
+    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length]
+  );
+
+  // Handle mouse leave
+  const handleMouseLeave = useCallback(() => {
+    setHoveredRow(null);
+    setHoveredColumn(null);
+    const container = containerRef.current;
+    if (container) {
+      container.style.cursor = 'default';
+    }
+  }, []);
+
+  // Handle mouse down for resizing and selection
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // Don't handle right-click (context menu) - let handleContextMenu deal with it
+      if (e.button === 2) return;
+      
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      // Handle selection in data area (not header)
+      if (y >= HEADER_HEIGHT) {
+        // Check if this is a data cell click (not a scrollbar click)
+        const cell = getCellFromCoordinates(x, y);
+        if (cell) {
+          setIsSelecting(true);
+          const cellPos = { ...cell, x, y };
+          setSelectionStart(cellPos);
+          setSelectionEnd(cellPos);
+          // Don't prevent default - allow normal behavior
+          return;
+        } else {
+          // Click outside cells - clear selection
+          setSelectionStart(null);
+          setSelectionEnd(null);
+          return;
+        }
+      }
+
+      // Handle sort menu click in header (but not on resize handle)
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have sort menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            // Check if click is on resize handle
+            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+            if (x < handleX - 5 || x > handleX + 5) {
+              // Not on resize handle - show sort menu for any click on header
+              foundColumn = idx;
+            }
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          const container = containerRef.current;
+          if (container) {
+            const rect = container.getBoundingClientRect();
+            // Calculate position for sort menu
+            // colX is in scroll coordinates, need to convert to viewport coordinates
+            let colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+            const colWidth = getColumnWidth(foundColumn);
+            // Convert scroll coordinates to viewport coordinates
+            const viewportColX = colX - scrollLeft;
+            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
+            const menuY = rect.top + HEADER_HEIGHT + 2;
+            setSortMenu({
+              columnIndex: foundColumn,
+              x: menuX,
+              y: menuY,
+            });
+          }
+          return;
+        }
+      }
+
+      // Only handle resize in header
+
+      // Check which column
+      let currentX = 0;
+      let foundColumn: number | null = null;
+
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        const handleX = currentX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2;
+        if (x >= handleX - 5 && x <= handleX + 5) {
+          foundColumn = -1;
+        }
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      if (foundColumn === null) {
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+          if (x >= handleX - 5 && x <= handleX + 5) {
+            foundColumn = idx;
+          }
+          currentX += colWidth;
+        });
+      }
+
+      if (foundColumn !== null) {
+        e.preventDefault();
+        resizeStartXRef.current = e.clientX;
+        resizeStartWidthRef.current = getColumnWidth(foundColumn);
+        setResizingColumn(foundColumn);
+        // Clear selection when starting resize
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      } else {
+        // Click on header but not on resize handle - clear selection
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      }
+    },
+    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
+  );
+
+  // Handle context menu
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        // Header context menu
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have context menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            foundColumn = idx;
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          onColumnContextMenu(e, foundColumn);
+        }
+      } else if (y >= HEADER_HEIGHT) {
+        // Row context menu
+        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
+          // Check if click is on the row number column
+          const rowNumWidth = getColumnWidth(-1);
+          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
+          onRowContextMenu(e, rowIndex, isRowNumberColumn);
+        }
+      }
+    },
+    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
+  );
+
+  // Extract selected text
+  const getSelectedText = useCallback((): string => {
+    if (!selectionStart || !selectionEnd) return '';
+
+    const startRow = Math.min(selectionStart.row, selectionEnd.row);
+    const endRow = Math.max(selectionStart.row, selectionEnd.row);
+    const startCol = Math.min(selectionStart.col, selectionEnd.col);
+    const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+    const selectedCells: string[] = [];
+
+    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
+
+      const rowValues: string[] = [];
+      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+        if (colIdx === -1) {
+          // Row number
+          const actualRowNumber = startIndex + rowIdx + 1;
+          rowValues.push(actualRowNumber.toLocaleString());
+        } else {
+          const value = row.values[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
+          rowValues.push(formattedValue);
+        }
+      }
+      selectedCells.push(rowValues.join('\t'));
+    }
+
+    return selectedCells.join('\n');
+  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
+
+  // Handle copy to clipboard
+  useEffect(() => {
+    const handleCopy = (e: KeyboardEvent) => {
+      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectionStart && selectionEnd) {
+          // Check if user is trying to copy from an input field or Monaco editor
+          const target = e.target as HTMLElement;
+          const isInputField = 
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' || 
+            target.isContentEditable ||
+            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
+            target.closest('.monaco-editor') !== null ||
+            target.closest('.editor-container') !== null;
+          
+          // Only handle copy from canvas if not copying from an input/editor
+          if (!isInputField) {
+            const text = getSelectedText();
+            if (text) {
+              e.preventDefault();
+              navigator.clipboard.writeText(text).catch((err) => {
+                console.error('Failed to copy to clipboard:', err);
+              });
+            }
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleCopy);
+    return () => window.removeEventListener('keydown', handleCopy);
+  }, [selectionStart, selectionEnd, getSelectedText]);
+
+
+  // Handle selection mouse move
+  const handleSelectionMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isSelecting || resizingColumn !== null) return;
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const viewportX = e.clientX - rect.left;
+      const viewportY = e.clientY - rect.top;
+      const x = viewportX + scrollLeft;
+      const y = viewportY + scrollTop;
+
+      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
+      const edgeThreshold = 20;
+      const isNearTop = viewportY < edgeThreshold;
+      const isNearBottom = viewportY > rect.height - edgeThreshold;
+      const isNearLeft = viewportX < edgeThreshold;
+      const isNearRight = viewportX > rect.width - edgeThreshold;
+
+      // Update selection if we can determine a cell
+      const cell = getCellFromCoordinates(x, y);
+      if (cell && selectionStart) {
+        setSelectionEnd({ ...cell, x, y });
+      } else if (selectionStart) {
+        // If outside cells but still selecting, extend selection to edge
+        // This allows selection to continue when dragging outside viewport
+        const lastCell = selectionEnd || selectionStart;
+        setSelectionEnd(lastCell);
+      }
+    },
+    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
+  );
+
+  // Handle selection mouse up
+  const handleSelectionMouseUp = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
+  useEffect(() => {
+    if (!isSelecting) return;
+
+    const handleDocumentMouseUp = () => {
+      setIsSelecting(false);
+    };
+
+    document.addEventListener('mouseup', handleDocumentMouseUp);
+    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
+  }, [isSelecting]);
+
+  // Handle selection mouse leave
+  const handleSelectionMouseLeave = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle resize mouse move
+  useEffect(() => {
+    if (resizingColumn === null) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      e.preventDefault();
+      const diff = e.clientX - resizeStartXRef.current;
+      const newWidth = Math.max(MIN_COLUMN_WIDTH, resizeStartWidthRef.current + diff);
+      onColumnResize(resizingColumn, newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setResizingColumn(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove, { passive: false });
+    document.addEventListener('mouseup', handleMouseUp, { passive: false });
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [resizingColumn, onColumnResize]);
+
+  // Initial render when component mounts
+  useEffect(() => {
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      render();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Render on changes (including scroll) with throttling to reduce CPU usage
+  const renderTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    // Clear any pending render
+    if (renderTimeoutRef.current !== null) {
+      cancelAnimationFrame(renderTimeoutRef.current);
+    }
+
+    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
+    // but batch rapid scroll events
+    renderTimeoutRef.current = requestAnimationFrame(() => {
+      render();
+      renderTimeoutRef.current = null;
+    });
+
+    return () => {
+      if (renderTimeoutRef.current !== null) {
+        cancelAnimationFrame(renderTimeoutRef.current);
+        renderTimeoutRef.current = null;
+      }
+    };
+  }, [render, scrollTop, scrollLeft]);
+
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      render();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [render]);
+
+  return (
+    <div
+      ref={wrapperRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        position: 'relative',
+        overflow: 'hidden',
+        backgroundColor: themeColors.bgColor,
+      }}
+    >
+      {/* Scrollable container - this handles all scrolling */}
+      {/* Ensure scrollbars are always visible when content overflows */}
+      <div
+        ref={containerRef}
+        className="canvas-table-container"
+        onScroll={handleScroll}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        onMouseDown={handleMouseDown}
+        onContextMenu={handleContextMenu}
+        style={{
+          width: '100%',
+          height: '100%',
+          overflowX: 'scroll',
+          overflowY: 'scroll',
+          position: 'relative',
+          // Ensure scrollbars are always visible
+          scrollbarWidth: 'thin',
+          scrollbarColor: `${themeColors.scrollbarThumb} ${themeColors.scrollbarTrack}`,
+          // Force scrollbars to be visible (especially on macOS)
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        {/* Spacer div to create scrollable area - this scrolls */}
+        <div
+          style={{
+            width: totalWidth,
+            height: totalHeight,
+            position: 'relative',
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
+      {/* Canvas overlay - positioned fixed to outer container, does NOT scroll */}
+      {/* pointerEvents: 'none' allows scrolling and scrollbar interaction to work through it */}
+      {/* Size matches container.clientWidth/Height to exclude scrollbar area */}
+      <div
+        ref={canvasOverlayRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: 'none',
+          overflow: 'hidden',
+          backgroundColor: themeColors.bgColor,
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          style={{
+            display: 'block',
+            pointerEvents: 'none',
+            width: '100%',
+            height: '100%',
+          }}
+        />
+      </div>
+      {/* Selection overlay - captures mouse events for text selection */}
+      {/* Only active when actively selecting to allow scrolling otherwise */}
+      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
+      <div
+        ref={selectionOverlayRef}
+        onMouseMove={handleSelectionMouseMove}
+        onMouseUp={handleSelectionMouseUp}
+        onMouseLeave={handleSelectionMouseLeave}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
+          cursor: isSelecting ? 'text' : 'default',
+          userSelect: 'none',
+        }}
+      />
+      {/* Sort menu */}
+      {sortMenu && (
+        <ColumnSortMenu
+          x={sortMenu.x}
+          y={sortMenu.y}
+          columnIndex={sortMenu.columnIndex}
+          currentSortColumn={sortColumn}
+          currentSortDirection={sortDirection}
+          onClose={() => setSortMenu(null)}
+          onSort={onSortColumn}
+        />
+      )}
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -25958,13 +26188,17 @@ import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
 import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
 import './App.css';
+
+type Theme = 'dark' | 'light';
 
 const App: React.FC = () => {
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [showSavedQueries, setShowSavedQueries] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
   const [editorHeight, setEditorHeight] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
@@ -26006,7 +26240,7 @@ const App: React.FC = () => {
   } | null>(null);
 
   useEffect(() => {
-    // Load saved sidebar widths on mount
+    // Load saved sidebar widths and theme on mount
     if (window.electronAPI) {
       window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
         // Ensure minimum width of 268px
@@ -26019,8 +26253,23 @@ const App: React.FC = () => {
         setRightSidebarWidth(width);
         resizeStartWidthRightRef.current = width;
       });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
     }
   }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
 
   // Handle sidebar collapse/expand
   const handleLeftSidebarToggle = useCallback(() => {
@@ -26087,14 +26336,18 @@ const App: React.FC = () => {
       const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
         useTabsStore.getState().createTab();
       });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
 
       return () => {
         removeHelpListener();
         removeAboutListener();
         removeNewTabListener();
+        removeToggleThemeListener();
       };
     }
-  }, []);
+  }, [handleToggleTheme]);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -26340,7 +26593,7 @@ const App: React.FC = () => {
           )}
           <div className="app-editor-results" ref={editorResultsRef}>
             <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor />
+              <QueryEditor theme={theme} />
             </div>
             <div
               className="resize-handle-horizontal"
@@ -26990,7 +27243,11 @@ const buildTableAliasMapFromSelect = (
   return { aliasMap, uniqueTables };
 };
 
-export const QueryEditor: React.FC = () => {
+interface QueryEditorProps {
+  theme?: 'dark' | 'light';
+}
+
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
@@ -29381,7 +29638,7 @@ export const QueryEditor: React.FC = () => {
               <Editor
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
-                theme="vs-dark"
+                theme={theme === 'light' ? 'light' : 'vs-dark'}
                 value={queryText}
                 onChange={handleQueryChange}
               beforeMount={(monaco) => {
