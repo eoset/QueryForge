@@ -1674,162 +1674,6 @@ TypeScript 5.x, Node.js 18+: Follow standard conventions
 <!-- MANUAL ADDITIONS END -->
 ````
 
-## File: .github/workflows/repomix.yml
-````yaml
-name: Run Repomix on Main Push
-on:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: write
-
-jobs:
-  run-repomix:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      - name: Install repomix
-        run: npm install -g repomix
-
-      - name: Run repomix
-        run: repomix --style markdown --output repomix-output.md
-
-      - name: Check if repomix output changed
-        run: |
-          if git diff --quiet; then
-            echo "no_changes=true" >> $GITHUB_ENV
-          else
-            echo "no_changes=false" >> $GITHUB_ENV
-          fi
-
-      - name: Commit and push changes
-        if: env.no_changes == 'false'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add repomix-output.md
-          git commit -m "Update repomix output"
-          git push origin main
-````
-
-## File: .github/workflows/test.yml
-````yaml
-name: Tests
-
-on:
-  pull_request:
-    branches: [main]
-
-permissions:
-  contents: read
-  pull-requests: write
-
-jobs:
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests with coverage
-        id: test
-        run: |
-          # Run tests and capture output
-          npm test -- --silent --coverage --coverageReporters=text-summary 2>&1 | tee test-output.txt
-          
-          # Store exit code
-          TEST_EXIT_CODE=${PIPESTATUS[0]}
-          
-          # Extract summary for the comment
-          echo "## Test Results" > test-summary.md
-          echo "" >> test-summary.md
-          
-          if [ $TEST_EXIT_CODE -eq 0 ]; then
-            echo "✅ **All tests passed!**" >> test-summary.md
-          else
-            echo "❌ **Some tests failed**" >> test-summary.md
-          fi
-          
-          echo "" >> test-summary.md
-          echo "\`\`\`" >> test-summary.md
-          grep -E "(Test Suites:|Tests:|Snapshots:|Time:|Statements|Branches|Functions|Lines)" test-output.txt >> test-summary.md
-          echo "\`\`\`" >> test-summary.md
-          
-          # Exit with the test exit code
-          exit $TEST_EXIT_CODE
-        continue-on-error: true
-
-      - name: Comment PR with test results
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('test-summary.md', 'utf8');
-            
-            // Find existing comment
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            
-            const botComment = comments.find(comment => 
-              comment.user.type === 'Bot' && 
-              comment.body.includes('## Test Results')
-            );
-            
-            const commentBody = summary + '\n\n*Updated: ' + new Date().toISOString() + '*';
-            
-            if (botComment) {
-              // Update existing comment
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: commentBody
-              });
-            } else {
-              // Create new comment
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: commentBody
-              });
-            }
-
-      - name: Fail if tests failed
-        if: steps.test.outcome == 'failure'
-        run: exit 1
-````
-
-## File: .husky/pre-commit
-````
-npm test
-````
-
 ## File: .specify/memory/constitution.md
 ````markdown
 # [PROJECT_NAME] Constitution
@@ -6234,119 +6078,6 @@ export function registerQueriesHandlers(): void {
 }
 ````
 
-## File: src/main/ipc/results-cache.ts
-````typescript
-import { ipcMain } from 'electron';
-import {
-  saveResults,
-  getResults,
-  getResultsMetadata,
-  getResultsPage,
-  deleteResults,
-  clearAllResults,
-} from '../storage/results-cache-store';
-import type { QueryResult, Row } from '../../shared/types/query';
-import { BigQueryErrorCode } from '../../shared/types/bigquery';
-
-export function registerResultsCacheHandlers(): void {
-  ipcMain.handle('results-cache:save', async (_event, tabId: string, results: QueryResult): Promise<void> => {
-    try {
-      saveResults(tabId, results);
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.STORAGE_ERROR,
-        message: 'Failed to save results to cache',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('results-cache:get', async (_event, tabId: string): Promise<QueryResult | null> => {
-    try {
-      const results = getResults(tabId);
-      return results || null;
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.STORAGE_ERROR,
-        message: 'Failed to get results from cache',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('results-cache:getMetadata', async (_event, tabId: string) => {
-    try {
-      const metadata = getResultsMetadata(tabId);
-      return metadata || null;
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.STORAGE_ERROR,
-        message: 'Failed to get results metadata from cache',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('results-cache:getPage', async (_event, tabId: string, pageNumber: number): Promise<Row[] | null> => {
-    try {
-      const page = getResultsPage(tabId, pageNumber);
-      return page || null;
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.STORAGE_ERROR,
-        message: 'Failed to get results page from cache',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('results-cache:delete', async (_event, tabId: string): Promise<void> => {
-    try {
-      deleteResults(tabId);
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.STORAGE_ERROR,
-        message: 'Failed to delete results from cache',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('results-cache:clear', async (): Promise<void> => {
-    try {
-      clearAllResults();
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.STORAGE_ERROR,
-        message: 'Failed to clear results cache',
-        details: error.message,
-      };
-    }
-  });
-}
-````
-
-## File: src/main/ipc/tabs.ts
-````typescript
-import { ipcMain } from 'electron';
-import { getTabs, getActiveTabId, saveTabs } from '../storage/tabs-store';
-import type { QueryTab } from '../../shared/types/query';
-
-export function registerTabsHandlers(): void {
-  ipcMain.handle('tabs:getTabs', async () => {
-    return getTabs();
-  });
-
-  ipcMain.handle('tabs:getActiveTabId', async () => {
-    return getActiveTabId();
-  });
-
-  ipcMain.handle('tabs:saveTabs', async (_event, tabs: QueryTab[], activeTabId: string | null) => {
-    saveTabs(tabs, activeTabId);
-  });
-}
-````
-
 ## File: src/main/ipc/ui-settings.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -6598,237 +6329,6 @@ export function searchQueries(term: string): SavedQuery[] {
 }
 ````
 
-## File: src/main/storage/results-cache-store.ts
-````typescript
-import Store from 'electron-store';
-import type { QueryResult, Row, ColumnMetadata } from '../../shared/types/query';
-
-const ROWS_PER_PAGE = 200;
-
-interface ResultsMetadata {
-  columns: ColumnMetadata[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-interface ResultsCacheStoreData {
-  metadata: { [tabId: string]: ResultsMetadata };
-  pages: { [tabId: string]: { [pageNumber: number]: Row[] } };
-}
-
-const store = new Store<ResultsCacheStoreData>({
-  name: 'results-cache',
-  defaults: {
-    metadata: {},
-    pages: {},
-  },
-}) as Store<ResultsCacheStoreData> & {
-  get(key: 'metadata'): { [tabId: string]: ResultsMetadata };
-  get(key: 'pages'): { [tabId: string]: { [pageNumber: number]: Row[] } };
-  set(key: 'metadata', value: { [tabId: string]: ResultsMetadata }): void;
-  set(key: 'pages', value: { [tabId: string]: { [pageNumber: number]: Row[] } }): void;
-};
-
-/**
- * Save query results for a specific tab
- * This overwrites any existing results for that tab
- * Results are stored in pages for efficient access
- * Uses asynchronous chunked saving to prevent blocking the main process
- */
-export function saveResults(tabId: string, results: QueryResult): void {
-  const metadata: ResultsMetadata = {
-    columns: results.columns,
-    totalRows: results.totalRows,
-    rowsReturned: results.rowsReturned,
-    executionTimeMs: results.executionTimeMs,
-    bytesProcessed: results.bytesProcessed,
-    jobId: results.jobId,
-    hasMore: results.hasMore,
-  };
-
-  // Save metadata immediately for instant access
-  const allMetadata = store.get('metadata') || {};
-  allMetadata[tabId] = metadata;
-  store.set('metadata', allMetadata);
-
-  // Initialize pages object
-  const allPages = store.get('pages') || {};
-  allPages[tabId] = {};
-  
-  const totalPages = Math.ceil(results.rows.length / ROWS_PER_PAGE);
-  
-  // Save first page immediately for instant display
-  if (results.rows.length > 0) {
-    const firstPage = results.rows.slice(0, ROWS_PER_PAGE);
-    allPages[tabId][1] = firstPage;
-    store.set('pages', allPages);
-  }
-
-  // Save remaining pages asynchronously in chunks to avoid blocking
-  if (totalPages > 1) {
-    let currentPage = 2;
-    const CHUNK_SIZE = 5; // Save 5 pages at a time
-    
-    const saveNextChunk = () => {
-      const endPage = Math.min(currentPage + CHUNK_SIZE - 1, totalPages);
-      
-      // Save chunk of pages
-      for (let page = currentPage; page <= endPage; page++) {
-        const startIndex = (page - 1) * ROWS_PER_PAGE;
-        const endIndex = Math.min(startIndex + ROWS_PER_PAGE, results.rows.length);
-        allPages[tabId][page] = results.rows.slice(startIndex, endIndex);
-      }
-      
-      // Update store with this chunk
-      store.set('pages', allPages);
-      currentPage = endPage + 1;
-      
-      // Continue with next chunk if there are more pages
-      if (currentPage <= totalPages) {
-        // Use setImmediate to yield to event loop between chunks
-        setImmediate(saveNextChunk);
-      }
-    };
-    
-    // Start async saving
-    setImmediate(saveNextChunk);
-  }
-}
-
-/**
- * Get results metadata for a specific tab (without rows)
- */
-export function getResultsMetadata(tabId: string): ResultsMetadata | undefined {
-  const allMetadata = store.get('metadata') || {};
-  return allMetadata[tabId];
-}
-
-/**
- * Get a specific page of results for a tab
- */
-export function getResultsPage(tabId: string, pageNumber: number): Row[] | undefined {
-  const allPages = store.get('pages') || {};
-  const tabPages = allPages[tabId];
-  if (!tabPages) return undefined;
-  return tabPages[pageNumber];
-}
-
-/**
- * Get all results for a tab (for backward compatibility)
- * This loads all pages - use getResultsPage for better performance
- */
-export function getResults(tabId: string): QueryResult | undefined {
-  const metadata = getResultsMetadata(tabId);
-  if (!metadata) return undefined;
-
-  const allPages = store.get('pages') || {};
-  const tabPages = allPages[tabId];
-  if (!tabPages) return undefined;
-
-  // Combine all pages
-  const rows: Row[] = [];
-  const pageNumbers = Object.keys(tabPages)
-    .map(Number)
-    .sort((a, b) => a - b);
-  
-  for (const pageNum of pageNumbers) {
-    rows.push(...tabPages[pageNum]);
-  }
-
-  return {
-    columns: metadata.columns,
-    rows,
-    totalRows: metadata.totalRows,
-    rowsReturned: metadata.rowsReturned,
-    executionTimeMs: metadata.executionTimeMs,
-    bytesProcessed: metadata.bytesProcessed,
-    jobId: metadata.jobId,
-    hasMore: metadata.hasMore,
-  };
-}
-
-/**
- * Delete results for a specific tab
- */
-export function deleteResults(tabId: string): void {
-  const allMetadata = store.get('metadata') || {};
-  const allPages = store.get('pages') || {};
-  
-  delete allMetadata[tabId];
-  delete allPages[tabId];
-  
-  store.set('metadata', allMetadata);
-  store.set('pages', allPages);
-}
-
-/**
- * Clear all cached results
- * Called when application closes
- */
-export function clearAllResults(): void {
-  store.set('metadata', {});
-  store.set('pages', {});
-}
-````
-
-## File: src/main/storage/tabs-store.ts
-````typescript
-import Store from 'electron-store';
-import type { QueryTab } from '../../shared/types/query';
-
-interface TabsStoreData {
-  tabs: QueryTab[];
-  activeTabId: string | null;
-}
-
-// For persistence, we'll exclude large result data but keep everything else
-type PersistedTab = Omit<QueryTab, 'results'> & {
-  results?: never; // Explicitly exclude results from persisted data
-};
-
-interface PersistedTabsStoreData {
-  tabs: PersistedTab[];
-  activeTabId: string | null;
-}
-
-const store = new Store<PersistedTabsStoreData>({
-  name: 'tabs',
-  defaults: {
-    tabs: [],
-    activeTabId: null,
-  },
-}) as Store<PersistedTabsStoreData> & {
-  get(key: 'tabs'): PersistedTab[];
-  set(key: 'tabs', value: PersistedTab[]): void;
-  get(key: 'activeTabId'): string | null;
-  set(key: 'activeTabId', value: string | null): void;
-};
-
-export function getTabs(): QueryTab[] {
-  const persistedTabs = store.get('tabs') || [];
-  // Convert persisted tabs back to QueryTab (results will be undefined)
-  return persistedTabs.map((tab) => ({
-    ...tab,
-    results: undefined,
-  }));
-}
-
-export function getActiveTabId(): string | null {
-  return store.get('activeTabId') || null;
-}
-
-export function saveTabs(tabs: QueryTab[], activeTabId: string | null): void {
-  // Remove results before persisting (they can be very large)
-  const persistedTabs: PersistedTab[] = tabs.map(({ results, ...tab }) => tab);
-  store.set('tabs', persistedTabs);
-  store.set('activeTabId', activeTabId);
-}
-````
-
 ## File: src/main/storage/ui-settings-store.ts
 ````typescript
 import Store from 'electron-store';
@@ -6888,190 +6388,6 @@ export function getWindowBounds(): WindowBounds | undefined {
 export function setWindowBounds(bounds: WindowBounds): void {
   store.set('windowBounds', bounds);
 }
-````
-
-## File: src/renderer/components/AboutDialog/AboutDialog.css
-````css
-.about-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.about-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 400px;
-  max-width: 500px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  display: flex;
-  flex-direction: column;
-}
-
-.about-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: #ffffff;
-}
-
-.about-content {
-  flex: 1;
-  padding-right: 0.5rem;
-}
-
-.about-info {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.app-name {
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: #ffffff;
-  margin: 0;
-}
-
-.app-description {
-  font-size: 0.9375rem;
-  color: #cccccc;
-  line-height: 1.5;
-  margin: 0;
-}
-
-.app-version {
-  font-size: 0.875rem;
-  color: #858585;
-  margin: 0;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.dialog-actions button:hover {
-  background-color: #1177bb;
-}
-
-.donation-button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0070f3;
-  color: #ffffff;
-  text-decoration: none;
-  display: inline-block;
-  font-family: inherit;
-}
-
-.donation-button:hover {
-  background-color: #0051cc;
-}
-````
-
-## File: src/renderer/components/AboutDialog/AboutDialog.tsx
-````typescript
-import React, { useEffect, useState } from 'react';
-import './AboutDialog.css';
-
-interface AboutDialogProps {
-  onClose: () => void;
-}
-
-export const AboutDialog: React.FC<AboutDialogProps> = ({ onClose }) => {
-  const [version, setVersion] = useState<string>('');
-
-  useEffect(() => {
-    // Get version from main process via IPC
-    if (window.electronAPI?.app) {
-      window.electronAPI.app.getVersion()
-        .then(ver => setVersion(ver))
-        .catch(() => {
-          setVersion('1.0.2'); // Fallback version
-        });
-    } else {
-      setVersion('1.0.2'); // Fallback version
-    }
-  }, []);
-
-  // Close dialog on Escape key
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  // Prevent closing when clicking inside the dialog
-  const handleDialogClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-  };
-
-  return (
-    <div className="about-dialog-overlay" onClick={onClose}>
-      <div className="about-dialog" onClick={handleDialogClick}>
-        <h2>About QueryForge</h2>
-        <div className="about-content">
-          <div className="about-info">
-            <p className="app-name">QueryForge</p>
-            <p className="app-description">
-              A desktop application for browsing and querying Google Cloud Platform BigQuery data.
-            </p>
-            {version && (
-              <p className="app-version">Version {version}</p>
-            )}
-          </div>
-        </div>
-        <div className="dialog-actions">
-          <a
-            href="https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="donation-button"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Donate
-          </a>
-          <button onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/components/ErrorBoundary/ErrorBoundary.css
@@ -7170,160 +6486,6 @@ export class ErrorBoundary extends Component<Props, State> {
     return this.props.children;
   }
 }
-````
-
-## File: src/renderer/components/QueryResults/ColumnSortMenu.css
-````css
-.column-sort-menu {
-  position: fixed;
-  background-color: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  min-width: 150px;
-  padding: 4px 0;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-}
-
-.sort-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 12px;
-  background: none;
-  border: none;
-  color: #cccccc;
-  text-align: left;
-  cursor: pointer;
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-}
-
-.sort-menu-item:hover {
-  background-color: #2a2d2e;
-}
-
-.sort-menu-item.active {
-  background-color: #094771;
-  color: #ffffff;
-}
-
-.sort-menu-item.active:hover {
-  background-color: #0e639c;
-}
-
-.sort-icon {
-  font-size: 0.875rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
-````
-
-## File: src/renderer/components/QueryResults/ColumnSortMenu.tsx
-````typescript
-import React, { useEffect, useRef } from 'react';
-import './ColumnSortMenu.css';
-
-interface ColumnSortMenuProps {
-  x: number;
-  y: number;
-  columnIndex: number;
-  currentSortColumn: number | null;
-  currentSortDirection: 'asc' | 'desc' | null;
-  onClose: () => void;
-  onSort: (columnIndex: number, direction: 'asc' | 'desc') => void;
-}
-
-export const ColumnSortMenu: React.FC<ColumnSortMenuProps> = ({
-  x,
-  y,
-  columnIndex,
-  currentSortColumn,
-  currentSortDirection,
-  onClose,
-  onSort,
-}) => {
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        onClose();
-      }
-    };
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('keydown', handleEscape);
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [onClose]);
-
-  useEffect(() => {
-    // Position menu to stay within viewport
-    if (menuRef.current) {
-      const rect = menuRef.current.getBoundingClientRect();
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-
-      let adjustedX = x;
-      let adjustedY = y;
-
-      if (x + rect.width > viewportWidth) {
-        adjustedX = viewportWidth - rect.width - 10;
-      }
-      if (y + rect.height > viewportHeight) {
-        adjustedY = viewportHeight - rect.height - 10;
-      }
-
-      menuRef.current.style.left = `${adjustedX}px`;
-      menuRef.current.style.top = `${adjustedY}px`;
-    }
-  }, [x, y]);
-
-  const handleSort = (direction: 'asc' | 'desc') => {
-    onSort(columnIndex, direction);
-    onClose();
-  };
-
-  const isAscActive = currentSortColumn === columnIndex && currentSortDirection === 'asc';
-  const isDescActive = currentSortColumn === columnIndex && currentSortDirection === 'desc';
-
-  return (
-    <div
-      ref={menuRef}
-      className="column-sort-menu"
-      style={{ left: `${x}px`, top: `${y}px` }}
-    >
-      <button
-        className={`sort-menu-item ${isAscActive ? 'active' : ''}`}
-        onClick={() => handleSort('asc')}
-      >
-        <span className="sort-icon">↑</span>
-        Ascending
-      </button>
-      <button
-        className={`sort-menu-item ${isDescActive ? 'active' : ''}`}
-        onClick={() => handleSort('desc')}
-      >
-        <span className="sort-icon">↓</span>
-        Descending
-      </button>
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/components/QueryResults/RowContextMenu.css
@@ -8132,206 +7294,6 @@ export const SchemaSidebar: React.FC<SchemaSidebarProps> = ({
 };
 ````
 
-## File: src/renderer/components/SidebarHeader/SidebarHeader.css
-````css
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  gap: 0.5rem;
-  height: 35px;
-}
-
-.sidebar-header-collapsed {
-  justify-content: center;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.collapse-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-````
-
-## File: src/renderer/components/SidebarHeader/SidebarHeader.tsx
-````typescript
-import React from 'react';
-import './SidebarHeader.css';
-
-interface SidebarHeaderProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefresh?: () => void;
-  isLoading?: boolean;
-}
-
-export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
-  collapsed = false,
-  onToggleCollapse,
-  onRefresh,
-  isLoading = false,
-}) => {
-  if (collapsed) {
-    return (
-      <div className="sidebar-header sidebar-header-collapsed">
-        <button
-          className="collapse-button"
-          onClick={onToggleCollapse}
-          title="Expand"
-        >
-          ▶
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="sidebar-header">
-      <button
-        className="collapse-button"
-        onClick={onToggleCollapse}
-        title="Collapse"
-      >
-        ◀
-      </button>
-      {onRefresh && (
-        <button
-          className="refresh-button"
-          onClick={onRefresh}
-          title="Refresh"
-          disabled={isLoading}
-        >
-          ↻
-        </button>
-      )}
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
-````css
-.sidebar-switcher {
-  display: flex;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  padding: 0.25rem;
-  gap: 0.25rem;
-}
-
-.sidebar-switcher-button {
-  flex: 1;
-  background-color: transparent;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.75rem;
-  font-weight: 400;
-  padding: 0.5rem 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.sidebar-switcher-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.sidebar-switcher-button.active {
-  background-color: #1e1e1e;
-  color: #ffffff;
-}
-````
-
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
-````typescript
-import React from 'react';
-import './SidebarSwitcher.css';
-
-export type SidebarView = 'explorer' | 'saved-queries';
-
-interface SidebarSwitcherProps {
-  currentView: SidebarView;
-  onViewChange: (view: SidebarView) => void;
-  collapsed?: boolean;
-}
-
-export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
-  currentView,
-  onViewChange,
-  collapsed = false,
-}) => {
-  if (collapsed) {
-    return null;
-  }
-
-  return (
-    <div className="sidebar-switcher">
-      <button
-        className={`sidebar-switcher-button ${currentView === 'explorer' ? 'active' : ''}`}
-        onClick={() => onViewChange('explorer')}
-        title="Explorer"
-      >
-        EXPLORER
-      </button>
-      <button
-        className={`sidebar-switcher-button ${currentView === 'saved-queries' ? 'active' : ''}`}
-        onClick={() => onViewChange('saved-queries')}
-        title="Saved Queries"
-      >
-        SAVED QUERIES
-      </button>
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/hooks/useBigQuery.ts
 ````typescript
 import { useCallback } from 'react';
@@ -8373,64 +7335,6 @@ export function useBigQuery() {
     isConnected: !!connection,
   };
 }
-````
-
-## File: src/renderer/stores/bigquery-metadata-store.ts
-````typescript
-import { create } from 'zustand';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-interface DatasetWithTables extends Dataset {
-  tables?: Table[];
-  tablesLoaded?: boolean;
-}
-
-interface BigQueryMetadataState {
-  datasets: DatasetWithTables[];
-  isLoading: boolean;
-  error: string | null;
-  setDatasets: (datasets: DatasetWithTables[]) => void;
-  setDatasetTables: (datasetId: string, tables: Table[]) => void;
-  getDatasetTables: (datasetId: string) => Table[] | undefined;
-  getAllTables: () => Array<{ dataset: string; table: Table }>;
-  clear: () => void;
-}
-
-export const useBigQueryMetadataStore = create<BigQueryMetadataState>((set, get) => ({
-  datasets: [],
-  isLoading: false,
-  error: null,
-  
-  setDatasets: (datasets) => set({ datasets }),
-  
-  setDatasetTables: (datasetId: string, tables: Table[]) =>
-    set((state) => ({
-      datasets: state.datasets.map((ds) =>
-        ds.id === datasetId ? { ...ds, tables, tablesLoaded: true } : ds
-      ),
-    })),
-  
-  getDatasetTables: (datasetId: string) => {
-    const state = get();
-    const dataset = state.datasets.find((ds) => ds.id === datasetId);
-    return dataset?.tables;
-  },
-  
-  getAllTables: () => {
-    const state = get();
-    const allTables: Array<{ dataset: string; table: Table }> = [];
-    state.datasets.forEach((dataset) => {
-      if (dataset.tables) {
-        dataset.tables.forEach((table) => {
-          allTables.push({ dataset: dataset.id, table });
-        });
-      }
-    });
-    return allTables;
-  },
-  
-  clear: () => set({ datasets: [], isLoading: false, error: null }),
-}));
 ````
 
 ## File: src/renderer/stores/connection-store.ts
@@ -8894,6 +7798,2927 @@ export function validateConnectionConfig(config: ConnectionConfig): {
   }
 
   return { valid: true };
+}
+````
+
+## File: .eslintignore
+````
+node_modules/
+dist/
+build/
+out/
+coverage/
+*.min.js
+*.bundle.js
+*.config.js
+````
+
+## File: .eslintrc.json
+````json
+{
+  "env": {
+    "browser": true,
+    "es2021": true,
+    "node": true
+  },
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module",
+    "ecmaFeatures": {
+      "jsx": true
+    }
+  },
+  "plugins": ["@typescript-eslint", "react", "react-hooks"],
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "@typescript-eslint/no-explicit-any": "warn"
+  },
+  "settings": {
+    "react": {
+      "version": "detect"
+    }
+  }
+}
+````
+
+## File: .prettierignore
+````
+node_modules/
+dist/
+build/
+coverage/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.min.js
+*.bundle.js
+````
+
+## File: .prettierrc.json
+````json
+{
+  "semi": true,
+  "trailingComma": "es5",
+  "singleQuote": true,
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false
+}
+````
+
+## File: jest.config.js
+````javascript
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'jsdom',
+  roots: ['<rootDir>/tests'],
+  testMatch: ['**/__tests__/**/*.ts', '**/__tests__/**/*.tsx', '**/?(*.)+(spec|test).ts', '**/?(*.)+(spec|test).tsx'],
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
+  },
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
+  collectCoverageFrom: [
+    'src/**/*.{ts,tsx}',
+    '!src/**/*.d.ts',
+    '!src/**/*.stories.{ts,tsx}',
+    '!src/**/__tests__/**',
+  ],
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
+  transform: {
+    '^.+\\.(ts|tsx)$': 'ts-jest',
+  },
+  transform: {
+    '^.+\\.(ts|tsx)$': [
+      'ts-jest',
+      {
+        tsconfig: {
+          jsx: 'react',
+        },
+      },
+    ],
+  },
+};
+````
+
+## File: tsconfig.json
+````json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020", "DOM"],
+    "jsx": "react",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "node",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests", "**/*.test.ts", "**/*.test.tsx"]
+}
+````
+
+## File: webpack.renderer.config.js
+````javascript
+const path = require('path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+
+module.exports = {
+  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+  entry: './src/renderer/index.tsx',
+  target: 'electron-renderer',
+  devtool: 'source-map',
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+      {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader'],
+      },
+    ],
+  },
+  resolve: {
+    extensions: ['.tsx', '.ts', '.js'],
+  },
+  output: {
+    filename: 'renderer.js',
+    path: path.resolve(__dirname, 'dist/renderer'),
+  },
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: './src/renderer/index.html',
+      filename: 'index.html',
+    }),
+  ],
+};
+````
+
+## File: .github/workflows/repomix.yml
+````yaml
+name: Run Repomix on Main Push
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  run-repomix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install repomix
+        run: npm install -g repomix
+
+      - name: Run repomix
+        run: repomix --style markdown --output repomix-output.md
+
+      - name: Check if repomix output changed
+        run: |
+          if git diff --quiet; then
+            echo "no_changes=true" >> $GITHUB_ENV
+          else
+            echo "no_changes=false" >> $GITHUB_ENV
+          fi
+
+      - name: Commit and push changes
+        if: env.no_changes == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add repomix-output.md
+          git commit -m "Update repomix output"
+          git push origin main
+````
+
+## File: .github/workflows/test.yml
+````yaml
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        id: test
+        run: |
+          # Run tests and capture output
+          npm test -- --silent --coverage --coverageReporters=text-summary 2>&1 | tee test-output.txt
+          
+          # Store exit code
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          
+          # Extract summary for the comment
+          echo "## Test Results" > test-summary.md
+          echo "" >> test-summary.md
+          
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "✅ **All tests passed!**" >> test-summary.md
+          else
+            echo "❌ **Some tests failed**" >> test-summary.md
+          fi
+          
+          echo "" >> test-summary.md
+          echo "\`\`\`" >> test-summary.md
+          grep -E "(Test Suites:|Tests:|Snapshots:|Time:|Statements|Branches|Functions|Lines)" test-output.txt >> test-summary.md
+          echo "\`\`\`" >> test-summary.md
+          
+          # Exit with the test exit code
+          exit $TEST_EXIT_CODE
+        continue-on-error: true
+
+      - name: Comment PR with test results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('test-summary.md', 'utf8');
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('## Test Results')
+            );
+            
+            const commentBody = summary + '\n\n*Updated: ' + new Date().toISOString() + '*';
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: commentBody
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+            }
+
+      - name: Fail if tests failed
+        if: steps.test.outcome == 'failure'
+        run: exit 1
+````
+
+## File: .husky/pre-commit
+````
+npm test
+````
+
+## File: src/main/ipc/connection.ts
+````typescript
+import { ipcMain, safeStorage } from 'electron';
+import { BigQuery } from '@google-cloud/bigquery';
+import { validateConnectionConfig } from '../../shared/utils/connection-validation';
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+import {
+  saveConnection,
+  getSavedConnection,
+  getDecryptedServiceAccountKey,
+  clearConnection,
+} from '../storage/connection-store';
+
+let bigqueryClient: BigQuery | null = null;
+let activeConnection: ConnectionConfiguration | null = null;
+
+function createBigQueryClient(config: ConnectionConfig): BigQuery {
+  const options: { projectId: string; keyFilename?: string; credentials?: any } = {
+    projectId: config.projectId,
+  };
+
+  if (config.authType === 'service-account') {
+    if (config.serviceAccountKeyPath) {
+      options.keyFilename = config.serviceAccountKeyPath;
+    } else if (config.serviceAccountKey) {
+      try {
+        options.credentials = JSON.parse(config.serviceAccountKey);
+      } catch (e) {
+        throw new Error('Invalid service account key JSON');
+      }
+    }
+  }
+
+  return new BigQuery(options);
+}
+
+export function registerConnectionHandlers(): void {
+  ipcMain.handle('connection:configure', async (_event, config: ConnectionConfig) => {
+    try {
+      // Validate configuration
+      const validation = validateConnectionConfig(config);
+      if (!validation.valid) {
+        throw {
+          code: BigQueryErrorCode.INVALID_PROJECT_ID,
+          message: validation.error || 'Invalid configuration',
+        };
+      }
+
+      // Create BigQuery client
+      bigqueryClient = createBigQueryClient(config);
+
+      // Test connection by listing datasets
+      await bigqueryClient.getDatasets({ maxResults: 1 });
+
+      // Store connection configuration (encrypt sensitive data)
+      const connectionConfig: ConnectionConfiguration = {
+        projectId: config.projectId,
+        authType: config.authType,
+        serviceAccountKeyPath: config.serviceAccountKeyPath,
+        location: config.location || 'EU', // Default to EU if not specified
+        lastConnected: new Date().toISOString(),
+        isActive: true,
+        enableDbtSupport: config.enableDbtSupport || false,
+      };
+
+      // Save connection to persistent storage
+      saveConnection(config, connectionConfig);
+
+      activeConnection = connectionConfig;
+
+      return;
+    } catch (error: any) {
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        throw {
+          code: BigQueryErrorCode.NETWORK_ERROR,
+          message: 'Network error: Unable to connect to BigQuery',
+          details: error.message,
+        };
+      }
+      if (error.code === 403 || error.code === 401) {
+        throw {
+          code: BigQueryErrorCode.AUTH_ERROR,
+          message: 'Authentication failed: Invalid credentials',
+          details: error.message,
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'Failed to establish connection',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('connection:getActive', async () => {
+    return activeConnection;
+  });
+
+  ipcMain.handle('connection:test', async (_event, config: ConnectionConfig) => {
+    try {
+      const validation = validateConnectionConfig(config);
+      if (!validation.valid) {
+        return false;
+      }
+
+      const testClient = createBigQueryClient(config);
+      await testClient.getDatasets({ maxResults: 1 });
+      return true;
+    } catch (error) {
+      console.error('Connection test failed:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('connection:disconnect', async () => {
+    bigqueryClient = null;
+    activeConnection = null;
+    // Don't clear saved connection - user can restore it later
+  });
+
+  ipcMain.handle('connection:getSaved', async () => {
+    return getSavedConnection();
+  });
+
+  ipcMain.handle('connection:restore', async () => {
+    try {
+      const saved = getSavedConnection();
+      if (!saved) {
+        return null;
+      }
+
+      // Reconstruct ConnectionConfig from saved connection
+      const config: ConnectionConfig = {
+        projectId: saved.projectId,
+        authType: saved.authType,
+        serviceAccountKeyPath: saved.serviceAccountKeyPath,
+        location: saved.location || 'EU',
+        enableDbtSupport: saved.enableDbtSupport,
+      };
+
+      // If using service account key content (not file path), decrypt it
+      if (saved.authType === 'service-account' && !saved.serviceAccountKeyPath) {
+        const decryptedKey = getDecryptedServiceAccountKey();
+        if (decryptedKey) {
+          config.serviceAccountKey = decryptedKey;
+        } else {
+          // Can't restore - key is missing or can't be decrypted
+          // This can happen if the app name changed (which changes the encryption key)
+          // Clear the saved connection so user can reconfigure
+          clearConnection();
+          throw new Error('Saved service account key cannot be decrypted (possibly due to app update). Please reconfigure your connection.');
+        }
+      }
+
+      // Validate and test the connection
+      const validation = validateConnectionConfig(config);
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Invalid saved configuration');
+      }
+
+      // Create BigQuery client
+      bigqueryClient = createBigQueryClient(config);
+
+      // Test connection
+      await bigqueryClient.getDatasets({ maxResults: 1 });
+
+      // Update last connected timestamp
+      const connectionConfig: ConnectionConfiguration = {
+        ...saved,
+        lastConnected: new Date().toISOString(),
+        isActive: true,
+      };
+
+      // Update storage with new timestamp
+      saveConnection(config, connectionConfig);
+
+      activeConnection = connectionConfig;
+
+      return connectionConfig;
+    } catch (error: any) {
+      // Clear invalid saved connection
+      clearConnection();
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: error.message || 'Failed to restore saved connection',
+        details: error,
+      };
+    }
+  });
+}
+
+export function getBigQueryClient(): BigQuery | null {
+  return bigqueryClient;
+}
+
+export function getActiveConnection(): ConnectionConfiguration | null {
+  return activeConnection;
+}
+````
+
+## File: src/main/ipc/results-cache.ts
+````typescript
+import { ipcMain } from 'electron';
+import {
+  saveResults,
+  getResults,
+  getResultsMetadata,
+  getResultsPage,
+  deleteResults,
+  clearAllResults,
+} from '../storage/results-cache-store';
+import type { QueryResult, Row } from '../../shared/types/query';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+
+export function registerResultsCacheHandlers(): void {
+  ipcMain.handle('results-cache:save', async (_event, tabId: string, results: QueryResult): Promise<void> => {
+    try {
+      saveResults(tabId, results);
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to save results to cache',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('results-cache:get', async (_event, tabId: string): Promise<QueryResult | null> => {
+    try {
+      const results = getResults(tabId);
+      return results || null;
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get results from cache',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('results-cache:getMetadata', async (_event, tabId: string) => {
+    try {
+      const metadata = getResultsMetadata(tabId);
+      return metadata || null;
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get results metadata from cache',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('results-cache:getPage', async (_event, tabId: string, pageNumber: number): Promise<Row[] | null> => {
+    try {
+      const page = getResultsPage(tabId, pageNumber);
+      return page || null;
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get results page from cache',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('results-cache:delete', async (_event, tabId: string): Promise<void> => {
+    try {
+      deleteResults(tabId);
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to delete results from cache',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('results-cache:clear', async (): Promise<void> => {
+    try {
+      clearAllResults();
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to clear results cache',
+        details: error.message,
+      };
+    }
+  });
+}
+````
+
+## File: src/main/ipc/tabs.ts
+````typescript
+import { ipcMain } from 'electron';
+import { getTabs, getActiveTabId, saveTabs } from '../storage/tabs-store';
+import type { QueryTab } from '../../shared/types/query';
+
+export function registerTabsHandlers(): void {
+  ipcMain.handle('tabs:getTabs', async () => {
+    return getTabs();
+  });
+
+  ipcMain.handle('tabs:getActiveTabId', async () => {
+    return getActiveTabId();
+  });
+
+  ipcMain.handle('tabs:saveTabs', async (_event, tabs: QueryTab[], activeTabId: string | null) => {
+    saveTabs(tabs, activeTabId);
+  });
+}
+````
+
+## File: src/main/storage/results-cache-store.ts
+````typescript
+import Store from 'electron-store';
+import type { QueryResult, Row, ColumnMetadata } from '../../shared/types/query';
+
+const ROWS_PER_PAGE = 200;
+
+interface ResultsMetadata {
+  columns: ColumnMetadata[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+interface ResultsCacheStoreData {
+  metadata: { [tabId: string]: ResultsMetadata };
+  pages: { [tabId: string]: { [pageNumber: number]: Row[] } };
+}
+
+const store = new Store<ResultsCacheStoreData>({
+  name: 'results-cache',
+  defaults: {
+    metadata: {},
+    pages: {},
+  },
+}) as Store<ResultsCacheStoreData> & {
+  get(key: 'metadata'): { [tabId: string]: ResultsMetadata };
+  get(key: 'pages'): { [tabId: string]: { [pageNumber: number]: Row[] } };
+  set(key: 'metadata', value: { [tabId: string]: ResultsMetadata }): void;
+  set(key: 'pages', value: { [tabId: string]: { [pageNumber: number]: Row[] } }): void;
+};
+
+/**
+ * Save query results for a specific tab
+ * This overwrites any existing results for that tab
+ * Results are stored in pages for efficient access
+ * Uses asynchronous chunked saving to prevent blocking the main process
+ */
+export function saveResults(tabId: string, results: QueryResult): void {
+  const metadata: ResultsMetadata = {
+    columns: results.columns,
+    totalRows: results.totalRows,
+    rowsReturned: results.rowsReturned,
+    executionTimeMs: results.executionTimeMs,
+    bytesProcessed: results.bytesProcessed,
+    jobId: results.jobId,
+    hasMore: results.hasMore,
+  };
+
+  // Save metadata immediately for instant access
+  const allMetadata = store.get('metadata') || {};
+  allMetadata[tabId] = metadata;
+  store.set('metadata', allMetadata);
+
+  // Initialize pages object
+  const allPages = store.get('pages') || {};
+  allPages[tabId] = {};
+  
+  const totalPages = Math.ceil(results.rows.length / ROWS_PER_PAGE);
+  
+  // Save first page immediately for instant display
+  if (results.rows.length > 0) {
+    const firstPage = results.rows.slice(0, ROWS_PER_PAGE);
+    allPages[tabId][1] = firstPage;
+    store.set('pages', allPages);
+  }
+
+  // Save remaining pages asynchronously in chunks to avoid blocking
+  if (totalPages > 1) {
+    let currentPage = 2;
+    const CHUNK_SIZE = 5; // Save 5 pages at a time
+    
+    const saveNextChunk = () => {
+      const endPage = Math.min(currentPage + CHUNK_SIZE - 1, totalPages);
+      
+      // Save chunk of pages
+      for (let page = currentPage; page <= endPage; page++) {
+        const startIndex = (page - 1) * ROWS_PER_PAGE;
+        const endIndex = Math.min(startIndex + ROWS_PER_PAGE, results.rows.length);
+        allPages[tabId][page] = results.rows.slice(startIndex, endIndex);
+      }
+      
+      // Update store with this chunk
+      store.set('pages', allPages);
+      currentPage = endPage + 1;
+      
+      // Continue with next chunk if there are more pages
+      if (currentPage <= totalPages) {
+        // Use setImmediate to yield to event loop between chunks
+        setImmediate(saveNextChunk);
+      }
+    };
+    
+    // Start async saving
+    setImmediate(saveNextChunk);
+  }
+}
+
+/**
+ * Get results metadata for a specific tab (without rows)
+ */
+export function getResultsMetadata(tabId: string): ResultsMetadata | undefined {
+  const allMetadata = store.get('metadata') || {};
+  return allMetadata[tabId];
+}
+
+/**
+ * Get a specific page of results for a tab
+ */
+export function getResultsPage(tabId: string, pageNumber: number): Row[] | undefined {
+  const allPages = store.get('pages') || {};
+  const tabPages = allPages[tabId];
+  if (!tabPages) return undefined;
+  return tabPages[pageNumber];
+}
+
+/**
+ * Get all results for a tab (for backward compatibility)
+ * This loads all pages - use getResultsPage for better performance
+ */
+export function getResults(tabId: string): QueryResult | undefined {
+  const metadata = getResultsMetadata(tabId);
+  if (!metadata) return undefined;
+
+  const allPages = store.get('pages') || {};
+  const tabPages = allPages[tabId];
+  if (!tabPages) return undefined;
+
+  // Combine all pages
+  const rows: Row[] = [];
+  const pageNumbers = Object.keys(tabPages)
+    .map(Number)
+    .sort((a, b) => a - b);
+  
+  for (const pageNum of pageNumbers) {
+    rows.push(...tabPages[pageNum]);
+  }
+
+  return {
+    columns: metadata.columns,
+    rows,
+    totalRows: metadata.totalRows,
+    rowsReturned: metadata.rowsReturned,
+    executionTimeMs: metadata.executionTimeMs,
+    bytesProcessed: metadata.bytesProcessed,
+    jobId: metadata.jobId,
+    hasMore: metadata.hasMore,
+  };
+}
+
+/**
+ * Delete results for a specific tab
+ */
+export function deleteResults(tabId: string): void {
+  const allMetadata = store.get('metadata') || {};
+  const allPages = store.get('pages') || {};
+  
+  delete allMetadata[tabId];
+  delete allPages[tabId];
+  
+  store.set('metadata', allMetadata);
+  store.set('pages', allPages);
+}
+
+/**
+ * Clear all cached results
+ * Called when application closes
+ */
+export function clearAllResults(): void {
+  store.set('metadata', {});
+  store.set('pages', {});
+}
+````
+
+## File: src/main/storage/tabs-store.ts
+````typescript
+import Store from 'electron-store';
+import type { QueryTab } from '../../shared/types/query';
+
+interface TabsStoreData {
+  tabs: QueryTab[];
+  activeTabId: string | null;
+}
+
+// For persistence, we'll exclude large result data but keep everything else
+type PersistedTab = Omit<QueryTab, 'results'> & {
+  results?: never; // Explicitly exclude results from persisted data
+};
+
+interface PersistedTabsStoreData {
+  tabs: PersistedTab[];
+  activeTabId: string | null;
+}
+
+const store = new Store<PersistedTabsStoreData>({
+  name: 'tabs',
+  defaults: {
+    tabs: [],
+    activeTabId: null,
+  },
+}) as Store<PersistedTabsStoreData> & {
+  get(key: 'tabs'): PersistedTab[];
+  set(key: 'tabs', value: PersistedTab[]): void;
+  get(key: 'activeTabId'): string | null;
+  set(key: 'activeTabId', value: string | null): void;
+};
+
+export function getTabs(): QueryTab[] {
+  const persistedTabs = store.get('tabs') || [];
+  // Convert persisted tabs back to QueryTab (results will be undefined)
+  return persistedTabs.map((tab) => ({
+    ...tab,
+    results: undefined,
+  }));
+}
+
+export function getActiveTabId(): string | null {
+  return store.get('activeTabId') || null;
+}
+
+export function saveTabs(tabs: QueryTab[], activeTabId: string | null): void {
+  // Remove results before persisting (they can be very large)
+  const persistedTabs: PersistedTab[] = tabs.map(({ results, ...tab }) => tab);
+  store.set('tabs', persistedTabs);
+  store.set('activeTabId', activeTabId);
+}
+````
+
+## File: src/renderer/components/AboutDialog/AboutDialog.css
+````css
+.about-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.about-dialog {
+  background: #252526;
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+  display: flex;
+  flex-direction: column;
+}
+
+.about-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: #ffffff;
+}
+
+.about-content {
+  flex: 1;
+  padding-right: 0.5rem;
+}
+
+.about-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.app-name {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0;
+}
+
+.app-description {
+  font-size: 0.9375rem;
+  color: #cccccc;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.app-version {
+  font-size: 0.875rem;
+  color: #858585;
+  margin: 0;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #3e3e42;
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  background-color: #0e639c;
+  color: #ffffff;
+}
+
+.dialog-actions button:hover {
+  background-color: #1177bb;
+}
+
+.donation-button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  background-color: #0070f3;
+  color: #ffffff;
+  text-decoration: none;
+  display: inline-block;
+  font-family: inherit;
+}
+
+.donation-button:hover {
+  background-color: #0051cc;
+}
+````
+
+## File: src/renderer/components/AboutDialog/AboutDialog.tsx
+````typescript
+import React, { useEffect, useState } from 'react';
+import './AboutDialog.css';
+
+interface AboutDialogProps {
+  onClose: () => void;
+}
+
+export const AboutDialog: React.FC<AboutDialogProps> = ({ onClose }) => {
+  const [version, setVersion] = useState<string>('');
+
+  useEffect(() => {
+    // Get version from main process via IPC
+    if (window.electronAPI?.app) {
+      window.electronAPI.app.getVersion()
+        .then(ver => setVersion(ver))
+        .catch(() => {
+          setVersion('1.0.2'); // Fallback version
+        });
+    } else {
+      setVersion('1.0.2'); // Fallback version
+    }
+  }, []);
+
+  // Close dialog on Escape key
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  // Prevent closing when clicking inside the dialog
+  const handleDialogClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
+
+  return (
+    <div className="about-dialog-overlay" onClick={onClose}>
+      <div className="about-dialog" onClick={handleDialogClick}>
+        <h2>About QueryForge</h2>
+        <div className="about-content">
+          <div className="about-info">
+            <p className="app-name">QueryForge</p>
+            <p className="app-description">
+              A desktop application for browsing and querying Google Cloud Platform BigQuery data.
+            </p>
+            {version && (
+              <p className="app-version">Version {version}</p>
+            )}
+          </div>
+        </div>
+        <div className="dialog-actions">
+          <a
+            href="https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="donation-button"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Donate
+          </a>
+          <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
+````css
+.connection-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.connection-dialog {
+  background: #252526;
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 500px;
+  max-width: 600px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+}
+
+.connection-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: #ffffff;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: #cccccc;
+  font-size: 0.8125rem;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: #3c3c3c;
+  color: #cccccc;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: 1px solid #007acc;
+  outline-offset: -1px;
+}
+
+.form-group textarea {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  resize: vertical;
+}
+
+.error-message {
+  background-color: #3a1d1d;
+  color: #f48771;
+  padding: 0.75rem;
+  border-radius: 3px;
+  margin-bottom: 1rem;
+  border: 1px solid #6a1f1f;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.dialog-actions button:first-child {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.dialog-actions button:first-child:hover {
+  background-color: #4a4a4a;
+}
+
+.dialog-actions button:last-child {
+  background-color: #0e639c;
+  color: #ffffff;
+}
+
+.dialog-actions button:last-child:hover {
+  background-color: #1177bb;
+}
+
+.dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.checkbox-group {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #3e3e42;
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #0e639c;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: #8c8c8c;
+}
+````
+
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { validateConnectionConfig } from '../../../shared/utils/connection-validation';
+import type { ConnectionConfig } from '../../../shared/types/connection';
+import './ConnectionDialog.css';
+
+interface ConnectionDialogProps {
+  onClose: () => void;
+}
+
+export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) => {
+  const [projectId, setProjectId] = useState('');
+  const [authType, setAuthType] = useState<'service-account' | 'application-default'>(
+    'service-account'
+  );
+  const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
+  const [serviceAccountKey, setServiceAccountKey] = useState('');
+  const [location, setLocation] = useState('EU');
+  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
+
+  // Load saved connection settings when dialog opens
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.connection.getSaved().then((saved) => {
+        if (saved) {
+          setProjectId(saved.projectId);
+          setAuthType(saved.authType);
+          setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
+          setLocation(saved.location || 'EU');
+          setEnableDbtSupport(saved.enableDbtSupport || false);
+          // Note: We don't load the service account key content for security reasons
+          // User needs to re-enter it or use the file path
+        }
+      }).catch((err) => {
+        console.error('Failed to load saved connection:', err);
+      });
+    }
+  }, []);
+
+  const handleConnect = async () => {
+    setError(null);
+    setIsConnecting(true);
+    setConnecting(true);
+
+    const config: ConnectionConfig = {
+      projectId: projectId.trim(),
+      authType,
+      serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
+      serviceAccountKey: serviceAccountKey.trim() || undefined,
+      location: location.trim() || 'EU',
+      enableDbtSupport,
+    };
+
+    // Validate configuration
+    const validation = validateConnectionConfig(config);
+    if (!validation.valid) {
+      setError(validation.error || 'Invalid configuration');
+      setIsConnecting(false);
+      setConnecting(false);
+      return;
+    }
+
+    try {
+      if (!window.electronAPI) {
+        throw new Error('Electron API not available');
+      }
+
+      // Test connection first
+      const isValid = await window.electronAPI.connection.test(config);
+      if (!isValid) {
+        throw new Error('Connection test failed. Please check your credentials.');
+      }
+
+      // Configure connection
+      await window.electronAPI.connection.configure(config);
+
+      // Get active connection
+      const activeConnection = await window.electronAPI.connection.getActive();
+      if (activeConnection) {
+        setConnection(activeConnection);
+        onClose();
+      }
+    } catch (err: any) {
+      const errorMessage = err.message || 'Failed to connect to BigQuery';
+      setError(errorMessage);
+      setConnectionError(errorMessage);
+    } finally {
+      setIsConnecting(false);
+      setConnecting(false);
+    }
+  };
+
+  return (
+    <div className="connection-dialog-overlay" onClick={onClose}>
+      <div className="connection-dialog" onClick={(e) => e.stopPropagation()}>
+        <h2>Connect to BigQuery</h2>
+
+        <div className="form-group">
+          <label htmlFor="projectId">Project ID *</label>
+          <input
+            id="projectId"
+            type="text"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            placeholder="my-project-id"
+            disabled={isConnecting}
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="location">Location *</label>
+          <select
+            id="location"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            disabled={isConnecting}
+          >
+            <option value="EU">EU</option>
+            <option value="US">US</option>
+            <option value="asia-northeast1">Asia (Tokyo)</option>
+            <option value="asia-south1">Asia (Mumbai)</option>
+            <option value="asia-southeast1">Asia (Singapore)</option>
+            <option value="australia-southeast1">Australia (Sydney)</option>
+            <option value="europe-west1">Europe (Belgium)</option>
+            <option value="europe-west2">Europe (London)</option>
+            <option value="europe-west3">Europe (Frankfurt)</option>
+            <option value="europe-west4">Europe (Netherlands)</option>
+            <option value="europe-west6">Europe (Zurich)</option>
+            <option value="northamerica-northeast1">North America (Montreal)</option>
+            <option value="southamerica-east1">South America (São Paulo)</option>
+            <option value="us-central1">US (Iowa)</option>
+            <option value="us-east1">US (South Carolina)</option>
+            <option value="us-east4">US (Northern Virginia)</option>
+            <option value="us-west1">US (Oregon)</option>
+            <option value="us-west2">US (Los Angeles)</option>
+            <option value="us-west3">US (Salt Lake City)</option>
+            <option value="us-west4">US (Las Vegas)</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="authType">Authentication Method *</label>
+          <select
+            id="authType"
+            value={authType}
+            onChange={(e) =>
+              setAuthType(e.target.value as 'service-account' | 'application-default')
+            }
+            disabled={isConnecting}
+          >
+            <option value="service-account">Service Account Key</option>
+            <option value="application-default">Application Default Credentials</option>
+          </select>
+        </div>
+
+        {authType === 'service-account' && (
+          <>
+            <div className="form-group">
+              <label htmlFor="keyPath">Service Account Key File Path</label>
+              <input
+                id="keyPath"
+                type="text"
+                value={serviceAccountKeyPath}
+                onChange={(e) => setServiceAccountKeyPath(e.target.value)}
+                placeholder="/path/to/key.json"
+                disabled={isConnecting}
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="keyContent">Or Paste Service Account Key JSON</label>
+              <textarea
+                id="keyContent"
+                value={serviceAccountKey}
+                onChange={(e) => setServiceAccountKey(e.target.value)}
+                placeholder='{"type": "service_account", ...}'
+                rows={5}
+                disabled={isConnecting}
+              />
+            </div>
+          </>
+        )}
+
+        <div className="form-group checkbox-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={enableDbtSupport}
+              onChange={(e) => setEnableDbtSupport(e.target.checked)}
+              disabled={isConnecting}
+            />
+            Enable dbt syntax support
+          </label>
+          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
+        </div>
+
+        {error && <div className="error-message">{error}</div>}
+
+        <div className="dialog-actions">
+          <button onClick={onClose} disabled={isConnecting}>
+            Cancel
+          </button>
+          <button onClick={handleConnect} disabled={isConnecting || !projectId.trim()}>
+            {isConnecting ? 'Connecting...' : 'Connect'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/DatasetTree/DatasetTree.css
+````css
+.dataset-tree {
+  width: 100%;
+  flex: 1;
+  background-color: #252526;
+  border-right: 1px solid #3e3e42;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.dataset-tree.collapsed {
+  min-width: 30px;
+  max-width: 30px;
+}
+
+.dataset-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  height: 35px;
+  gap: 0.5rem;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.collapse-button:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.dataset-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: #cccccc;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dataset-tree-search {
+  padding: 0.5rem;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dataset-tree-search-input {
+  flex: 1;
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 0.75rem;
+  padding: 0.375rem 0.5rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.dataset-tree-search-input:focus {
+  border-color: #007acc;
+}
+
+.dataset-tree-search-input::placeholder {
+  color: #858585;
+}
+
+.dataset-tree-search-clear {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.dataset-tree-search-clear:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.dataset-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
+
+.dataset-tree-loading,
+.dataset-tree-error,
+.dataset-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #858585;
+}
+
+.dataset-tree-error {
+  color: #f48771;
+}
+
+.dataset-item {
+  user-select: none;
+}
+
+.dataset-header {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  color: #cccccc;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.dataset-header:hover {
+  background-color: #2a2d2e;
+}
+
+.dataset-icon {
+  font-size: 0.625rem;
+  color: #858585;
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+.dataset-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-tables {
+  padding-left: 1rem;
+}
+
+.table-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  padding-left: 1.5rem;
+  cursor: pointer;
+  color: #cccccc;
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.table-item:hover {
+  background-color: #2a2d2e;
+}
+
+.table-icon {
+  font-size: 0.75rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+.table-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-loading,
+.table-empty {
+  padding: 0.5rem 1rem;
+  padding-left: 2rem;
+  font-size: 0.75rem;
+  color: #858585;
+  font-style: italic;
+}
+
+.context-menu {
+  background-color: #2d2d30;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  min-width: 180px;
+  padding: 0.25rem 0;
+  z-index: 1000;
+  user-select: none;
+}
+
+.context-menu-item {
+  padding: 0.5rem 1rem;
+  color: #cccccc;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: #094771;
+}
+
+.context-menu-item:first-child {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.context-menu-item:last-child {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+````
+
+## File: src/renderer/components/QueryResults/ColumnSortMenu.css
+````css
+.column-sort-menu {
+  position: fixed;
+  background-color: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px 0;
+  font-size: 0.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+}
+
+.sort-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: #cccccc;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+}
+
+.sort-menu-item:hover {
+  background-color: #2a2d2e;
+}
+
+.sort-menu-item.active {
+  background-color: #094771;
+  color: #ffffff;
+}
+
+.sort-menu-item.active:hover {
+  background-color: #0e639c;
+}
+
+.sort-icon {
+  font-size: 0.875rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+````
+
+## File: src/renderer/components/QueryResults/ColumnSortMenu.tsx
+````typescript
+import React, { useEffect, useRef } from 'react';
+import './ColumnSortMenu.css';
+
+interface ColumnSortMenuProps {
+  x: number;
+  y: number;
+  columnIndex: number;
+  currentSortColumn: number | null;
+  currentSortDirection: 'asc' | 'desc' | null;
+  onClose: () => void;
+  onSort: (columnIndex: number, direction: 'asc' | 'desc') => void;
+}
+
+export const ColumnSortMenu: React.FC<ColumnSortMenuProps> = ({
+  x,
+  y,
+  columnIndex,
+  currentSortColumn,
+  currentSortDirection,
+  onClose,
+  onSort,
+}) => {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    // Position menu to stay within viewport
+    if (menuRef.current) {
+      const rect = menuRef.current.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      let adjustedX = x;
+      let adjustedY = y;
+
+      if (x + rect.width > viewportWidth) {
+        adjustedX = viewportWidth - rect.width - 10;
+      }
+      if (y + rect.height > viewportHeight) {
+        adjustedY = viewportHeight - rect.height - 10;
+      }
+
+      menuRef.current.style.left = `${adjustedX}px`;
+      menuRef.current.style.top = `${adjustedY}px`;
+    }
+  }, [x, y]);
+
+  const handleSort = (direction: 'asc' | 'desc') => {
+    onSort(columnIndex, direction);
+    onClose();
+  };
+
+  const isAscActive = currentSortColumn === columnIndex && currentSortDirection === 'asc';
+  const isDescActive = currentSortColumn === columnIndex && currentSortDirection === 'desc';
+
+  return (
+    <div
+      ref={menuRef}
+      className="column-sort-menu"
+      style={{ left: `${x}px`, top: `${y}px` }}
+    >
+      <button
+        className={`sort-menu-item ${isAscActive ? 'active' : ''}`}
+        onClick={() => handleSort('asc')}
+      >
+        <span className="sort-icon">↑</span>
+        Ascending
+      </button>
+      <button
+        className={`sort-menu-item ${isDescActive ? 'active' : ''}`}
+        onClick={() => handleSort('desc')}
+      >
+        <span className="sort-icon">↓</span>
+        Descending
+      </button>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.css
+````css
+.query-results {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background-color: #1e1e1e;
+}
+
+.results-header {
+  padding: 0.5rem 1rem;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+}
+
+.results-info {
+  font-size: 0.75rem;
+  color: #858585;
+}
+
+.results-info span {
+  margin-right: 0.5rem;
+}
+
+.results-table-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: #1e1e1e;
+  position: relative;
+}
+
+.canvas-table-container {
+  width: 100%;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: scroll;
+  background-color: #1e1e1e;
+  /* Ensure scrollbars are always visible when content overflows */
+  scrollbar-width: thin;
+  scrollbar-color: #424242 #1e1e1e;
+  /* Force scrollbars to be visible on macOS and Windows */
+  -webkit-overflow-scrolling: touch;
+  /* Force scrollbars to always be visible (not auto-hide on macOS) */
+  overflow: -moz-scrollbars-vertical;
+  overflow: -moz-scrollbars-horizontal;
+}
+
+.canvas-table-container::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  -webkit-appearance: none;
+  /* Force scrollbars to always be visible on macOS */
+  display: block;
+}
+
+.canvas-table-container::-webkit-scrollbar-track {
+  background: #1e1e1e;
+  border: 1px solid #2d2d30;
+  /* Ensure track is always visible */
+  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 6px;
+  border: 2px solid #1e1e1e;
+  min-height: 20px;
+  min-width: 20px;
+  /* Make thumb more visible */
+  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:active {
+  background: #5e5e5e;
+}
+
+.canvas-table-container::-webkit-scrollbar-corner {
+  background: #1e1e1e;
+}
+
+.no-rows-message {
+  padding: 2rem;
+  text-align: center;
+  color: #858585;
+  background-color: #1e1e1e;
+}
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  color: #cccccc;
+}
+
+.results-table thead {
+  position: sticky;
+  top: 0;
+  background-color: #252526;
+  z-index: 1;
+}
+
+.results-table th {
+  padding: 0;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid #3e3e42;
+  border-right: 1px solid #3e3e42;
+  background-color: #252526;
+  font-size: 0.75rem;
+  color: #cccccc;
+  position: relative;
+  min-width: 50px;
+}
+
+.results-table th:last-child {
+  border-right: none;
+}
+
+.results-table th .th-content {
+  padding: 0.375rem 0.5rem;
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 100%;
+}
+
+.results-table th .resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background-color: transparent;
+  z-index: 2;
+  transition: background-color 0.15s ease;
+}
+
+.results-table th .resize-handle:hover {
+  background-color: #007acc;
+}
+
+.results-table th:last-child .resize-handle {
+  display: none;
+}
+
+.results-table td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid #3e3e42;
+  border-right: 1px solid #3e3e42;
+  font-size: 0.75rem;
+  color: #cccccc;
+}
+
+.results-table td:last-child {
+  border-right: none;
+}
+
+.results-table tbody tr:nth-child(even) {
+  background-color: #252526;
+}
+
+.results-table tbody tr:nth-child(odd) {
+  background-color: #1e1e1e;
+}
+
+.results-table tbody tr:hover {
+  background-color: #2a2d2e;
+}
+
+.no-results {
+  padding: 2rem;
+  text-align: center;
+  color: #858585;
+  background-color: #1e1e1e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 200px;
+}
+
+.query-spinner-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.query-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #3e3e42;
+  border-top-color: #007acc;
+  border-radius: 50%;
+  animation: query-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes query-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.error-results {
+  padding: 2rem;
+  background-color: #3a1d1d;
+  color: #f48771;
+  border-radius: 3px;
+  margin: 1rem;
+  border: 1px solid #6a1f1f;
+}
+
+.results-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 200px;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 6px;
+  background-color: #3e3e42;
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: #007acc;
+  border-radius: 3px;
+  width: 0%;
+  animation: progress-bar-animation 1.5s ease-in-out infinite;
+  display: block;
+}
+
+@keyframes progress-bar-animation {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: #858585;
+  font-size: 0.8125rem;
+}
+
+.results-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background-color: #252526;
+  border-top: 1px solid #3e3e42;
+  font-size: 0.75rem;
+  color: #858585;
+}
+
+.pagination-button {
+  background: transparent;
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 1rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: #2a2d2e;
+  border-color: #007acc;
+  color: #ffffff;
+}
+
+.pagination-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  color: #858585;
+  font-size: 0.75rem;
+  min-width: 100px;
+  text-align: center;
+}
+````
+
+## File: src/renderer/components/SampleDataModal/SampleDataModal.css
+````css
+.sample-data-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.sample-data-modal {
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 4px;
+  width: 90%;
+  max-width: 1400px;
+  height: 85%;
+  max-height: 900px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.sample-data-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  border-radius: 4px 4px 0 0;
+}
+
+.sample-data-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #cccccc;
+}
+
+.sample-data-modal-close {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 1.5rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.sample-data-modal-close:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.sample-data-modal-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.sample-data-loading,
+.sample-data-error,
+.sample-data-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: #858585;
+  gap: 1rem;
+}
+
+.sample-data-error {
+  color: #f48771;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sample-data-info {
+  font-size: 0.75rem;
+  color: #858585;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #3e3e42;
+}
+
+.sample-data-info span {
+  margin-right: 0.75rem;
+}
+
+.sample-data-canvas-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  min-height: 200px;
+}
+
+.sample-data-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  margin-top: 0.75rem;
+  border-top: 1px solid #3e3e42;
+}
+
+.pagination-button {
+  background-color: #2d2d30;
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  min-width: 32px;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: #3e3e42;
+  border-color: #007acc;
+}
+
+.pagination-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.75rem;
+  color: #858585;
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 4px;
+  background-color: #2d2d30;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: #007acc;
+  animation: loading-progress 1.5s ease-in-out infinite;
+}
+
+@keyframes loading-progress {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: #858585;
+  font-size: 0.875rem;
+}
+````
+
+## File: src/renderer/components/SidebarHeader/SidebarHeader.css
+````css
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.5rem;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  gap: 0.5rem;
+  height: 35px;
+}
+
+.sidebar-header-collapsed {
+  justify-content: center;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.collapse-button:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+````
+
+## File: src/renderer/components/SidebarHeader/SidebarHeader.tsx
+````typescript
+import React from 'react';
+import './SidebarHeader.css';
+
+interface SidebarHeaderProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefresh?: () => void;
+  isLoading?: boolean;
+}
+
+export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
+  collapsed = false,
+  onToggleCollapse,
+  onRefresh,
+  isLoading = false,
+}) => {
+  if (collapsed) {
+    return (
+      <div className="sidebar-header sidebar-header-collapsed">
+        <button
+          className="collapse-button"
+          onClick={onToggleCollapse}
+          title="Expand"
+        >
+          ▶
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sidebar-header">
+      <button
+        className="collapse-button"
+        onClick={onToggleCollapse}
+        title="Collapse"
+      >
+        ◀
+      </button>
+      {onRefresh && (
+        <button
+          className="refresh-button"
+          onClick={onRefresh}
+          title="Refresh"
+          disabled={isLoading}
+        >
+          ↻
+        </button>
+      )}
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
+````css
+.sidebar-switcher {
+  display: flex;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  padding: 0.25rem;
+  gap: 0.25rem;
+}
+
+.sidebar-switcher-button {
+  flex: 1;
+  background-color: transparent;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  padding: 0.5rem 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-switcher-button:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+
+.sidebar-switcher-button.active {
+  background-color: #1e1e1e;
+  color: #ffffff;
+}
+````
+
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
+````typescript
+import React from 'react';
+import './SidebarSwitcher.css';
+
+export type SidebarView = 'explorer' | 'saved-queries';
+
+interface SidebarSwitcherProps {
+  currentView: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+  collapsed?: boolean;
+}
+
+export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
+  currentView,
+  onViewChange,
+  collapsed = false,
+}) => {
+  if (collapsed) {
+    return null;
+  }
+
+  return (
+    <div className="sidebar-switcher">
+      <button
+        className={`sidebar-switcher-button ${currentView === 'explorer' ? 'active' : ''}`}
+        onClick={() => onViewChange('explorer')}
+        title="Explorer"
+      >
+        EXPLORER
+      </button>
+      <button
+        className={`sidebar-switcher-button ${currentView === 'saved-queries' ? 'active' : ''}`}
+        onClick={() => onViewChange('saved-queries')}
+        title="Saved Queries"
+      >
+        SAVED QUERIES
+      </button>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
+````css
+.view-definition-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.view-definition-modal-dialog {
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 4px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.view-definition-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #3e3e42;
+  background-color: #252526;
+}
+
+.view-definition-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #cccccc;
+}
+
+.view-definition-modal-close {
+  background: transparent;
+  border: none;
+  color: #858585;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+
+.view-definition-modal-close:hover {
+  color: #ffffff;
+}
+
+.view-definition-modal-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.view-definition-actions {
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.view-definition-copy-button {
+  background-color: #007acc;
+  color: #ffffff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.view-definition-copy-button:hover {
+  background-color: #005a9e;
+}
+
+.view-definition-editor {
+  flex: 1;
+  min-height: 400px;
+  height: 100%;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-definition-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 3rem;
+  color: #858585;
+}
+
+.view-definition-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #3e3e42;
+  border-top-color: #007acc;
+  border-radius: 50%;
+  animation: view-definition-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes view-definition-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.view-definition-error {
+  padding: 1rem;
+  background-color: #3a1d1d;
+  color: #f48771;
+  border-radius: 3px;
+  border: 1px solid #6a1f1f;
+}
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+import './ViewDefinitionModal.css';
+
+interface ViewDefinitionModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [definition, setDefinition] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadViewDefinition = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+        setDefinition(result.definition);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load view definition');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadViewDefinition();
+  }, [datasetId, tableId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(definition);
+  };
+
+  return (
+    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
+      <div className="view-definition-modal-dialog">
+        <div className="view-definition-modal-header">
+          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
+          <button className="view-definition-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="view-definition-modal-content">
+          {isLoading && (
+            <div className="view-definition-loading">
+              <div className="view-definition-spinner"></div>
+              <div>Loading view definition...</div>
+            </div>
+          )}
+          {error && (
+            <div className="view-definition-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && definition && (
+            <>
+              <div className="view-definition-actions">
+                <button onClick={handleCopy} className="view-definition-copy-button">
+                  Copy to Clipboard
+                </button>
+              </div>
+              <div className="view-definition-editor">
+                <Editor
+                  height="400px"
+                  language="sql"
+                  value={definition}
+                  theme="vs-dark"
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    folding: true,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    renderLineHighlight: 'none',
+                    scrollbar: {
+                      vertical: 'auto',
+                      horizontal: 'auto',
+                    },
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/stores/bigquery-metadata-store.ts
+````typescript
+import { create } from 'zustand';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  tablesLoaded?: boolean;
+}
+
+interface BigQueryMetadataState {
+  datasets: DatasetWithTables[];
+  isLoading: boolean;
+  error: string | null;
+  setDatasets: (datasets: DatasetWithTables[]) => void;
+  setDatasetTables: (datasetId: string, tables: Table[]) => void;
+  getDatasetTables: (datasetId: string) => Table[] | undefined;
+  getAllTables: () => Array<{ dataset: string; table: Table }>;
+  clear: () => void;
+}
+
+export const useBigQueryMetadataStore = create<BigQueryMetadataState>((set, get) => ({
+  datasets: [],
+  isLoading: false,
+  error: null,
+  
+  setDatasets: (datasets) => set({ datasets }),
+  
+  setDatasetTables: (datasetId: string, tables: Table[]) =>
+    set((state) => ({
+      datasets: state.datasets.map((ds) =>
+        ds.id === datasetId ? { ...ds, tables, tablesLoaded: true } : ds
+      ),
+    })),
+  
+  getDatasetTables: (datasetId: string) => {
+    const state = get();
+    const dataset = state.datasets.find((ds) => ds.id === datasetId);
+    return dataset?.tables;
+  },
+  
+  getAllTables: () => {
+    const state = get();
+    const allTables: Array<{ dataset: string; table: Table }> = [];
+    state.datasets.forEach((dataset) => {
+      if (dataset.tables) {
+        dataset.tables.forEach((table) => {
+          allTables.push({ dataset: dataset.id, table });
+        });
+      }
+    });
+    return allTables;
+  },
+  
+  clear: () => set({ datasets: [], isLoading: false, error: null }),
+}));
+````
+
+## File: src/renderer/index.tsx
+````typescript
+/// <reference path="./types/electron-api.d.ts" />
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary';
+
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+root.render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>
+);
+````
+
+## File: src/shared/types/connection.ts
+````typescript
+/**
+ * Connection configuration types for BigQuery
+ */
+
+export interface ConnectionConfig {
+  projectId: string;
+  authType: 'service-account' | 'application-default';
+  serviceAccountKeyPath?: string;
+  serviceAccountKey?: string; // JSON string content
+  location?: string; // BigQuery location (defaults to 'EU')
+  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
+}
+
+export interface ConnectionConfiguration {
+  projectId: string;
+  authType: 'service-account' | 'application-default';
+  serviceAccountKeyPath?: string;
+  location?: string; // BigQuery location (defaults to 'EU')
+  lastConnected?: string; // ISO timestamp
+  isActive: boolean;
+  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
 }
 ````
 
@@ -12789,78 +14614,6 @@ describe('connection-validation', () => {
 });
 ````
 
-## File: .eslintignore
-````
-node_modules/
-dist/
-build/
-out/
-coverage/
-*.min.js
-*.bundle.js
-*.config.js
-````
-
-## File: .eslintrc.json
-````json
-{
-  "env": {
-    "browser": true,
-    "es2021": true,
-    "node": true
-  },
-  "extends": [
-    "eslint:recommended",
-    "plugin:@typescript-eslint/recommended",
-    "plugin:react/recommended",
-    "plugin:react-hooks/recommended"
-  ],
-  "parser": "@typescript-eslint/parser",
-  "parserOptions": {
-    "ecmaVersion": "latest",
-    "sourceType": "module",
-    "ecmaFeatures": {
-      "jsx": true
-    }
-  },
-  "plugins": ["@typescript-eslint", "react", "react-hooks"],
-  "rules": {
-    "react/react-in-jsx-scope": "off",
-    "@typescript-eslint/no-explicit-any": "warn"
-  },
-  "settings": {
-    "react": {
-      "version": "detect"
-    }
-  }
-}
-````
-
-## File: .prettierignore
-````
-node_modules/
-dist/
-build/
-coverage/
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-*.min.js
-*.bundle.js
-````
-
-## File: .prettierrc.json
-````json
-{
-  "semi": true,
-  "trailingComma": "es5",
-  "singleQuote": true,
-  "printWidth": 100,
-  "tabWidth": 2,
-  "useTabs": false
-}
-````
-
 ## File: eslint.config.js
 ````javascript
 const js = require('@eslint/js');
@@ -12927,2014 +14680,6 @@ module.exports = [
     },
   },
 ];
-````
-
-## File: jest.config.js
-````javascript
-module.exports = {
-  preset: 'ts-jest',
-  testEnvironment: 'jsdom',
-  roots: ['<rootDir>/tests'],
-  testMatch: ['**/__tests__/**/*.ts', '**/__tests__/**/*.tsx', '**/?(*.)+(spec|test).ts', '**/?(*.)+(spec|test).tsx'],
-  moduleNameMapper: {
-    '^@/(.*)$': '<rootDir>/src/$1',
-    '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
-  },
-  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
-  collectCoverageFrom: [
-    'src/**/*.{ts,tsx}',
-    '!src/**/*.d.ts',
-    '!src/**/*.stories.{ts,tsx}',
-    '!src/**/__tests__/**',
-  ],
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
-  transform: {
-    '^.+\\.(ts|tsx)$': 'ts-jest',
-  },
-  transform: {
-    '^.+\\.(ts|tsx)$': [
-      'ts-jest',
-      {
-        tsconfig: {
-          jsx: 'react',
-        },
-      },
-    ],
-  },
-};
-````
-
-## File: tsconfig.json
-````json
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": ["ES2020", "DOM"],
-    "jsx": "react",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "moduleResolution": "node",
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "types": ["node"]
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "**/*.test.ts", "**/*.test.tsx"]
-}
-````
-
-## File: webpack.renderer.config.js
-````javascript
-const path = require('path');
-const HtmlWebpackPlugin = require('html-webpack-plugin');
-
-module.exports = {
-  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
-  entry: './src/renderer/index.tsx',
-  target: 'electron-renderer',
-  devtool: 'source-map',
-  module: {
-    rules: [
-      {
-        test: /\.tsx?$/,
-        use: 'ts-loader',
-        exclude: /node_modules/,
-      },
-      {
-        test: /\.css$/,
-        use: ['style-loader', 'css-loader'],
-      },
-    ],
-  },
-  resolve: {
-    extensions: ['.tsx', '.ts', '.js'],
-  },
-  output: {
-    filename: 'renderer.js',
-    path: path.resolve(__dirname, 'dist/renderer'),
-  },
-  plugins: [
-    new HtmlWebpackPlugin({
-      template: './src/renderer/index.html',
-      filename: 'index.html',
-    }),
-  ],
-};
-````
-
-## File: src/main/ipc/connection.ts
-````typescript
-import { ipcMain, safeStorage } from 'electron';
-import { BigQuery } from '@google-cloud/bigquery';
-import { validateConnectionConfig } from '../../shared/utils/connection-validation';
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import { BigQueryErrorCode } from '../../shared/types/bigquery';
-import {
-  saveConnection,
-  getSavedConnection,
-  getDecryptedServiceAccountKey,
-  clearConnection,
-} from '../storage/connection-store';
-
-let bigqueryClient: BigQuery | null = null;
-let activeConnection: ConnectionConfiguration | null = null;
-
-function createBigQueryClient(config: ConnectionConfig): BigQuery {
-  const options: { projectId: string; keyFilename?: string; credentials?: any } = {
-    projectId: config.projectId,
-  };
-
-  if (config.authType === 'service-account') {
-    if (config.serviceAccountKeyPath) {
-      options.keyFilename = config.serviceAccountKeyPath;
-    } else if (config.serviceAccountKey) {
-      try {
-        options.credentials = JSON.parse(config.serviceAccountKey);
-      } catch (e) {
-        throw new Error('Invalid service account key JSON');
-      }
-    }
-  }
-
-  return new BigQuery(options);
-}
-
-export function registerConnectionHandlers(): void {
-  ipcMain.handle('connection:configure', async (_event, config: ConnectionConfig) => {
-    try {
-      // Validate configuration
-      const validation = validateConnectionConfig(config);
-      if (!validation.valid) {
-        throw {
-          code: BigQueryErrorCode.INVALID_PROJECT_ID,
-          message: validation.error || 'Invalid configuration',
-        };
-      }
-
-      // Create BigQuery client
-      bigqueryClient = createBigQueryClient(config);
-
-      // Test connection by listing datasets
-      await bigqueryClient.getDatasets({ maxResults: 1 });
-
-      // Store connection configuration (encrypt sensitive data)
-      const connectionConfig: ConnectionConfiguration = {
-        projectId: config.projectId,
-        authType: config.authType,
-        serviceAccountKeyPath: config.serviceAccountKeyPath,
-        location: config.location || 'EU', // Default to EU if not specified
-        lastConnected: new Date().toISOString(),
-        isActive: true,
-        enableDbtSupport: config.enableDbtSupport || false,
-      };
-
-      // Save connection to persistent storage
-      saveConnection(config, connectionConfig);
-
-      activeConnection = connectionConfig;
-
-      return;
-    } catch (error: any) {
-      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-        throw {
-          code: BigQueryErrorCode.NETWORK_ERROR,
-          message: 'Network error: Unable to connect to BigQuery',
-          details: error.message,
-        };
-      }
-      if (error.code === 403 || error.code === 401) {
-        throw {
-          code: BigQueryErrorCode.AUTH_ERROR,
-          message: 'Authentication failed: Invalid credentials',
-          details: error.message,
-        };
-      }
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'Failed to establish connection',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('connection:getActive', async () => {
-    return activeConnection;
-  });
-
-  ipcMain.handle('connection:test', async (_event, config: ConnectionConfig) => {
-    try {
-      const validation = validateConnectionConfig(config);
-      if (!validation.valid) {
-        return false;
-      }
-
-      const testClient = createBigQueryClient(config);
-      await testClient.getDatasets({ maxResults: 1 });
-      return true;
-    } catch (error) {
-      console.error('Connection test failed:', error);
-      return false;
-    }
-  });
-
-  ipcMain.handle('connection:disconnect', async () => {
-    bigqueryClient = null;
-    activeConnection = null;
-    // Don't clear saved connection - user can restore it later
-  });
-
-  ipcMain.handle('connection:getSaved', async () => {
-    return getSavedConnection();
-  });
-
-  ipcMain.handle('connection:restore', async () => {
-    try {
-      const saved = getSavedConnection();
-      if (!saved) {
-        return null;
-      }
-
-      // Reconstruct ConnectionConfig from saved connection
-      const config: ConnectionConfig = {
-        projectId: saved.projectId,
-        authType: saved.authType,
-        serviceAccountKeyPath: saved.serviceAccountKeyPath,
-        location: saved.location || 'EU',
-        enableDbtSupport: saved.enableDbtSupport,
-      };
-
-      // If using service account key content (not file path), decrypt it
-      if (saved.authType === 'service-account' && !saved.serviceAccountKeyPath) {
-        const decryptedKey = getDecryptedServiceAccountKey();
-        if (decryptedKey) {
-          config.serviceAccountKey = decryptedKey;
-        } else {
-          // Can't restore - key is missing or can't be decrypted
-          // This can happen if the app name changed (which changes the encryption key)
-          // Clear the saved connection so user can reconfigure
-          clearConnection();
-          throw new Error('Saved service account key cannot be decrypted (possibly due to app update). Please reconfigure your connection.');
-        }
-      }
-
-      // Validate and test the connection
-      const validation = validateConnectionConfig(config);
-      if (!validation.valid) {
-        throw new Error(validation.error || 'Invalid saved configuration');
-      }
-
-      // Create BigQuery client
-      bigqueryClient = createBigQueryClient(config);
-
-      // Test connection
-      await bigqueryClient.getDatasets({ maxResults: 1 });
-
-      // Update last connected timestamp
-      const connectionConfig: ConnectionConfiguration = {
-        ...saved,
-        lastConnected: new Date().toISOString(),
-        isActive: true,
-      };
-
-      // Update storage with new timestamp
-      saveConnection(config, connectionConfig);
-
-      activeConnection = connectionConfig;
-
-      return connectionConfig;
-    } catch (error: any) {
-      // Clear invalid saved connection
-      clearConnection();
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: error.message || 'Failed to restore saved connection',
-        details: error,
-      };
-    }
-  });
-}
-
-export function getBigQueryClient(): BigQuery | null {
-  return bigqueryClient;
-}
-
-export function getActiveConnection(): ConnectionConfiguration | null {
-  return activeConnection;
-}
-````
-
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
-````css
-.connection-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.connection-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 500px;
-  max-width: 600px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-}
-
-.connection-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: #ffffff;
-}
-
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: #cccccc;
-  font-size: 0.8125rem;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
-}
-
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus {
-  outline: 1px solid #007acc;
-  outline-offset: -1px;
-}
-
-.form-group textarea {
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  resize: vertical;
-}
-
-.error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
-  padding: 0.75rem;
-  border-radius: 3px;
-  margin-bottom: 1rem;
-  border: 1px solid #6a1f1f;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
-}
-
-.dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.dialog-actions button:last-child:hover {
-  background-color: #1177bb;
-}
-
-.dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.checkbox-group {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.checkbox-label {
-  display: flex !important;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  user-select: none;
-}
-
-.checkbox-label input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  cursor: pointer;
-  accent-color: #0e639c;
-}
-
-.field-hint {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: #8c8c8c;
-}
-````
-
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { validateConnectionConfig } from '../../../shared/utils/connection-validation';
-import type { ConnectionConfig } from '../../../shared/types/connection';
-import './ConnectionDialog.css';
-
-interface ConnectionDialogProps {
-  onClose: () => void;
-}
-
-export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) => {
-  const [projectId, setProjectId] = useState('');
-  const [authType, setAuthType] = useState<'service-account' | 'application-default'>(
-    'service-account'
-  );
-  const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
-  const [serviceAccountKey, setServiceAccountKey] = useState('');
-  const [location, setLocation] = useState('EU');
-  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
-
-  const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
-
-  // Load saved connection settings when dialog opens
-  useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.connection.getSaved().then((saved) => {
-        if (saved) {
-          setProjectId(saved.projectId);
-          setAuthType(saved.authType);
-          setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
-          setLocation(saved.location || 'EU');
-          setEnableDbtSupport(saved.enableDbtSupport || false);
-          // Note: We don't load the service account key content for security reasons
-          // User needs to re-enter it or use the file path
-        }
-      }).catch((err) => {
-        console.error('Failed to load saved connection:', err);
-      });
-    }
-  }, []);
-
-  const handleConnect = async () => {
-    setError(null);
-    setIsConnecting(true);
-    setConnecting(true);
-
-    const config: ConnectionConfig = {
-      projectId: projectId.trim(),
-      authType,
-      serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
-      serviceAccountKey: serviceAccountKey.trim() || undefined,
-      location: location.trim() || 'EU',
-      enableDbtSupport,
-    };
-
-    // Validate configuration
-    const validation = validateConnectionConfig(config);
-    if (!validation.valid) {
-      setError(validation.error || 'Invalid configuration');
-      setIsConnecting(false);
-      setConnecting(false);
-      return;
-    }
-
-    try {
-      if (!window.electronAPI) {
-        throw new Error('Electron API not available');
-      }
-
-      // Test connection first
-      const isValid = await window.electronAPI.connection.test(config);
-      if (!isValid) {
-        throw new Error('Connection test failed. Please check your credentials.');
-      }
-
-      // Configure connection
-      await window.electronAPI.connection.configure(config);
-
-      // Get active connection
-      const activeConnection = await window.electronAPI.connection.getActive();
-      if (activeConnection) {
-        setConnection(activeConnection);
-        onClose();
-      }
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to connect to BigQuery';
-      setError(errorMessage);
-      setConnectionError(errorMessage);
-    } finally {
-      setIsConnecting(false);
-      setConnecting(false);
-    }
-  };
-
-  return (
-    <div className="connection-dialog-overlay" onClick={onClose}>
-      <div className="connection-dialog" onClick={(e) => e.stopPropagation()}>
-        <h2>Connect to BigQuery</h2>
-
-        <div className="form-group">
-          <label htmlFor="projectId">Project ID *</label>
-          <input
-            id="projectId"
-            type="text"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            placeholder="my-project-id"
-            disabled={isConnecting}
-          />
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="location">Location *</label>
-          <select
-            id="location"
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            disabled={isConnecting}
-          >
-            <option value="EU">EU</option>
-            <option value="US">US</option>
-            <option value="asia-northeast1">Asia (Tokyo)</option>
-            <option value="asia-south1">Asia (Mumbai)</option>
-            <option value="asia-southeast1">Asia (Singapore)</option>
-            <option value="australia-southeast1">Australia (Sydney)</option>
-            <option value="europe-west1">Europe (Belgium)</option>
-            <option value="europe-west2">Europe (London)</option>
-            <option value="europe-west3">Europe (Frankfurt)</option>
-            <option value="europe-west4">Europe (Netherlands)</option>
-            <option value="europe-west6">Europe (Zurich)</option>
-            <option value="northamerica-northeast1">North America (Montreal)</option>
-            <option value="southamerica-east1">South America (São Paulo)</option>
-            <option value="us-central1">US (Iowa)</option>
-            <option value="us-east1">US (South Carolina)</option>
-            <option value="us-east4">US (Northern Virginia)</option>
-            <option value="us-west1">US (Oregon)</option>
-            <option value="us-west2">US (Los Angeles)</option>
-            <option value="us-west3">US (Salt Lake City)</option>
-            <option value="us-west4">US (Las Vegas)</option>
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="authType">Authentication Method *</label>
-          <select
-            id="authType"
-            value={authType}
-            onChange={(e) =>
-              setAuthType(e.target.value as 'service-account' | 'application-default')
-            }
-            disabled={isConnecting}
-          >
-            <option value="service-account">Service Account Key</option>
-            <option value="application-default">Application Default Credentials</option>
-          </select>
-        </div>
-
-        {authType === 'service-account' && (
-          <>
-            <div className="form-group">
-              <label htmlFor="keyPath">Service Account Key File Path</label>
-              <input
-                id="keyPath"
-                type="text"
-                value={serviceAccountKeyPath}
-                onChange={(e) => setServiceAccountKeyPath(e.target.value)}
-                placeholder="/path/to/key.json"
-                disabled={isConnecting}
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="keyContent">Or Paste Service Account Key JSON</label>
-              <textarea
-                id="keyContent"
-                value={serviceAccountKey}
-                onChange={(e) => setServiceAccountKey(e.target.value)}
-                placeholder='{"type": "service_account", ...}'
-                rows={5}
-                disabled={isConnecting}
-              />
-            </div>
-          </>
-        )}
-
-        <div className="form-group checkbox-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={enableDbtSupport}
-              onChange={(e) => setEnableDbtSupport(e.target.checked)}
-              disabled={isConnecting}
-            />
-            Enable dbt syntax support
-          </label>
-          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
-        </div>
-
-        {error && <div className="error-message">{error}</div>}
-
-        <div className="dialog-actions">
-          <button onClick={onClose} disabled={isConnecting}>
-            Cancel
-          </button>
-          <button onClick={handleConnect} disabled={isConnecting || !projectId.trim()}>
-            {isConnecting ? 'Connecting...' : 'Connect'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/DatasetTree/DatasetTree.css
-````css
-.dataset-tree {
-  width: 100%;
-  flex: 1;
-  background-color: #252526;
-  border-right: 1px solid #3e3e42;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.dataset-tree.collapsed {
-  min-width: 30px;
-  max-width: 30px;
-}
-
-.dataset-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  height: 35px;
-  gap: 0.5rem;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.collapse-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.dataset-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: #cccccc;
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dataset-tree-search {
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.dataset-tree-search-input {
-  flex: 1;
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  color: #cccccc;
-  font-size: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.dataset-tree-search-input:focus {
-  border-color: #007acc;
-}
-
-.dataset-tree-search-input::placeholder {
-  color: #858585;
-}
-
-.dataset-tree-search-clear {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.dataset-tree-search-clear:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.dataset-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
-
-.dataset-tree-loading,
-.dataset-tree-error,
-.dataset-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.dataset-tree-error {
-  color: #f48771;
-}
-
-.dataset-item {
-  user-select: none;
-}
-
-.dataset-header {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: pointer;
-  color: #cccccc;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.dataset-header:hover {
-  background-color: #2a2d2e;
-}
-
-.dataset-icon {
-  font-size: 0.625rem;
-  color: #858585;
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-}
-
-.dataset-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dataset-tables {
-  padding-left: 1rem;
-}
-
-.table-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  padding-left: 1.5rem;
-  cursor: pointer;
-  color: #cccccc;
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.table-item:hover {
-  background-color: #2a2d2e;
-}
-
-.table-icon {
-  font-size: 0.75rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
-
-.table-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-loading,
-.table-empty {
-  padding: 0.5rem 1rem;
-  padding-left: 2rem;
-  font-size: 0.75rem;
-  color: #858585;
-  font-style: italic;
-}
-
-.context-menu {
-  background-color: #2d2d30;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  min-width: 180px;
-  padding: 0.25rem 0;
-  z-index: 1000;
-  user-select: none;
-}
-
-.context-menu-item {
-  padding: 0.5rem 1rem;
-  color: #cccccc;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover {
-  background-color: #094771;
-}
-
-.context-menu-item:first-child {
-  border-top-left-radius: 3px;
-  border-top-right-radius: 3px;
-}
-
-.context-menu-item:last-child {
-  border-bottom-left-radius: 3px;
-  border-bottom-right-radius: 3px;
-}
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.css
-````css
-.query-results {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  background-color: #1e1e1e;
-}
-
-.results-header {
-  padding: 0.5rem 1rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-}
-
-.results-info {
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.results-info span {
-  margin-right: 0.5rem;
-}
-
-.results-table-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: #1e1e1e;
-  position: relative;
-}
-
-.canvas-table-container {
-  width: 100%;
-  height: 100%;
-  overflow-x: scroll;
-  overflow-y: scroll;
-  background-color: #1e1e1e;
-  /* Ensure scrollbars are always visible when content overflows */
-  scrollbar-width: thin;
-  scrollbar-color: #424242 #1e1e1e;
-  /* Force scrollbars to be visible on macOS and Windows */
-  -webkit-overflow-scrolling: touch;
-  /* Force scrollbars to always be visible (not auto-hide on macOS) */
-  overflow: -moz-scrollbars-vertical;
-  overflow: -moz-scrollbars-horizontal;
-}
-
-.canvas-table-container::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-  -webkit-appearance: none;
-  /* Force scrollbars to always be visible on macOS */
-  display: block;
-}
-
-.canvas-table-container::-webkit-scrollbar-track {
-  background: #1e1e1e;
-  border: 1px solid #2d2d30;
-  /* Ensure track is always visible */
-  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 6px;
-  border: 2px solid #1e1e1e;
-  min-height: 20px;
-  min-width: 20px;
-  /* Make thumb more visible */
-  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:hover {
-  background: #4e4e4e;
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:active {
-  background: #5e5e5e;
-}
-
-.canvas-table-container::-webkit-scrollbar-corner {
-  background: #1e1e1e;
-}
-
-.no-rows-message {
-  padding: 2rem;
-  text-align: center;
-  color: #858585;
-  background-color: #1e1e1e;
-}
-
-.results-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  color: #cccccc;
-}
-
-.results-table thead {
-  position: sticky;
-  top: 0;
-  background-color: #252526;
-  z-index: 1;
-}
-
-.results-table th {
-  padding: 0;
-  text-align: left;
-  font-weight: 600;
-  border-bottom: 1px solid #3e3e42;
-  border-right: 1px solid #3e3e42;
-  background-color: #252526;
-  font-size: 0.75rem;
-  color: #cccccc;
-  position: relative;
-  min-width: 50px;
-}
-
-.results-table th:last-child {
-  border-right: none;
-}
-
-.results-table th .th-content {
-  padding: 0.375rem 0.5rem;
-  display: flex;
-  align-items: center;
-  position: relative;
-  height: 100%;
-}
-
-.results-table th .resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-  background-color: transparent;
-  z-index: 2;
-  transition: background-color 0.15s ease;
-}
-
-.results-table th .resize-handle:hover {
-  background-color: #007acc;
-}
-
-.results-table th:last-child .resize-handle {
-  display: none;
-}
-
-.results-table td {
-  padding: 0.375rem 0.5rem;
-  border-bottom: 1px solid #3e3e42;
-  border-right: 1px solid #3e3e42;
-  font-size: 0.75rem;
-  color: #cccccc;
-}
-
-.results-table td:last-child {
-  border-right: none;
-}
-
-.results-table tbody tr:nth-child(even) {
-  background-color: #252526;
-}
-
-.results-table tbody tr:nth-child(odd) {
-  background-color: #1e1e1e;
-}
-
-.results-table tbody tr:hover {
-  background-color: #2a2d2e;
-}
-
-.no-results {
-  padding: 2rem;
-  text-align: center;
-  color: #858585;
-  background-color: #1e1e1e;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  min-height: 200px;
-}
-
-.query-spinner-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 0.5rem;
-}
-
-.query-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid #3e3e42;
-  border-top-color: #007acc;
-  border-radius: 50%;
-  animation: query-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes query-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.error-results {
-  padding: 2rem;
-  background-color: #3a1d1d;
-  color: #f48771;
-  border-radius: 3px;
-  margin: 1rem;
-  border: 1px solid #6a1f1f;
-}
-
-.results-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 200px;
-  gap: 1rem;
-  padding: 2rem;
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 6px;
-  background-color: #3e3e42;
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: #007acc;
-  border-radius: 3px;
-  width: 0%;
-  animation: progress-bar-animation 1.5s ease-in-out infinite;
-  display: block;
-}
-
-@keyframes progress-bar-animation {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: #858585;
-  font-size: 0.8125rem;
-}
-
-.results-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.pagination-button {
-  background: transparent;
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 1rem;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  padding: 0;
-  line-height: 1;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  border-color: #007acc;
-  color: #ffffff;
-}
-
-.pagination-button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  color: #858585;
-  font-size: 0.75rem;
-  min-width: 100px;
-  text-align: center;
-}
-````
-
-## File: src/renderer/components/SampleDataModal/SampleDataModal.css
-````css
-.sample-data-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-}
-
-.sample-data-modal {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  width: 90%;
-  max-width: 1400px;
-  height: 85%;
-  max-height: 900px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-}
-
-.sample-data-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  border-radius: 4px 4px 0 0;
-}
-
-.sample-data-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #cccccc;
-}
-
-.sample-data-modal-close {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1.5rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.sample-data-modal-close:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-
-.sample-data-modal-content {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  padding: 1rem;
-}
-
-.sample-data-loading,
-.sample-data-error,
-.sample-data-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  text-align: center;
-  color: #858585;
-  gap: 1rem;
-}
-
-.sample-data-error {
-  color: #f48771;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.sample-data-info {
-  font-size: 0.75rem;
-  color: #858585;
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid #3e3e42;
-}
-
-.sample-data-info span {
-  margin-right: 0.75rem;
-}
-
-.sample-data-canvas-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  min-height: 200px;
-}
-
-.sample-data-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 0.75rem 0;
-  margin-top: 0.75rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.pagination-button {
-  background-color: #2d2d30;
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-  min-width: 32px;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: #3e3e42;
-  border-color: #007acc;
-}
-
-.pagination-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  font-size: 0.75rem;
-  color: #858585;
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 4px;
-  background-color: #2d2d30;
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: #007acc;
-  animation: loading-progress 1.5s ease-in-out infinite;
-}
-
-@keyframes loading-progress {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: #858585;
-  font-size: 0.875rem;
-}
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
-````css
-.view-definition-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.view-definition-modal-dialog {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  width: 90%;
-  max-width: 900px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-}
-
-.view-definition-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid #3e3e42;
-  background-color: #252526;
-}
-
-.view-definition-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #cccccc;
-}
-
-.view-definition-modal-close {
-  background: transparent;
-  border: none;
-  color: #858585;
-  font-size: 1.5rem;
-  cursor: pointer;
-  padding: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  transition: color 0.15s ease;
-}
-
-.view-definition-modal-close:hover {
-  color: #ffffff;
-}
-
-.view-definition-modal-content {
-  flex: 1;
-  overflow: hidden;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.view-definition-actions {
-  margin-bottom: 1rem;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.view-definition-copy-button {
-  background-color: #007acc;
-  color: #ffffff;
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.view-definition-copy-button:hover {
-  background-color: #005a9e;
-}
-
-.view-definition-editor {
-  flex: 1;
-  min-height: 400px;
-  height: 100%;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.view-definition-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 3rem;
-  color: #858585;
-}
-
-.view-definition-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid #3e3e42;
-  border-top-color: #007acc;
-  border-radius: 50%;
-  animation: view-definition-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes view-definition-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.view-definition-error {
-  padding: 1rem;
-  background-color: #3a1d1d;
-  color: #f48771;
-  border-radius: 3px;
-  border: 1px solid #6a1f1f;
-}
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
-import './ViewDefinitionModal.css';
-
-interface ViewDefinitionModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
-}
-
-export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const [definition, setDefinition] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const loadViewDefinition = async () => {
-      if (!window.electronAPI) {
-        setError('Electron API not available');
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-        setDefinition(result.definition);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load view definition');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadViewDefinition();
-  }, [datasetId, tableId]);
-
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleEscape);
-    return () => window.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(definition);
-  };
-
-  return (
-    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
-      <div className="view-definition-modal-dialog">
-        <div className="view-definition-modal-header">
-          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
-          <button className="view-definition-modal-close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="view-definition-modal-content">
-          {isLoading && (
-            <div className="view-definition-loading">
-              <div className="view-definition-spinner"></div>
-              <div>Loading view definition...</div>
-            </div>
-          )}
-          {error && (
-            <div className="view-definition-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          {!isLoading && !error && definition && (
-            <>
-              <div className="view-definition-actions">
-                <button onClick={handleCopy} className="view-definition-copy-button">
-                  Copy to Clipboard
-                </button>
-              </div>
-              <div className="view-definition-editor">
-                <Editor
-                  height="400px"
-                  language="sql"
-                  value={definition}
-                  theme="vs-dark"
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 13,
-                    lineNumbers: 'on',
-                    folding: true,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                    renderLineHighlight: 'none',
-                    scrollbar: {
-                      vertical: 'auto',
-                      horizontal: 'auto',
-                    },
-                  }}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: src/renderer/index.tsx
-````typescript
-/// <reference path="./types/electron-api.d.ts" />
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary';
-
-const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
-root.render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>
-);
-````
-
-## File: src/shared/types/connection.ts
-````typescript
-/**
- * Connection configuration types for BigQuery
- */
-
-export interface ConnectionConfig {
-  projectId: string;
-  authType: 'service-account' | 'application-default';
-  serviceAccountKeyPath?: string;
-  serviceAccountKey?: string; // JSON string content
-  location?: string; // BigQuery location (defaults to 'EU')
-  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
-}
-
-export interface ConnectionConfiguration {
-  projectId: string;
-  authType: 'service-account' | 'application-default';
-  serviceAccountKeyPath?: string;
-  location?: string; // BigQuery location (defaults to 'EU')
-  lastConnected?: string; // ISO timestamp
-  isActive: boolean;
-  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
-}
-````
-
-## File: tests/unit/renderer/App.test.tsx
-````typescript
-import React from 'react';
-import { render, screen } from '@testing-library/react';
-import App from '../../../src/renderer/App';
-
-// Mock the components that might have dependencies
-jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
-  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
-  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
-}));
-
-jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
-  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
-  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
-  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
-  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
-  QueryResults: () => <div data-testid="query-results">Query Results</div>,
-}));
-
-jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
-  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
-  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
-  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
-  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
-    <div data-testid="sidebar-switcher" data-view={currentView}>
-      <button onClick={() => onViewChange('explorer')}>Explorer</button>
-      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
-    </div>
-  ),
-}));
-
-jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
-  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
-}));
-
-describe('App', () => {
-  it('renders without crashing', () => {
-    render(<App />);
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-  });
-
-  it('renders the main app structure', () => {
-    render(<App />);
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-    expect(screen.getByTestId('query-editor')).toBeInTheDocument();
-    expect(screen.getByTestId('query-results')).toBeInTheDocument();
-  });
-
-  it('renders sidebar components', () => {
-    render(<App />);
-    expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
-  });
-});
-````
-
-## File: tests/setup.ts
-````typescript
-import '@testing-library/jest-dom';
-
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
-};
-
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
 ````
 
 ## File: src/renderer/components/HelpDialog/HelpDialog.css
@@ -15207,6 +14952,1025 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
         </div>
         <div className="dialog-actions">
           <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/TabBar/TabBar.css
+````css
+.tab-bar {
+  display: flex;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  align-items: center;
+  height: 35px;
+}
+
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background-color: #2d2d30;
+  border-right: 1px solid #3e3e42;
+  cursor: pointer;
+  user-select: none;
+  min-width: 120px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: #cccccc;
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: #2a2d2e;
+}
+
+.tab.active {
+  background-color: #1e1e1e;
+  border-bottom: 1px solid #007acc;
+  color: #ffffff;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid #007acc;
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: #007acc;
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  margin-left: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #858585;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-close:hover {
+  background-color: #e81123;
+  color: white;
+}
+
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: #858585;
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid #3e3e42;
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: #858585;
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+````
+
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
+## File: src/shared/types/query.ts
+````typescript
+/**
+ * Query-related types
+ */
+
+export type TabType = 'query' | 'explorer' | 'saved-queries';
+
+export interface QueryTab {
+  id: string;
+  title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
+  queryText: string;
+  isModified: boolean;
+  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string; // ISO timestamp
+  lastExecutedQueryText?: string; // The query text that was last executed
+  savedQueryId?: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sqlText: string;
+  description?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  tags?: string[];
+}
+
+export interface SaveQueryInput {
+  name: string;
+  sqlText: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateQueryInput {
+  name?: string;
+  sqlText?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface QueryResult {
+  columns: ColumnMetadata[];
+  rows: Row[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
+  mode?: string; // NULLABLE, REQUIRED, REPEATED
+}
+
+export interface Row {
+  values: any[]; // Values matching column order
+}
+````
+
+## File: tests/unit/renderer/App.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import App from '../../../src/renderer/App';
+
+// Mock the components that might have dependencies
+jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
+  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
+  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
+}));
+
+jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
+  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
+  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
+  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
+  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
+  QueryResults: () => <div data-testid="query-results">Query Results</div>,
+}));
+
+jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
+  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
+  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
+  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
+  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
+    <div data-testid="sidebar-switcher" data-view={currentView}>
+      <button onClick={() => onViewChange('explorer')}>Explorer</button>
+      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
+    </div>
+  ),
+}));
+
+jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
+  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
+}));
+
+describe('App', () => {
+  beforeEach(() => {
+    // Reset mocks to return an active connection to avoid triggering setShowConnectionDialog
+    (window as any).electronAPI.connection.getActive.mockResolvedValue({
+      projectId: 'test-project',
+      keyFilePath: '/path/to/key.json',
+    });
+  });
+
+  it('renders without crashing', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    });
+  });
+
+  it('renders the main app structure', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('query-editor')).toBeInTheDocument();
+      expect(screen.getByTestId('query-results')).toBeInTheDocument();
+    });
+  });
+
+  it('renders sidebar components', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
+    });
+  });
+});
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
+````
+
+## File: .gitignore
+````
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+PROJECT_REFERENCE.md
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Electron
+*.asar
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.AppImage
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+coverage/
+.nyc_output/
+*.test.js.snap
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Electron specific
+app/dist/
+release/
+````
+
+## File: src/main/preload.ts
+````typescript
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
+  };
+}
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+} as ElectronAPI);
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
+## File: src/renderer/components/SampleDataModal/SampleDataModal.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useBigQuery } from '../../hooks/useBigQuery';
+import { CanvasTable } from '../QueryResults/CanvasTable';
+import type { QueryResult } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import './SampleDataModal.css';
+
+interface SampleDataModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+const ROWS_PER_PAGE = 200;
+
+export const SampleDataModal: React.FC<SampleDataModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const { executeQuery, isConnected } = useBigQuery();
+  const [results, setResults] = useState<QueryResult | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+
+  useEffect(() => {
+    const loadSampleData = async () => {
+      if (!isConnected) {
+        setError('Not connected to BigQuery');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const tableRef = `\`${projectId}.${datasetId}.${tableId}\``;
+        const queryText = `SELECT * FROM ${tableRef} LIMIT 1000`;
+        const result = await executeQuery(queryText);
+        setResults(result);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load sample data');
+        console.error('Failed to load sample data:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadSampleData();
+  }, [projectId, datasetId, tableId, executeQuery, isConnected]);
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, _rowIndex: number) => {
+    // No-op for sample data modal - could be extended in the future
+    e.preventDefault();
+  }, []);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, _columnIndex: number) => {
+    // No-op for sample data modal - could be extended in the future
+    e.preventDefault();
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = useMemo(() => {
+    if (!results?.rows || sortColumn === null || sortDirection === null) {
+      return results?.rows || [];
+    }
+
+    const sorted = [...results.rows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = results.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [results?.rows, results?.columns, sortColumn, sortDirection]);
+
+  // Pagination calculations
+  const totalRows = sortedRows.length;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + ROWS_PER_PAGE, totalRows);
+  const paginatedRows = sortedRows.slice(startIndex, endIndex);
+
+  // Create a QueryResult-like object for the CanvasTable with paginated rows
+  const paginatedResults: QueryResult | null = results
+    ? {
+        ...results,
+        rows: paginatedRows,
+      }
+    : null;
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="sample-data-modal-overlay" onClick={onClose}>
+      <div className="sample-data-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="sample-data-modal-header">
+          <h2>Sample Data: {datasetId}.{tableId}</h2>
+          <button className="sample-data-modal-close" onClick={onClose} title="Close">
+            ×
+          </button>
+        </div>
+        
+        <div className="sample-data-modal-content">
+          {isLoading && (
+            <div className="sample-data-loading">
+              <div className="loading-progress-bar">
+                <div className="loading-progress-bar-fill"></div>
+              </div>
+              <div className="loading-text">Loading sample data...</div>
+            </div>
+          )}
+          
+          {error && (
+            <div className="sample-data-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          
+          {!isLoading && !error && results && (
+            <>
+              <div className="sample-data-info">
+                <span>{results.rowsReturned.toLocaleString()} rows</span>
+                {results.totalRows > results.rowsReturned && (
+                  <span> of {results.totalRows.toLocaleString()} total</span>
+                )}
+                <span> • {results.executionTimeMs}ms</span>
+                {results.bytesProcessed && (
+                  <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+                )}
+              </div>
+              
+              {paginatedResults && paginatedResults.rows.length > 0 ? (
+                <>
+                  <div className="sample-data-canvas-container">
+                    <CanvasTable
+                      results={paginatedResults}
+                      columnWidths={columnWidths}
+                      onColumnResize={handleColumnResize}
+                      onRowContextMenu={handleRowContextMenu}
+                      onColumnContextMenu={handleColumnContextMenu}
+                      formatValue={formatValue}
+                      currentPage={currentPage}
+                      rowsPerPage={ROWS_PER_PAGE}
+                      sortColumn={sortColumn}
+                      sortDirection={sortDirection}
+                      onSortColumn={handleSortColumn}
+                    />
+                  </div>
+                  
+                  {totalPages > 1 && (
+                    <div className="sample-data-pagination">
+                      <button
+                        className="pagination-button"
+                        onClick={handlePreviousPage}
+                        disabled={currentPage === 1}
+                        title="Previous page"
+                      >
+                        ‹
+                      </button>
+                      <span className="pagination-info">
+                        {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+                      </span>
+                      <button
+                        className="pagination-button"
+                        onClick={handleNextPage}
+                        disabled={currentPage === totalPages}
+                        title="Next page"
+                      >
+                        ›
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="sample-data-empty">No data available</div>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -15703,140 +16467,6 @@ export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, next
     prevProps.onToggleCollapse === nextProps.onToggleCollapse
   );
 });
-````
-
-## File: src/renderer/components/TabBar/TabBar.css
-````css
-.tab-bar {
-  display: flex;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-}
-
-.tabs-container {
-  display: flex;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  align-items: center;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  background-color: #2d2d30;
-  border-right: 1px solid #3e3e42;
-  cursor: pointer;
-  user-select: none;
-  min-width: 120px;
-  max-width: 200px;
-  position: relative;
-  height: 35px;
-  color: #cccccc;
-  transition: background-color 0.15s ease;
-}
-
-.tab[draggable='true'] {
-  cursor: grab;
-}
-
-.tab[draggable='true']:active {
-  cursor: grabbing;
-}
-
-.tab:hover {
-  background-color: #2a2d2e;
-}
-
-.tab.active {
-  background-color: #1e1e1e;
-  border-bottom: 1px solid #007acc;
-  color: #ffffff;
-}
-
-.tab.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.tab.drag-over {
-  border-left: 2px solid #007acc;
-  padding-left: calc(0.75rem - 2px);
-}
-
-.tab.modified .tab-title::after {
-  content: '';
-}
-
-.tab-title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-}
-
-.modified-indicator {
-  color: #007acc;
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-}
-
-.tab-close {
-  margin-left: 0.5rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  color: #858585;
-  padding: 0;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.tab-close:hover {
-  background-color: #e81123;
-  color: white;
-}
-
-.tab-close:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.tab-close:disabled:hover {
-  background-color: transparent;
-  color: #858585;
-}
-
-.new-tab-button {
-  padding: 0 0.75rem;
-  background: none;
-  border: none;
-  border-left: 1px solid #3e3e42;
-  cursor: pointer;
-  font-size: 1.25rem;
-  color: #858585;
-  font-weight: 300;
-  height: 35px;
-  display: flex;
-  align-items: center;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.new-tab-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
 ````
 
 ## File: src/renderer/utils/bigquery-formatter.ts
@@ -16977,595 +17607,6 @@ export function formatBigQueryValue(value: any, columnType?: string, columnName?
   
   return String(value);
 }
-````
-
-## File: src/shared/types/query.ts
-````typescript
-/**
- * Query-related types
- */
-
-export type TabType = 'query' | 'explorer' | 'saved-queries';
-
-export interface QueryTab {
-  id: string;
-  title: string;
-  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
-  queryText: string;
-  isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string; // ISO timestamp
-  lastExecutedQueryText?: string; // The query text that was last executed
-  savedQueryId?: string;
-}
-
-export interface SavedQuery {
-  id: string;
-  name: string;
-  sqlText: string;
-  description?: string;
-  createdAt: string; // ISO timestamp
-  updatedAt: string; // ISO timestamp
-  tags?: string[];
-}
-
-export interface SaveQueryInput {
-  name: string;
-  sqlText: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface UpdateQueryInput {
-  name?: string;
-  sqlText?: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface QueryResult {
-  columns: ColumnMetadata[];
-  rows: Row[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-export interface ColumnMetadata {
-  name: string;
-  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
-  mode?: string; // NULLABLE, REQUIRED, REPEATED
-}
-
-export interface Row {
-  values: any[]; // Values matching column order
-}
-````
-
-## File: .gitignore
-````
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-yarn.lock
-pnpm-lock.yaml
-PROJECT_REFERENCE.md
-
-# Build outputs
-dist/
-build/
-out/
-*.tsbuildinfo
-
-# Electron
-*.asar
-*.dmg
-*.exe
-*.deb
-*.rpm
-*.AppImage
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-*.log.*
-
-# Testing
-coverage/
-.nyc_output/
-*.test.js.snap
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Desktop.ini
-
-# Electron specific
-app/dist/
-release/
-````
-
-## File: src/main/preload.ts
-````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-  };
-
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
-}
-
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-} as ElectronAPI);
-
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: src/renderer/components/SampleDataModal/SampleDataModal.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useBigQuery } from '../../hooks/useBigQuery';
-import { CanvasTable } from '../QueryResults/CanvasTable';
-import type { QueryResult } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import './SampleDataModal.css';
-
-interface SampleDataModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
-}
-
-const ROWS_PER_PAGE = 200;
-
-export const SampleDataModal: React.FC<SampleDataModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const { executeQuery, isConnected } = useBigQuery();
-  const [results, setResults] = useState<QueryResult | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-
-  useEffect(() => {
-    const loadSampleData = async () => {
-      if (!isConnected) {
-        setError('Not connected to BigQuery');
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const tableRef = `\`${projectId}.${datasetId}.${tableId}\``;
-        const queryText = `SELECT * FROM ${tableRef} LIMIT 1000`;
-        const result = await executeQuery(queryText);
-        setResults(result);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load sample data');
-        console.error('Failed to load sample data:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadSampleData();
-  }, [projectId, datasetId, tableId, executeQuery, isConnected]);
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, _rowIndex: number) => {
-    // No-op for sample data modal - could be extended in the future
-    e.preventDefault();
-  }, []);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, _columnIndex: number) => {
-    // No-op for sample data modal - could be extended in the future
-    e.preventDefault();
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = useMemo(() => {
-    if (!results?.rows || sortColumn === null || sortDirection === null) {
-      return results?.rows || [];
-    }
-
-    const sorted = [...results.rows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = results.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [results?.rows, results?.columns, sortColumn, sortDirection]);
-
-  // Pagination calculations
-  const totalRows = sortedRows.length;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + ROWS_PER_PAGE, totalRows);
-  const paginatedRows = sortedRows.slice(startIndex, endIndex);
-
-  // Create a QueryResult-like object for the CanvasTable with paginated rows
-  const paginatedResults: QueryResult | null = results
-    ? {
-        ...results,
-        rows: paginatedRows,
-      }
-    : null;
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [onClose]);
-
-  return (
-    <div className="sample-data-modal-overlay" onClick={onClose}>
-      <div className="sample-data-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="sample-data-modal-header">
-          <h2>Sample Data: {datasetId}.{tableId}</h2>
-          <button className="sample-data-modal-close" onClick={onClose} title="Close">
-            ×
-          </button>
-        </div>
-        
-        <div className="sample-data-modal-content">
-          {isLoading && (
-            <div className="sample-data-loading">
-              <div className="loading-progress-bar">
-                <div className="loading-progress-bar-fill"></div>
-              </div>
-              <div className="loading-text">Loading sample data...</div>
-            </div>
-          )}
-          
-          {error && (
-            <div className="sample-data-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          
-          {!isLoading && !error && results && (
-            <>
-              <div className="sample-data-info">
-                <span>{results.rowsReturned.toLocaleString()} rows</span>
-                {results.totalRows > results.rowsReturned && (
-                  <span> of {results.totalRows.toLocaleString()} total</span>
-                )}
-                <span> • {results.executionTimeMs}ms</span>
-                {results.bytesProcessed && (
-                  <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-                )}
-              </div>
-              
-              {paginatedResults && paginatedResults.rows.length > 0 ? (
-                <>
-                  <div className="sample-data-canvas-container">
-                    <CanvasTable
-                      results={paginatedResults}
-                      columnWidths={columnWidths}
-                      onColumnResize={handleColumnResize}
-                      onRowContextMenu={handleRowContextMenu}
-                      onColumnContextMenu={handleColumnContextMenu}
-                      formatValue={formatValue}
-                      currentPage={currentPage}
-                      rowsPerPage={ROWS_PER_PAGE}
-                      sortColumn={sortColumn}
-                      sortDirection={sortDirection}
-                      onSortColumn={handleSortColumn}
-                    />
-                  </div>
-                  
-                  {totalPages > 1 && (
-                    <div className="sample-data-pagination">
-                      <button
-                        className="pagination-button"
-                        onClick={handlePreviousPage}
-                        disabled={currentPage === 1}
-                        title="Previous page"
-                      >
-                        ‹
-                      </button>
-                      <span className="pagination-info">
-                        {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-                      </span>
-                      <button
-                        className="pagination-button"
-                        onClick={handleNextPage}
-                        disabled={currentPage === totalPages}
-                        title="Next page"
-                      >
-                        ›
-                      </button>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="sample-data-empty">No data available</div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/components/TabBar/TabBar.tsx
@@ -20556,6 +20597,653 @@ export const QueryResults: React.FC = () => {
 };
 ````
 
+## File: README.md
+````markdown
+# QueryForge
+
+A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
+
+## Features
+
+### Connection Management
+- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
+- **Connection Persistence**: Connection settings persist across sessions
+- **Connection Testing**: Validate credentials before establishing connection
+
+### Query Execution
+- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
+- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
+- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
+- **Query Validation**: Syntax validation before execution
+- **Query Cancellation**: Cancel long-running queries
+- **Progress Indication**: Visual feedback during query execution
+
+### Multi-Tab Workflow
+- **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
+- **Tab Persistence**: Tabs and their content persist across sessions
+- **Drag & Drop Reordering**: Reorganize tabs by dragging
+- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
+- **Modified Indicator**: Blue dot shows unsaved changes
+
+### Query Management
+- **Save Queries**: Save frequently used queries locally with names and descriptions
+- **Saved Queries Tree**: Browse saved queries in the sidebar
+- **Search Queries**: Find saved queries by name or SQL content
+- **Load Queries**: Open saved queries in new tabs with one click
+
+### Dataset Explorer
+- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
+- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
+- **Quick Actions**: Right-click context menu for table operations
+- **Search**: Filter datasets and tables
+
+### Schema Inspection
+- **Schema Sidebar**: View detailed table schemas in a dedicated panel
+- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
+- **Table Metadata**: View row count, table size, and creation time
+- **View Definitions**: Inspect SQL definitions for views
+
+### Query Results
+- **High-Performance Table**: Canvas-based rendering for large datasets
+- **Pagination**: Navigate through results with 200 rows per page (up to 100,000 total)
+- **Column Sorting**: Sort results by any column
+- **Column Resizing**: Adjust column widths by dragging
+- **Copy Values**: Right-click to copy cell values
+- **Results Caching**: Fast page navigation with cached results
+
+### Sample Data
+- **Quick Preview**: View sample data from any table
+- **One-Click Access**: Right-click table and select "View Sample Data"
+
+### UI Customization
+- **Resizable Panels**: Adjust sidebar and editor/results split
+- **Collapsible Sidebar**: Maximize editor space when needed
+- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
+- **Dark Theme**: Modern dark interface
+
+## Prerequisites
+
+- Node.js 18+ and npm
+- Google Cloud Platform account with BigQuery API enabled
+- GCP project with BigQuery access
+- Service account key file (JSON) OR Application Default Credentials configured
+
+### Installing Node.js and npm
+
+npm (Node Package Manager) comes bundled with Node.js. To install both:
+
+1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
+2. **Install Node.js**: Run the installer and follow the installation wizard
+3. **Verify installation**: Open a terminal and run:
+   ```bash
+   node --version
+   npm --version
+   ```
+   Both commands should display version numbers (Node.js 18+ and npm 9+)
+
+Alternatively, you can use a package manager:
+- **macOS**: `brew install node` (using Homebrew)
+- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
+- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
+
+### Setting Up Google Application Default Credentials
+
+Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
+
+#### Option 1: Using gcloud CLI (Recommended)
+
+1. **Install Google Cloud SDK**:
+   - **macOS**: `brew install google-cloud-sdk`
+   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+
+2. **Authenticate with your Google account**:
+   ```bash
+   gcloud auth login
+   ```
+   This will open a browser window for you to sign in with your Google account.
+
+3. **Set your default project** (optional but recommended):
+   ```bash
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+4. **Set up Application Default Credentials**:
+   ```bash
+   gcloud auth application-default login
+   ```
+   This command will:
+   - Open a browser for authentication
+   - Store credentials in a well-known location that QueryForge can automatically find
+
+#### Option 2: Using Service Account Key File
+
+If you prefer to use a service account key file, you can set it as Application Default Credentials:
+
+1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
+
+2. **Set the environment variable**:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+   ```
+
+   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
+   ```bash
+   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   **Windows (PowerShell)**:
+   ```powershell
+   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
+   ```
+
+#### Verifying Your Setup
+
+To verify that Application Default Credentials are configured correctly:
+
+```bash
+gcloud auth application-default print-access-token
+```
+
+If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
+
+**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd QueryForge
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Build the application:
+```bash
+npm run build
+```
+
+4. Start the application:
+```bash
+npm start
+```
+
+## Development
+
+For development with hot reload:
+```bash
+npm run dev
+```
+
+## Usage
+
+### Connecting to BigQuery
+
+1. Launch the application 
+2. Click "Configure Connection" in the header
+3. Enter your GCP Project ID
+4. Select authentication method:
+   - **Service Account Key**: Provide path to JSON key file or paste key content
+   - **Application Default Credentials**: Uses your local gcloud credentials
+5. Click "Connect"
+
+### Executing Queries
+
+1. Type your SQL query in the editor
+2. Click "Execute" or press Cmd/Ctrl+Enter
+3. View results in the table below
+4. Use "Cancel" to stop a running query
+5. Format your SQL with Cmd/Ctrl+Shift+F
+
+### Browsing Datasets
+
+1. Connect to BigQuery
+2. Browse datasets in the left sidebar
+3. Click a dataset to expand and view tables
+4. Right-click a table for options:
+   - **Open in new tab**: Generate a SELECT * query
+   - **View Schema**: Open schema details in sidebar
+   - **View Sample Data**: Preview table contents
+   - **View Definition**: See SQL for views
+
+### Managing Tabs
+
+- Click "+" button to create a new tab
+- Click on a tab to switch between queries
+- Drag tabs to reorder them
+- Click "×" on a tab to close it
+- Modified tabs show a blue dot indicator
+- Use Cmd/Ctrl+1-9 to quickly switch tabs
+
+### Saving Queries
+
+1. Write your query in the editor
+2. Click "Save" button
+3. Enter a name and optional description
+4. Click "Save" to persist the query
+
+### Loading Saved Queries
+
+1. Switch to "SAVED QUERIES" view in the sidebar
+2. Search or browse your saved queries
+3. Click a query to load it in a new tab
+4. Right-click for additional options
+
+## Keyboard Shortcuts
+
+| Action | macOS | Windows/Linux |
+|--------|-------|---------------|
+| New Tab | Cmd+T | Ctrl+T |
+| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
+| Execute Query | Cmd+Enter | Ctrl+Enter |
+| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
+| Show Help | Cmd+? | Ctrl+? |
+| Quit | Cmd+Q | Alt+F4 |
+
+## Project Structure
+
+```
+src/
+├── main/           # Electron main process
+│   ├── ipc/        # IPC handlers
+│   └── storage/    # Local storage
+├── renderer/       # React renderer process
+│   ├── components/ # UI components
+│   ├── hooks/      # React hooks
+│   └── stores/     # State management
+└── shared/         # Shared types/utilities
+```
+
+## Building for Production
+
+Build for your platform:
+```bash
+npm run package
+```
+
+Build for specific platforms:
+```bash
+npm run package:mac    # macOS
+npm run package:win    # Windows
+npm run package:linux  # Linux
+```
+
+## Donate
+
+If you find QueryForge useful, please consider supporting its development:
+
+![Donation QR Code](donation_qr.png)
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
+
+## License
+
+MIT
+````
+
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: #1e1e1e;
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: #0e639c;
+  color: #ffffff;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: #1177bb;
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #3e3e42;
+}
+
+.query-editor-toolbar .run-button {
+  background-color: #0e639c;
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: #1177bb;
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: #ff694a;
+  color: #ffffff;
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: #ff8566;
+}
+
+.query-editor-toolbar .save-button {
+  background-color: #0e7c3c;
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: #0f8f45;
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: #a1260d;
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: #c72e0f;
+}
+
+.connection-warning {
+  color: #dcdcaa;
+  background-color: #3e3e42;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: #3a1d1d;
+  color: #f48771;
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid #6a1f1f;
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: #252526;
+  border-top: 1px solid #3e3e42;
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: #858585;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: #4ec9b0;
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: #f48771;
+}
+
+.editor-status-bar .status-valid {
+  color: #4ec9b0;
+}
+
+.editor-status-bar .status-invalid {
+  color: #f48771;
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #858585;
+  background-color: #1e1e1e;
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: #252526;
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: #ffffff;
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: #cccccc;
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: #3c3c3c;
+  color: #cccccc;
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid #007acc;
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: #4a4a4a;
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: #0e639c;
+  color: #ffffff;
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: #1177bb;
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+````
+
 ## File: src/renderer/utils/bigquery-completions.ts
 ````typescript
 /**
@@ -22534,653 +23222,6 @@ export function registerBigQueryLanguage(
 }
 ````
 
-## File: README.md
-````markdown
-# QueryForge
-
-A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
-
-## Features
-
-### Connection Management
-- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
-- **Connection Persistence**: Connection settings persist across sessions
-- **Connection Testing**: Validate credentials before establishing connection
-
-### Query Execution
-- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
-- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
-- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
-- **Query Validation**: Syntax validation before execution
-- **Query Cancellation**: Cancel long-running queries
-- **Progress Indication**: Visual feedback during query execution
-
-### Multi-Tab Workflow
-- **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
-- **Tab Persistence**: Tabs and their content persist across sessions
-- **Drag & Drop Reordering**: Reorganize tabs by dragging
-- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
-- **Modified Indicator**: Blue dot shows unsaved changes
-
-### Query Management
-- **Save Queries**: Save frequently used queries locally with names and descriptions
-- **Saved Queries Tree**: Browse saved queries in the sidebar
-- **Search Queries**: Find saved queries by name or SQL content
-- **Load Queries**: Open saved queries in new tabs with one click
-
-### Dataset Explorer
-- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
-- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
-- **Quick Actions**: Right-click context menu for table operations
-- **Search**: Filter datasets and tables
-
-### Schema Inspection
-- **Schema Sidebar**: View detailed table schemas in a dedicated panel
-- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
-- **Table Metadata**: View row count, table size, and creation time
-- **View Definitions**: Inspect SQL definitions for views
-
-### Query Results
-- **High-Performance Table**: Canvas-based rendering for large datasets
-- **Pagination**: Navigate through results with 200 rows per page (up to 100,000 total)
-- **Column Sorting**: Sort results by any column
-- **Column Resizing**: Adjust column widths by dragging
-- **Copy Values**: Right-click to copy cell values
-- **Results Caching**: Fast page navigation with cached results
-
-### Sample Data
-- **Quick Preview**: View sample data from any table
-- **One-Click Access**: Right-click table and select "View Sample Data"
-
-### UI Customization
-- **Resizable Panels**: Adjust sidebar and editor/results split
-- **Collapsible Sidebar**: Maximize editor space when needed
-- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
-- **Dark Theme**: Modern dark interface
-
-## Prerequisites
-
-- Node.js 18+ and npm
-- Google Cloud Platform account with BigQuery API enabled
-- GCP project with BigQuery access
-- Service account key file (JSON) OR Application Default Credentials configured
-
-### Installing Node.js and npm
-
-npm (Node Package Manager) comes bundled with Node.js. To install both:
-
-1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
-2. **Install Node.js**: Run the installer and follow the installation wizard
-3. **Verify installation**: Open a terminal and run:
-   ```bash
-   node --version
-   npm --version
-   ```
-   Both commands should display version numbers (Node.js 18+ and npm 9+)
-
-Alternatively, you can use a package manager:
-- **macOS**: `brew install node` (using Homebrew)
-- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
-- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
-
-### Setting Up Google Application Default Credentials
-
-Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
-
-#### Option 1: Using gcloud CLI (Recommended)
-
-1. **Install Google Cloud SDK**:
-   - **macOS**: `brew install google-cloud-sdk`
-   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
-   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
-
-2. **Authenticate with your Google account**:
-   ```bash
-   gcloud auth login
-   ```
-   This will open a browser window for you to sign in with your Google account.
-
-3. **Set your default project** (optional but recommended):
-   ```bash
-   gcloud config set project YOUR_PROJECT_ID
-   ```
-
-4. **Set up Application Default Credentials**:
-   ```bash
-   gcloud auth application-default login
-   ```
-   This command will:
-   - Open a browser for authentication
-   - Store credentials in a well-known location that QueryForge can automatically find
-
-#### Option 2: Using Service Account Key File
-
-If you prefer to use a service account key file, you can set it as Application Default Credentials:
-
-1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
-
-2. **Set the environment variable**:
-   ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
-   ```
-
-   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
-   ```bash
-   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
-   source ~/.zshrc
-   ```
-
-   **Windows (PowerShell)**:
-   ```powershell
-   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
-   ```
-
-#### Verifying Your Setup
-
-To verify that Application Default Credentials are configured correctly:
-
-```bash
-gcloud auth application-default print-access-token
-```
-
-If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
-
-**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd QueryForge
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Build the application:
-```bash
-npm run build
-```
-
-4. Start the application:
-```bash
-npm start
-```
-
-## Development
-
-For development with hot reload:
-```bash
-npm run dev
-```
-
-## Usage
-
-### Connecting to BigQuery
-
-1. Launch the application 
-2. Click "Configure Connection" in the header
-3. Enter your GCP Project ID
-4. Select authentication method:
-   - **Service Account Key**: Provide path to JSON key file or paste key content
-   - **Application Default Credentials**: Uses your local gcloud credentials
-5. Click "Connect"
-
-### Executing Queries
-
-1. Type your SQL query in the editor
-2. Click "Execute" or press Cmd/Ctrl+Enter
-3. View results in the table below
-4. Use "Cancel" to stop a running query
-5. Format your SQL with Cmd/Ctrl+Shift+F
-
-### Browsing Datasets
-
-1. Connect to BigQuery
-2. Browse datasets in the left sidebar
-3. Click a dataset to expand and view tables
-4. Right-click a table for options:
-   - **Open in new tab**: Generate a SELECT * query
-   - **View Schema**: Open schema details in sidebar
-   - **View Sample Data**: Preview table contents
-   - **View Definition**: See SQL for views
-
-### Managing Tabs
-
-- Click "+" button to create a new tab
-- Click on a tab to switch between queries
-- Drag tabs to reorder them
-- Click "×" on a tab to close it
-- Modified tabs show a blue dot indicator
-- Use Cmd/Ctrl+1-9 to quickly switch tabs
-
-### Saving Queries
-
-1. Write your query in the editor
-2. Click "Save" button
-3. Enter a name and optional description
-4. Click "Save" to persist the query
-
-### Loading Saved Queries
-
-1. Switch to "SAVED QUERIES" view in the sidebar
-2. Search or browse your saved queries
-3. Click a query to load it in a new tab
-4. Right-click for additional options
-
-## Keyboard Shortcuts
-
-| Action | macOS | Windows/Linux |
-|--------|-------|---------------|
-| New Tab | Cmd+T | Ctrl+T |
-| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
-| Execute Query | Cmd+Enter | Ctrl+Enter |
-| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
-| Show Help | Cmd+? | Ctrl+? |
-| Quit | Cmd+Q | Alt+F4 |
-
-## Project Structure
-
-```
-src/
-├── main/           # Electron main process
-│   ├── ipc/        # IPC handlers
-│   └── storage/    # Local storage
-├── renderer/       # React renderer process
-│   ├── components/ # UI components
-│   ├── hooks/      # React hooks
-│   └── stores/     # State management
-└── shared/         # Shared types/utilities
-```
-
-## Building for Production
-
-Build for your platform:
-```bash
-npm run package
-```
-
-Build for specific platforms:
-```bash
-npm run package:mac    # macOS
-npm run package:win    # Windows
-npm run package:linux  # Linux
-```
-
-## Donate
-
-If you find QueryForge useful, please consider supporting its development:
-
-![Donation QR Code](donation_qr.png)
-
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
-
-## License
-
-MIT
-````
-
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: #1e1e1e;
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: #0e639c;
-  color: #ffffff;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background-color: #3e3e42;
-}
-
-.query-editor-toolbar .run-button {
-  background-color: #0e639c;
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: #ff694a;
-  color: #ffffff;
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: #ff8566;
-}
-
-.query-editor-toolbar .save-button {
-  background-color: #0e7c3c;
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: #0f8f45;
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: #a1260d;
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: #c72e0f;
-}
-
-.connection-warning {
-  color: #dcdcaa;
-  background-color: #3e3e42;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid #6a1f1f;
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: #858585;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: #4ec9b0;
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: #f48771;
-}
-
-.editor-status-bar .status-valid {
-  color: #4ec9b0;
-}
-
-.editor-status-bar .status-invalid {
-  color: #f48771;
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #858585;
-  background-color: #1e1e1e;
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: #ffffff;
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: #cccccc;
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid #007acc;
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: #1177bb;
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-````
-
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
 ````typescript
 import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
@@ -24827,7 +24868,7 @@ export default App;
 ````json
 {
   "name": "query-forge",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
