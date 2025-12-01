@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import App from '../../../src/renderer/App';
 
 // Mock the components that might have dependencies
@@ -57,22 +57,36 @@ jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => 
 }));
 
 describe('App', () => {
-  it('renders without crashing', () => {
-    render(<App />);
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+  beforeEach(() => {
+    // Reset mocks to return an active connection to avoid triggering setShowConnectionDialog
+    (window as any).electronAPI.connection.getActive.mockResolvedValue({
+      projectId: 'test-project',
+      keyFilePath: '/path/to/key.json',
+    });
   });
 
-  it('renders the main app structure', () => {
+  it('renders without crashing', async () => {
     render(<App />);
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-    expect(screen.getByTestId('query-editor')).toBeInTheDocument();
-    expect(screen.getByTestId('query-results')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    });
   });
 
-  it('renders sidebar components', () => {
+  it('renders the main app structure', async () => {
     render(<App />);
-    expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('query-editor')).toBeInTheDocument();
+      expect(screen.getByTestId('query-results')).toBeInTheDocument();
+    });
+  });
+
+  it('renders sidebar components', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
+    });
   });
 });
 
