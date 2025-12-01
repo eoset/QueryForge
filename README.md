@@ -58,7 +58,7 @@ A powerful desktop application for browsing and querying Google Cloud Platform B
 - **Resizable Panels**: Adjust sidebar and editor/results split
 - **Collapsible Sidebar**: Maximize editor space when needed
 - **Persistent Layout**: Window size, position, and panel sizes persist across sessions
-- **Dark Theme**: Modern dark interface
+- **Dark/Light Mode**: Toggle between dark and light themes to suit your preference
 
 ## Prerequisites
 
