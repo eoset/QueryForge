@@ -18769,6 +18769,370 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
 };
 ````
 
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: #1e1e1e;
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: #0e639c;
+  color: #ffffff;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: #1177bb;
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #3e3e42;
+}
+
+.query-editor-toolbar .run-button {
+  background-color: #0e639c;
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: #1177bb;
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: #ff694a;
+  color: #ffffff;
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: #ff8566;
+}
+
+.query-editor-toolbar .save-button {
+  background-color: #0e7c3c;
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: #0f8f45;
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: #a1260d;
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: #c72e0f;
+}
+
+.connection-warning {
+  color: #dcdcaa;
+  background-color: #3e3e42;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: #3a1d1d;
+  color: #f48771;
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid #6a1f1f;
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: #252526;
+  border-top: 1px solid #3e3e42;
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: #858585;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: #4ec9b0;
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: #f48771;
+}
+
+.editor-status-bar .status-valid {
+  color: #4ec9b0;
+}
+
+.editor-status-bar .status-invalid {
+  color: #f48771;
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #858585;
+  background-color: #1e1e1e;
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: #252526;
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: #ffffff;
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: #cccccc;
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: #3c3c3c;
+  color: #cccccc;
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid #007acc;
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: #4a4a4a;
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: #0e639c;
+  color: #ffffff;
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: #1177bb;
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+````
+
 ## File: src/renderer/components/QueryResults/QueryResults.tsx
 ````typescript
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -20904,370 +21268,6 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
 });
 ````
 
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: #1e1e1e;
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: #0e639c;
-  color: #ffffff;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background-color: #3e3e42;
-}
-
-.query-editor-toolbar .run-button {
-  background-color: #0e639c;
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: #ff694a;
-  color: #ffffff;
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: #ff8566;
-}
-
-.query-editor-toolbar .save-button {
-  background-color: #0e7c3c;
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: #0f8f45;
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: #a1260d;
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: #c72e0f;
-}
-
-.connection-warning {
-  color: #dcdcaa;
-  background-color: #3e3e42;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid #6a1f1f;
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: #858585;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: #4ec9b0;
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: #f48771;
-}
-
-.editor-status-bar .status-valid {
-  color: #4ec9b0;
-}
-
-.editor-status-bar .status-invalid {
-  color: #f48771;
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #858585;
-  background-color: #1e1e1e;
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: #ffffff;
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: #cccccc;
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid #007acc;
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: #1177bb;
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-````
-
 ## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
 ````css
 .saved-queries-tree {
@@ -21757,442 +21757,6 @@ export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, next
     prevProps.onToggleCollapse === nextProps.onToggleCollapse
   );
 });
-````
-
-## File: src/renderer/components/TabBar/TabBar.tsx
-````typescript
-import React, { useState, useRef, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import './TabBar.css';
-
-export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
-  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
-  const queryTabs = tabs.filter(tab => tab.type === 'query');
-  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
-
-  // Create a transparent drag image canvas once
-  useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, 1, 1);
-    }
-    dragImageRef.current = canvas;
-  }, []);
-
-  const handleTabClick = (tabId: string) => {
-    setActiveTab(tabId);
-  };
-
-  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
-    e.stopPropagation();
-    const tab = queryTabs.find((t) => t.id === tabId);
-    
-    if (tab?.isModified) {
-      const confirmed = window.confirm(
-        'This tab has unsaved changes. Are you sure you want to close it?'
-      );
-      if (!confirmed) return;
-    }
-    closeTab(tabId);
-  };
-
-  const handleNewTab = () => {
-    createTab();
-  };
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    // Don't start drag if clicking on the close button
-    const target = e.target as HTMLElement;
-    if (target.closest('.tab-close')) {
-      e.preventDefault();
-      return;
-    }
-    
-    setDraggedTabIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
-    
-    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
-    if (dragImageRef.current) {
-      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (draggedTabIndex !== null && draggedTabIndex !== index) {
-      setDragOverIndex(index);
-    }
-  };
-
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    
-    // Map dropIndex from queryTabs array back to full tabs array
-    const dropTab = queryTabs[dropIndex];
-    if (!dropTab) {
-      setDraggedTabIndex(null);
-      setDragOverIndex(null);
-      return;
-    }
-    
-    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
-    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
-    
-    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
-      reorderTabs(actualDragIndex, actualDropIndex);
-    }
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  return (
-    <div className="tab-bar">
-      <div className="tabs-container">
-        {queryTabs.map((tab, index) => (
-          <div
-            key={tab.id}
-            draggable
-            onDragStart={(e) => handleDragStart(e, index)}
-            onDragOver={(e) => handleDragOver(e, index)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleDrop(e, index)}
-            onDragEnd={handleDragEnd}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
-              draggedTabIndex === index ? 'dragging' : ''
-            } ${dragOverIndex === index ? 'drag-over' : ''}`}
-            onClick={() => handleTabClick(tab.id)}
-          >
-            <span className="tab-title">{tab.title}</span>
-            {tab.isModified && <span className="modified-indicator">●</span>}
-            <button
-              className="tab-close"
-              onClick={(e) => handleCloseTab(e, tab.id)}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
-          +
-        </button>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/stores/tabs-store.ts
-````typescript
-import { create } from 'zustand';
-import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
-
-interface TabsState {
-  tabs: QueryTab[];
-  activeTabId: string | null;
-  createTab: () => string;
-  closeTab: (tabId: string) => void;
-  setActiveTab: (tabId: string) => void;
-  reorderTabs: (fromIndex: number, toIndex: number) => void;
-  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
-  setTabQuery: (tabId: string, queryText: string) => void;
-  setTabResults: (tabId: string, results: QueryResult) => void;
-  setTabError: (tabId: string, error: string) => void;
-  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
-  loadTabs: () => Promise<void>;
-  saveTabs: () => Promise<void>;
-}
-
-function generateTabId(): string {
-  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
-
-// Debounce function for saving tabs
-let saveTimeout: NodeJS.Timeout | null = null;
-const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-  }
-  saveTimeout = setTimeout(() => {
-    saveFn().catch((error) => {
-      console.error('Failed to save tabs:', error);
-    });
-  }, delay);
-};
-
-// Filter out any legacy Explorer or Saved Queries tabs
-function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
-  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
-}
-
-export const useTabsStore = create<TabsState>((set, get) => {
-  return {
-    tabs: [
-      {
-        id: generateTabId(),
-        title: 'Query 1',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-      {
-        id: generateTabId(),
-        title: 'Query 2',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-    ],
-    activeTabId: null,
-
-    loadTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const savedTabs = await window.electronAPI.tabs.getTabs();
-        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
-        
-        // Filter out any legacy Explorer or Saved Queries tabs
-        let filteredTabs = filterStaticTabs(savedTabs || []);
-        
-        if (filteredTabs.length === 0) {
-          // No saved tabs, use default tabs
-          filteredTabs = get().tabs;
-        }
-        
-        // Ensure active tab ID is valid (not a static tab)
-        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
-        
-        if (filteredTabs.length > 0) {
-          set({
-            tabs: filteredTabs,
-            activeTabId: validActiveTabId,
-          });
-        } else {
-          // No tabs left, use default
-          const defaultTabId = get().tabs[0]?.id || null;
-          set({ activeTabId: defaultTabId });
-        }
-      } catch (error) {
-        console.error('Failed to load tabs:', error);
-        // Use default tab if loading fails
-        const defaultTabId = get().tabs[0]?.id || null;
-        set({ activeTabId: defaultTabId });
-      }
-    },
-
-    saveTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const { tabs, activeTabId } = get();
-        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
-      } catch (error) {
-        console.error('Failed to save tabs:', error);
-      }
-    },
-
-    createTab: () => {
-      const tabs = get().tabs;
-      const newTabId = generateTabId();
-      const newTab: QueryTab = {
-        id: newTabId,
-        title: `Query ${tabs.length + 1}`,
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      };
-      const updatedTabs = [...tabs, newTab];
-      set({
-        tabs: updatedTabs,
-        activeTabId: newTabId,
-      });
-      return newTabId;
-    },
-
-    closeTab: (tabId: string) => {
-      const { tabs, activeTabId } = get();
-      const tabIndex = tabs.findIndex((t) => t.id === tabId);
-      if (tabIndex === -1) return;
-
-      const newTabs = tabs.filter((t) => t.id !== tabId);
-      
-      // If closing the active tab, switch to another tab
-      let newActiveTabId = activeTabId;
-      if (activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          // Switch to the tab that was before this one, or the first tab
-          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
-        } else {
-          // No tabs left
-          newActiveTabId = null;
-        }
-      }
-
-      set({
-        tabs: newTabs,
-        activeTabId: newActiveTabId,
-      });
-    },
-
-    setActiveTab: (tabId: string) => {
-      set({ activeTabId: tabId });
-    },
-
-    reorderTabs: (fromIndex: number, toIndex: number) => {
-      const { tabs } = get();
-      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
-        return;
-      }
-      
-      const newTabs = [...tabs];
-      const [movedTab] = newTabs.splice(fromIndex, 1);
-      newTabs.splice(toIndex, 0, movedTab);
-      
-      set({ tabs: newTabs });
-    },
-
-    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
-      set((state) => {
-        const updatedTabs = state.tabs.map((tab) =>
-          tab.id === tabId ? { ...tab, ...updates } : tab
-        );
-        return {
-          tabs: updatedTabs,
-        };
-      });
-    },
-
-    setTabQuery: (tabId: string, queryText: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (tab) {
-        get().updateTab(tabId, {
-          queryText,
-          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
-        });
-      }
-    },
-
-    setTabResults: (tabId: string, results: QueryResult) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        results,
-        executionStatus: 'completed',
-        error: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabError: (tabId: string, error: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        error,
-        executionStatus: 'error',
-        results: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
-      get().updateTab(tabId, { executionStatus: status });
-    },
-  };
-});
-
-// Subscribe to tab changes and auto-save (debounced)
-let previousTabs: QueryTab[] = [];
-let previousActiveTabId: string | null = null;
-
-useTabsStore.subscribe((state) => {
-  // Filter out any legacy static tabs that might have been loaded
-  const filteredTabs = filterStaticTabs(state.tabs);
-  if (filteredTabs.length !== state.tabs.length) {
-    // Found static tabs, remove them
-    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
-    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
-    return;
-  }
-  
-  // Check if tabs or activeTabId actually changed
-  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
-  
-  if (tabsChanged) {
-    previousTabs = state.tabs;
-    previousActiveTabId = state.activeTabId;
-    // Auto-save when tabs or activeTabId changes
-    debouncedSave(() => useTabsStore.getState().saveTabs());
-  }
-});
-
-// Track if initialization has been done to prevent multiple calls
-let isInitialized = false;
-
-// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
-// This function can be called multiple times safely (idempotent)
-export function initializeTabsStore(): void {
-  if (isInitialized) {
-    return; // Already initialized
-  }
-
-  if (window.electronAPI?.tabs) {
-    isInitialized = true;
-    
-    useTabsStore.getState().loadTabs().then(() => {
-      // Initialize active tab after loading
-      const state = useTabsStore.getState();
-      if (!state.activeTabId && state.tabs.length > 0) {
-        useTabsStore.setState({ activeTabId: state.tabs[0].id });
-      }
-    }).catch((error) => {
-      console.error('Failed to initialize tabs:', error);
-      // Fallback: Initialize active tab on first load if loading fails
-      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-    });
-
-    // Listen for before-close event to save tabs immediately
-    window.electronAPI.tabs.onBeforeClose(() => {
-      // Clear any pending debounced save and save immediately
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-        saveTimeout = null;
-      }
-      useTabsStore.getState().saveTabs();
-    });
-  } else {
-    // Fallback: Initialize active tab on first load if electronAPI is not available
-    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-  }
-}
-
-// Try to initialize immediately if electronAPI is already available
-// Otherwise, it will be initialized from App.tsx
-if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
-  initializeTabsStore();
-}
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -23393,6 +22957,442 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 };
 ````
 
+## File: src/renderer/components/TabBar/TabBar.tsx
+````typescript
+import React, { useState, useRef, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import './TabBar.css';
+
+export const TabBar: React.FC = () => {
+  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
+  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
+  const queryTabs = tabs.filter(tab => tab.type === 'query');
+  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Create a transparent drag image canvas once
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, 1, 1);
+    }
+    dragImageRef.current = canvas;
+  }, []);
+
+  const handleTabClick = (tabId: string) => {
+    setActiveTab(tabId);
+  };
+
+  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    
+    if (tab?.isModified) {
+      const confirmed = window.confirm(
+        'This tab has unsaved changes. Are you sure you want to close it?'
+      );
+      if (!confirmed) return;
+    }
+    closeTab(tabId);
+  };
+
+  const handleNewTab = () => {
+    createTab();
+  };
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    // Don't start drag if clicking on the close button
+    const target = e.target as HTMLElement;
+    if (target.closest('.tab-close')) {
+      e.preventDefault();
+      return;
+    }
+    
+    setDraggedTabIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
+    
+    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
+    if (dragImageRef.current) {
+      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedTabIndex !== null && draggedTabIndex !== index) {
+      setDragOverIndex(index);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    
+    // Map dropIndex from queryTabs array back to full tabs array
+    const dropTab = queryTabs[dropIndex];
+    if (!dropTab) {
+      setDraggedTabIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    
+    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
+    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
+    
+    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
+      reorderTabs(actualDragIndex, actualDropIndex);
+    }
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  return (
+    <div className="tab-bar">
+      <div className="tabs-container">
+        {queryTabs.map((tab, index) => (
+          <div
+            key={tab.id}
+            draggable
+            onDragStart={(e) => handleDragStart(e, index)}
+            onDragOver={(e) => handleDragOver(e, index)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, index)}
+            onDragEnd={handleDragEnd}
+            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
+              draggedTabIndex === index ? 'dragging' : ''
+            } ${dragOverIndex === index ? 'drag-over' : ''}`}
+            onClick={() => handleTabClick(tab.id)}
+          >
+            <span className="tab-title">{tab.title}</span>
+            {tab.isModified && <span className="modified-indicator">●</span>}
+            <button
+              className="tab-close"
+              onClick={(e) => handleCloseTab(e, tab.id)}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
+          +
+        </button>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/stores/tabs-store.ts
+````typescript
+import { create } from 'zustand';
+import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
+
+interface TabsState {
+  tabs: QueryTab[];
+  activeTabId: string | null;
+  createTab: () => string;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  reorderTabs: (fromIndex: number, toIndex: number) => void;
+  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
+  setTabQuery: (tabId: string, queryText: string) => void;
+  setTabResults: (tabId: string, results: QueryResult) => void;
+  setTabError: (tabId: string, error: string) => void;
+  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
+  loadTabs: () => Promise<void>;
+  saveTabs: () => Promise<void>;
+}
+
+function generateTabId(): string {
+  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Debounce function for saving tabs
+let saveTimeout: NodeJS.Timeout | null = null;
+const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = setTimeout(() => {
+    saveFn().catch((error) => {
+      console.error('Failed to save tabs:', error);
+    });
+  }, delay);
+};
+
+// Filter out any legacy Explorer or Saved Queries tabs
+function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
+  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
+}
+
+export const useTabsStore = create<TabsState>((set, get) => {
+  return {
+    tabs: [
+      {
+        id: generateTabId(),
+        title: 'Query 1',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+      {
+        id: generateTabId(),
+        title: 'Query 2',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+    ],
+    activeTabId: null,
+
+    loadTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const savedTabs = await window.electronAPI.tabs.getTabs();
+        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
+        
+        // Filter out any legacy Explorer or Saved Queries tabs
+        let filteredTabs = filterStaticTabs(savedTabs || []);
+        
+        if (filteredTabs.length === 0) {
+          // No saved tabs, use default tabs
+          filteredTabs = get().tabs;
+        }
+        
+        // Ensure active tab ID is valid (not a static tab)
+        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
+        
+        if (filteredTabs.length > 0) {
+          set({
+            tabs: filteredTabs,
+            activeTabId: validActiveTabId,
+          });
+        } else {
+          // No tabs left, use default
+          const defaultTabId = get().tabs[0]?.id || null;
+          set({ activeTabId: defaultTabId });
+        }
+      } catch (error) {
+        console.error('Failed to load tabs:', error);
+        // Use default tab if loading fails
+        const defaultTabId = get().tabs[0]?.id || null;
+        set({ activeTabId: defaultTabId });
+      }
+    },
+
+    saveTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const { tabs, activeTabId } = get();
+        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
+      } catch (error) {
+        console.error('Failed to save tabs:', error);
+      }
+    },
+
+    createTab: () => {
+      const tabs = get().tabs;
+      const newTabId = generateTabId();
+      const newTab: QueryTab = {
+        id: newTabId,
+        title: `Query ${tabs.length + 1}`,
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      };
+      const updatedTabs = [...tabs, newTab];
+      set({
+        tabs: updatedTabs,
+        activeTabId: newTabId,
+      });
+      return newTabId;
+    },
+
+    closeTab: (tabId: string) => {
+      const { tabs, activeTabId } = get();
+      const tabIndex = tabs.findIndex((t) => t.id === tabId);
+      if (tabIndex === -1) return;
+
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      
+      // If closing the active tab, switch to another tab
+      let newActiveTabId = activeTabId;
+      if (activeTabId === tabId) {
+        if (newTabs.length > 0) {
+          // Switch to the tab that was before this one, or the first tab
+          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
+        } else {
+          // No tabs left
+          newActiveTabId = null;
+        }
+      }
+
+      set({
+        tabs: newTabs,
+        activeTabId: newActiveTabId,
+      });
+    },
+
+    setActiveTab: (tabId: string) => {
+      set({ activeTabId: tabId });
+    },
+
+    reorderTabs: (fromIndex: number, toIndex: number) => {
+      const { tabs } = get();
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
+        return;
+      }
+      
+      const newTabs = [...tabs];
+      const [movedTab] = newTabs.splice(fromIndex, 1);
+      newTabs.splice(toIndex, 0, movedTab);
+      
+      set({ tabs: newTabs });
+    },
+
+    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
+      set((state) => {
+        const updatedTabs = state.tabs.map((tab) =>
+          tab.id === tabId ? { ...tab, ...updates } : tab
+        );
+        return {
+          tabs: updatedTabs,
+        };
+      });
+    },
+
+    setTabQuery: (tabId: string, queryText: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab) {
+        get().updateTab(tabId, {
+          queryText,
+          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
+        });
+      }
+    },
+
+    setTabResults: (tabId: string, results: QueryResult) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        results,
+        executionStatus: 'completed',
+        error: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabError: (tabId: string, error: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        error,
+        executionStatus: 'error',
+        results: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
+      get().updateTab(tabId, { executionStatus: status });
+    },
+  };
+});
+
+// Subscribe to tab changes and auto-save (debounced)
+let previousTabs: QueryTab[] = [];
+let previousActiveTabId: string | null = null;
+
+useTabsStore.subscribe((state) => {
+  // Filter out any legacy static tabs that might have been loaded
+  const filteredTabs = filterStaticTabs(state.tabs);
+  if (filteredTabs.length !== state.tabs.length) {
+    // Found static tabs, remove them
+    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
+    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
+    return;
+  }
+  
+  // Check if tabs or activeTabId actually changed
+  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
+  
+  if (tabsChanged) {
+    previousTabs = state.tabs;
+    previousActiveTabId = state.activeTabId;
+    // Auto-save when tabs or activeTabId changes
+    debouncedSave(() => useTabsStore.getState().saveTabs());
+  }
+});
+
+// Track if initialization has been done to prevent multiple calls
+let isInitialized = false;
+
+// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
+// This function can be called multiple times safely (idempotent)
+export function initializeTabsStore(): void {
+  if (isInitialized) {
+    return; // Already initialized
+  }
+
+  if (window.electronAPI?.tabs) {
+    isInitialized = true;
+    
+    useTabsStore.getState().loadTabs().then(() => {
+      // Initialize active tab after loading
+      const state = useTabsStore.getState();
+      if (!state.activeTabId && state.tabs.length > 0) {
+        useTabsStore.setState({ activeTabId: state.tabs[0].id });
+      }
+    }).catch((error) => {
+      console.error('Failed to initialize tabs:', error);
+      // Fallback: Initialize active tab on first load if loading fails
+      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+    });
+
+    // Listen for before-close event to save tabs immediately
+    window.electronAPI.tabs.onBeforeClose(() => {
+      // Clear any pending debounced save and save immediately
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+      useTabsStore.getState().saveTabs();
+    });
+  } else {
+    // Fallback: Initialize active tab on first load if electronAPI is not available
+    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+  }
+}
+
+// Try to initialize immediately if electronAPI is already available
+// Otherwise, it will be initialized from App.tsx
+if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
+  initializeTabsStore();
+}
+````
+
 ## File: README.md
 ````markdown
 # QueryForge
@@ -23680,452 +23680,6 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
-````
-
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './App.css';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-    }
-  }, []);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-      };
-    }
-  }, []);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -26387,11 +25941,457 @@ export function registerBigQueryLanguage(
 }
 ````
 
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './App.css';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+    }
+  }, []);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+      };
+    }
+  }, []);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
+````
+
 ## File: package.json
 ````json
 {
   "name": "query-forge",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
