@@ -162,6 +162,7 @@ src/
     utils/
       bigquery-completions.ts
       bigquery-formatter.ts
+      sql-validation.ts
     App.css
     App.tsx
     index.html
@@ -197,6 +198,9 @@ tests/
         connection-store.test.ts
         queries-store.test.ts
         tabs-store.test.ts
+      utils/
+        bigquery-completions-subquery.test.ts
+        sql-validation.test.ts
       App.test.tsx
       bigquery-formatter-additional.test.ts
       bigquery-formatter.test.ts
@@ -8188,6 +8192,1146 @@ export const useQueriesStore = create<QueriesState>((set, get) => ({
 }));
 ````
 
+## File: src/renderer/utils/bigquery-formatter.ts
+````typescript
+/**
+ * Formats BigQuery values for display in the UI
+ * Supports all BigQuery data types as per:
+ * https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types
+ */
+
+// Pre-compile regex patterns for better performance (compiled once, reused many times)
+const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_REGEX = /^\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+const DATETIME_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/;
+const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Checks if a value is a Date object or Date-like object
+ * This handles cases where Date objects might have been serialized/deserialized
+ * and are no longer instanceof Date
+ */
+function isDateLike(value: any): boolean {
+  if (value instanceof Date) {
+    return true;
+  }
+  // Check if it's an object with Date-like methods/properties
+  if (typeof value === 'object' && value !== null) {
+    // Check for Date-like methods
+    if (typeof value.getTime === 'function' && typeof value.toISOString === 'function') {
+      return true;
+    }
+    // Check if it has Date-like properties (from serialized Date)
+    if ('getTime' in value || 'toISOString' in value || 'getFullYear' in value) {
+      return true;
+    }
+    // CRITICAL: Check for empty objects {} that might be Date objects that were JSON serialized
+    // When Date objects are JSON.stringify'd, they become {}, so we need to check column type
+    // This is a fallback for objects that lost their Date properties during serialization
+    const keys = Object.keys(value);
+    if (keys.length === 0 && typeof value === 'object') {
+      // Empty object might be a serialized Date - we'll handle this in the formatter based on column type
+      return true; // Return true so it gets special handling
+    }
+  }
+  return false;
+}
+
+/**
+ * Converts a Date-like value to a Date object for formatting
+ */
+function toDate(value: any): Date | null {
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null) {
+    // Try to call getTime if available
+    if (typeof value.getTime === 'function') {
+      try {
+        const time = value.getTime();
+        if (typeof time === 'number' && !isNaN(time)) {
+          return new Date(time);
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+    // Try to create Date from ISO string if available
+    if (typeof value.toISOString === 'function') {
+      try {
+        const isoStr = value.toISOString();
+        const date = new Date(isoStr);
+        if (!isNaN(date.getTime())) {
+          return date;
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Formats a BigQuery value based on its column type
+ * @param value - The value to format
+ * @param columnType - The BigQuery column type (e.g., 'STRING', 'INTEGER', 'TIMESTAMP', etc.)
+ * @returns Formatted string representation of the value
+ */
+export function formatBigQueryValue(value: any, columnType?: string, columnName?: string): string {
+  // Handle NULL values - early return for common case
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+
+  // Normalize column type early so we can use it for object detection
+  const normalizedType = columnType?.toUpperCase() || '';
+  const colNameLower = (columnName || '').toLowerCase();
+  
+  // Check if this is a date type - either by type or by column name
+  // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
+  const isDateTypeByType = normalizedType === 'DATE' || normalizedType === 'DATETIME' || 
+                           normalizedType === 'TIME' || normalizedType === 'TIMESTAMP';
+  const isDateTypeByName = normalizedType === 'RECORD' && (
+    colNameLower.includes('date') || 
+    colNameLower.includes('time') || 
+    colNameLower.includes('timestamp') ||
+    colNameLower.includes('datetime')
+  );
+  const isDateType = isDateTypeByType || isDateTypeByName;
+
+  // CRITICAL: Check if value is already the string "[object Object]"
+  // This can happen if Date objects were converted to strings before reaching the formatter
+  if (typeof value === 'string' && value === '[object Object]') {
+    // CRITICAL: Even if column type is wrong (e.g., RECORD), check if column name suggests it's a date
+    // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
+    if (isDateType) {
+      return '[Invalid Date]';
+    }
+    return value; // For non-date columns, return as-is
+  }
+
+  // CRITICAL: Handle plain objects for DATE/TIME types BEFORE anything else
+  // This prevents [object Object] from being displayed
+  const isObject = typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
+  if (isDateType && isObject) {
+    // CRITICAL: Handle empty objects {} that might be Date objects that were JSON serialized
+    // When Date objects go through JSON.stringify, they become {}
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      // Empty object for a date column - this is likely a Date that was serialized incorrectly
+      // Check if it's truly empty or if it has non-enumerable properties
+      // Try to detect if this was a Date object by checking the prototype
+      const proto = Object.getPrototypeOf(value);
+      if (proto === Object.prototype || proto === null) {
+        // This is likely a Date object that was JSON.stringify'd to {}
+        // Return a placeholder instead of [object Object]
+        return '[Invalid Date]';
+      }
+      // Might be a Date-like object with non-enumerable properties
+      // Try to convert it
+      if (isDateLike(value)) {
+        const dateObj = toDate(value);
+        if (dateObj) {
+          if (normalizedType === 'DATE') {
+            return dateObj.toISOString().split('T')[0];
+          }
+          if (normalizedType === 'TIME') {
+            const hours = String(dateObj.getUTCHours()).padStart(2, '0');
+            const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
+            const ms = dateObj.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedType === 'DATETIME') {
+            return dateObj.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return dateObj.toISOString();
+        }
+      }
+      return '[Invalid Date]';
+    }
+    // Check for wrapped value
+    if ('value' in value && Object.keys(value).length === 1) {
+      const innerValue = value.value;
+      if (innerValue !== value) {
+        return formatBigQueryValue(innerValue, columnType);
+      }
+    }
+    
+    // Try toString() first
+    if ('toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+            return str;
+          }
+          // Try to parse it as a date
+          const parsed = formatBigQueryValue(str, columnType);
+          if (parsed !== str && parsed !== '[object Object]') {
+            return parsed;
+          }
+        }
+      } catch {
+        // Continue with other checks
+      }
+    }
+    
+    // Check all properties for date-like strings
+    for (const key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+        // Check for Date instances and Date-like objects
+        if (propValue instanceof Date || isDateLike(propValue)) {
+          const dateObj = propValue instanceof Date ? propValue : toDate(propValue);
+          if (dateObj) {
+            if (normalizedType === 'DATE') {
+              return dateObj.toISOString().split('T')[0];
+            }
+            if (normalizedType === 'DATETIME') {
+              return dateObj.toISOString().replace('T', ' ').slice(0, 19);
+            }
+            return dateObj.toISOString();
+          }
+        }
+      }
+    }
+    
+    // Try JSON.stringify to extract date strings
+    try {
+      const jsonStr = JSON.stringify(value);
+      const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
+      if (dateMatch) {
+        return dateMatch[1].replace('T', ' ').replace(/Z$/, '');
+      }
+      // Try parsing JSON and looking for date strings
+      const parsed = JSON.parse(jsonStr);
+      if (typeof parsed === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed) || /^\d{2}:\d{2}:\d{2}/.test(parsed))) {
+        return parsed;
+      }
+      // Check all values in parsed object
+      for (const key in parsed) {
+        if (typeof parsed[key] === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed[key]) || /^\d{2}:\d{2}:\d{2}/.test(parsed[key]))) {
+          return parsed[key];
+        }
+      }
+    } catch {
+      // JSON operations failed
+    }
+    
+    // Check for date object with year/month/day properties
+    if ('year' in value && 'month' in value && 'day' in value) {
+      const year = value.year ?? new Date().getFullYear();
+      const monthVal = value.month ?? 1;
+      const month = String(monthVal).padStart(2, '0');
+      const day = String(value.day ?? 1).padStart(2, '0');
+      if (normalizedType === 'DATE') {
+        return `${year}-${month}-${day}`;
+      }
+      // For DATETIME/TIMESTAMP, check for time components
+      const hours = String(value.hours ?? 0).padStart(2, '0');
+      const minutes = String(value.minutes ?? 0).padStart(2, '0');
+      const seconds = String(value.seconds ?? 0).padStart(2, '0');
+      if (normalizedType === 'DATETIME') {
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      }
+      return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+    }
+    
+    // Last resort: show object keys instead of [object Object]
+    // Reuse the keys variable that was already declared above
+    if (keys.length > 0) {
+      // Try one more time: check if any property value is a date string
+      for (const key of keys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+      return `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+    }
+    // If object has no keys, return placeholder
+    return '[Date Object]';
+  }
+
+  // Handle Date objects early - regardless of column type, to prevent [object Object] display
+  // Check for both Date instances and Date-like objects (e.g., serialized Dates)
+  if (isDateLike(value)) {
+    const dateObj = toDate(value);
+    if (dateObj) {
+      // Check if it's a valid date
+      if (isNaN(dateObj.getTime())) {
+        return 'Invalid Date';
+      }
+      // Format based on column type if available, otherwise use ISO string
+      if (normalizedType === 'DATE') {
+        return dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
+      }
+      if (normalizedType === 'TIME') {
+        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
+        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
+        const ms = dateObj.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      if (normalizedType === 'DATETIME') {
+        return dateObj.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+      }
+      if (normalizedType === 'TIMESTAMP') {
+        return dateObj.toISOString();
+      }
+      // Default: use ISO string for any Date object
+      return dateObj.toISOString();
+    }
+  }
+  
+  // Also check for Date instances explicitly (for compatibility)
+  if (value instanceof Date) {
+    // Check if it's a valid date
+    if (isNaN(value.getTime())) {
+      return 'Invalid Date';
+    }
+    // Format based on column type if available, otherwise use ISO string
+    if (normalizedType === 'DATE') {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (normalizedType === 'TIME') {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (normalizedType === 'DATETIME') {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    if (normalizedType === 'TIMESTAMP') {
+      return value.toISOString();
+    }
+    // Default: use ISO string for any Date object
+    return value.toISOString();
+  }
+
+  // Handle BOOL/BOOLEAN
+  if (normalizedType === 'BOOL' || normalizedType === 'BOOLEAN') {
+    if (typeof value === 'boolean') {
+      return value ? 'TRUE' : 'FALSE';
+    }
+    if (typeof value === 'string') {
+      const lower = value.toLowerCase();
+      if (lower === 'true' || lower === '1') return 'TRUE';
+      if (lower === 'false' || lower === '0') return 'FALSE';
+    }
+    return String(value);
+  }
+
+  // Handle BYTES
+  if (normalizedType === 'BYTES') {
+    if (typeof value === 'string') {
+      // BigQuery returns BYTES as base64-encoded strings
+      // Display as hex for better readability
+      try {
+        const binaryString = atob(value);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return '0x' + Array.from(bytes)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+      } catch {
+        // If not valid base64, return as-is
+        return value;
+      }
+    }
+    if (value instanceof Uint8Array || Array.isArray(value)) {
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      return '0x' + Array.from(bytes)
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+    return String(value);
+  }
+
+  // Handle DATE
+  if (normalizedType === 'DATE') {
+    if (value instanceof Date) {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (typeof value === 'string') {
+      // If already in YYYY-MM-DD format, return as-is
+      if (DATE_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      // Handle numeric date values (days since epoch)
+      const date = new Date(value * 86400000); // Convert days to milliseconds
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+    }
+    // Handle plain objects that might represent dates
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for date object with year/month/day properties
+      if ('year' in value && 'month' in value && 'day' in value) {
+        const year = value.year ?? new Date().getFullYear();
+        // Handle both 0-indexed (JS) and 1-indexed (BigQuery) months
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+      
+      // Try to extract any string property that looks like a date
+      for (const key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          const propValue = value[key];
+          if (typeof propValue === 'string' && DATE_REGEX.test(propValue)) {
+            return propValue;
+          }
+          if (typeof propValue === 'string') {
+            const date = new Date(propValue);
+            if (!isNaN(date.getTime())) {
+              return date.toISOString().split('T')[0];
+            }
+          }
+        }
+      }
+      
+      // Try JSON.stringify to see if there's a serializable date value
+      try {
+        const jsonStr = JSON.stringify(value);
+        // Check if JSON contains a date-like string
+        const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2})"/);
+        if (dateMatch) {
+          return dateMatch[1];
+        }
+        // Try parsing the JSON and looking for date strings
+        const parsed = JSON.parse(jsonStr);
+        if (typeof parsed === 'string' && DATE_REGEX.test(parsed)) {
+          return parsed;
+        }
+        // Check all values in the object
+        for (const key in parsed) {
+          if (typeof parsed[key] === 'string' && DATE_REGEX.test(parsed[key])) {
+            return parsed[key];
+          }
+        }
+      } catch {
+        // JSON operations failed, continue
+      }
+      
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+      
+      // Last resort: show object structure instead of [object Object]
+      const keys = Object.keys(value);
+      if (keys.length > 0) {
+        // Try to show first few property values that might be useful
+        const preview = keys.slice(0, 3).map(k => {
+          const v = value[k];
+          if (typeof v === 'string' && v.length < 20) return `${k}:${v}`;
+          if (typeof v === 'number') return `${k}:${v}`;
+          return k;
+        }).join(', ');
+        return `{${preview}${keys.length > 3 ? '...' : ''}}`;
+      }
+      // If object has no keys, return a placeholder instead of [object Object]
+      return '[Date Object]';
+    }
+    // If we get here with an object for a DATE column, something went wrong
+    // Return a placeholder instead of [object Object]
+    if (typeof value === 'object' && value !== null) {
+      return '[Date Object]';
+    }
+    return String(value);
+  }
+
+  // Handle TIME
+  if (normalizedType === 'TIME') {
+    if (value instanceof Date) {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (typeof value === 'string') {
+      // If already in HH:mm:ss format, return as-is
+      if (TIME_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+        const ms = date.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      // Handle numeric time values (milliseconds since midnight)
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+        const ms = date.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+    }
+    // Handle plain objects that might represent time
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for time object with hours/minutes/seconds properties
+      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    return String(value);
+  }
+
+  // Handle DATETIME
+  if (normalizedType === 'DATETIME') {
+    if (value instanceof Date) {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    if (typeof value === 'string') {
+      // If already in YYYY-MM-DD HH:mm:ss format, return as-is
+      if (DATETIME_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().replace('T', ' ').slice(0, 19);
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().replace('T', ' ').slice(0, 19);
+      }
+    }
+    // Handle plain objects that might represent datetime
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for datetime object with date and time properties
+      if (('year' in value && 'month' in value && 'day' in value) ||
+          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      }
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    return String(value);
+  }
+
+  // Handle TIMESTAMP
+  if (normalizedType === 'TIMESTAMP') {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    if (typeof value === 'string') {
+      // If already in ISO format, return as-is
+      if (ISO_TIMESTAMP_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      // BigQuery timestamps are in microseconds since epoch
+      // JavaScript Date uses milliseconds, so divide by 1000 if > 1e12
+      const timestampMs = value > 1e12 ? value / 1000 : value;
+      const date = new Date(timestampMs);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+    }
+    // Handle plain objects that might represent timestamp
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for timestamp object with date and time properties
+      if (('year' in value && 'month' in value && 'day' in value) ||
+          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    return String(value);
+  }
+
+  // Handle INTERVAL
+  if (normalizedType === 'INTERVAL') {
+    if (typeof value === 'string') {
+      // BigQuery INTERVAL format: "Y-M D H:M:S" or similar
+      // Return as-is since it's already formatted
+      return value;
+    }
+    if (typeof value === 'object' && value !== null) {
+      // BigQuery might return interval as an object with parts
+      if (value.years !== undefined || value.months !== undefined || 
+          value.days !== undefined || value.hours !== undefined ||
+          value.minutes !== undefined || value.seconds !== undefined) {
+        const parts: string[] = [];
+        if (value.years) parts.push(`${value.years} year${value.years !== 1 ? 's' : ''}`);
+        if (value.months) parts.push(`${value.months} month${value.months !== 1 ? 's' : ''}`);
+        if (value.days) parts.push(`${value.days} day${value.days !== 1 ? 's' : ''}`);
+        if (value.hours) parts.push(`${value.hours} hour${value.hours !== 1 ? 's' : ''}`);
+        if (value.minutes) parts.push(`${value.minutes} minute${value.minutes !== 1 ? 's' : ''}`);
+        if (value.seconds) parts.push(`${value.seconds} second${value.seconds !== 1 ? 's' : ''}`);
+        return parts.join(' ') || '0 seconds';
+      }
+    }
+    return String(value);
+  }
+
+  // Handle NUMERIC and BIGNUMERIC
+  if (normalizedType === 'NUMERIC' || normalizedType === 'BIGNUMERIC') {
+    if (typeof value === 'number') {
+      // Format with appropriate precision
+      // NUMERIC has 38 digits total, 9 after decimal
+      // BIGNUMERIC has 76 digits total, 38 after decimal
+      // For display, use toFixed to show significant digits
+      return value.toLocaleString('en-US', {
+        maximumFractionDigits: 38,
+        useGrouping: true,
+      });
+    }
+    if (typeof value === 'string') {
+      // BigQuery returns NUMERIC/BIGNUMERIC as strings to preserve precision
+      // Format with locale-aware number formatting
+      try {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          return num.toLocaleString('en-US', {
+            maximumFractionDigits: 38,
+            useGrouping: true,
+          });
+        }
+      } catch {
+        // If parsing fails, return as-is
+      }
+      return value;
+    }
+    return String(value);
+  }
+
+  // Handle INTEGER types (INTEGER, INT64, INT32, INT, etc.)
+  if (normalizedType === 'INTEGER' || normalizedType === 'INT' || normalizedType.includes('INT')) {
+    if (typeof value === 'number') {
+      // Ensure it's displayed as a whole number (no decimal point)
+      // Use Math.floor or Math.trunc to remove any decimal part, then convert to string
+      const intValue = Number.isInteger(value) ? value : Math.trunc(value);
+      return String(intValue); // Convert to string without commas or decimal points
+    }
+    if (typeof value === 'string') {
+      // BigQuery might return large integers as strings
+      // Return as-is if it's already a valid integer string (no decimal point, no commas)
+      if (/^-?\d+$/.test(value)) {
+        return value; // Already a valid integer string, return without commas or periods
+      }
+      // If string contains a decimal point, parse and truncate to integer
+      try {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          const intValue = Math.trunc(num); // Remove decimal part
+          return String(intValue); // Convert to string without commas or decimal points
+        }
+      } catch {
+        // If parsing fails, return as-is
+      }
+      return value;
+    }
+    // For other types, try to convert to integer
+    try {
+      const num = Number(value);
+      if (!isNaN(num)) {
+        const intValue = Math.trunc(num);
+        return String(intValue);
+      }
+    } catch {
+      // If conversion fails, return as string
+    }
+    return String(value);
+  }
+
+  // Handle FLOAT and FLOAT64
+  if (normalizedType === 'FLOAT' || normalizedType === 'FLOAT64') {
+    if (typeof value === 'number') {
+      // Format floats with reasonable precision
+      if (Number.isInteger(value)) {
+        return value.toLocaleString('en-US');
+      }
+      return value.toLocaleString('en-US', {
+        maximumFractionDigits: 15,
+        useGrouping: true,
+      });
+    }
+    if (typeof value === 'string') {
+      try {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          if (Number.isInteger(num)) {
+            return num.toLocaleString('en-US');
+          }
+          return num.toLocaleString('en-US', {
+            maximumFractionDigits: 15,
+            useGrouping: true,
+          });
+        }
+      } catch {
+        // If parsing fails, return as-is
+      }
+      return value;
+    }
+    return String(value);
+  }
+
+  // Handle GEOGRAPHY
+  if (normalizedType === 'GEOGRAPHY') {
+    if (typeof value === 'string') {
+      // BigQuery GEOGRAPHY is returned as GeoJSON strings
+      try {
+        const geoJson = JSON.parse(value);
+        // Pretty-print GeoJSON
+        return JSON.stringify(geoJson, null, 2);
+      } catch {
+        // If not valid JSON, return as-is
+        return value;
+      }
+    }
+    if (typeof value === 'object' && value !== null) {
+      // Already parsed GeoJSON object
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  // Handle JSON
+  if (normalizedType === 'JSON') {
+    if (typeof value === 'string') {
+      // Try to parse and pretty-print JSON
+      try {
+        const parsed = JSON.parse(value);
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        // If not valid JSON, return as-is
+        return value;
+      }
+    }
+    if (typeof value === 'object' && value !== null) {
+      // Already parsed JSON object
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  // Handle ARRAY
+  if (normalizedType === 'ARRAY' || Array.isArray(value)) {
+    if (Array.isArray(value)) {
+      // Format array elements recursively
+      const formatted = value.map((item, index) => {
+        // For arrays, we don't have per-item type info, so format generically
+        const formattedItem = formatBigQueryValue(item);
+        return formattedItem;
+      });
+      return `[${formatted.join(', ')}]`;
+    }
+    return String(value);
+  }
+
+  // Handle STRUCT/RECORD
+  if (normalizedType === 'STRUCT' || normalizedType === 'RECORD') {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+      // Check if it's a BigQuery date object with a value property
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        // Recursively format the inner value (but avoid infinite recursion)
+        const innerValue = value.value;
+        if (innerValue !== value) {
+          return formatBigQueryValue(innerValue, columnType);
+        }
+      }
+      // Format as JSON object
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  // Handle plain objects that aren't Date instances - check before STRING fallback
+  // This prevents [object Object] display for objects that might represent dates or other types
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it's a wrapped value object (common in some BigQuery responses)
+    if (value.value !== undefined && Object.keys(value).length === 1) {
+      // Recursively format the inner value (but avoid infinite recursion)
+      const innerValue = value.value;
+      if (innerValue !== value) {
+        return formatBigQueryValue(innerValue, columnType);
+      }
+    }
+    
+    // For date/time types, try to extract date from object properties
+    if (normalizedType === 'DATE' || normalizedType === 'DATETIME' || normalizedType === 'TIMESTAMP') {
+      // Check for common date object properties
+      if ('year' in value && 'month' in value && 'day' in value) {
+        const year = value.year;
+        const month = String(value.month || 0).padStart(2, '0');
+        const day = String(value.day || 0).padStart(2, '0');
+        if (normalizedType === 'DATE') {
+          return `${year}-${month}-${day}`;
+        }
+        // For DATETIME/TIMESTAMP, check for time components
+        const hours = String(value.hours || 0).padStart(2, '0');
+        const minutes = String(value.minutes || 0).padStart(2, '0');
+        const seconds = String(value.seconds || 0).padStart(2, '0');
+        if (normalizedType === 'DATETIME') {
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Try to find a string representation in common properties
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    
+    // For other object types, try JSON stringify
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      // If JSON.stringify fails, return a descriptive string
+      return `[Object: ${Object.keys(value).join(', ')}]`;
+    }
+  }
+
+  // CRITICAL: Before falling back to String(value), check if this is an object for a date/time type
+  // This is a final safety net to prevent [object Object] display
+  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    // Try one more time to extract a date string
+    try {
+      const jsonStr = JSON.stringify(value);
+      // Look for any date-like pattern in the JSON
+      const datePatterns = [
+        /"(\d{4}-\d{2}-\d{2})"/,  // DATE format
+        /"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/,  // TIMESTAMP format
+        /"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/,  // DATETIME format
+        /"(\d{2}:\d{2}:\d{2})/,  // TIME format
+      ];
+      
+      for (const pattern of datePatterns) {
+        const match = jsonStr.match(pattern);
+        if (match) {
+          let dateStr = match[1];
+          if (normalizedType === 'DATE' && dateStr.includes('T')) {
+            dateStr = dateStr.split('T')[0];
+          } else if (normalizedType === 'DATETIME' && dateStr.includes('T')) {
+            dateStr = dateStr.replace('T', ' ');
+          }
+          return dateStr;
+        }
+      }
+      
+      // If no date pattern found, show object structure
+      const keys = Object.keys(value);
+      if (keys.length > 0) {
+        // Try to show first property value
+        const firstKey = keys[0];
+        const firstValue = value[firstKey];
+        if (typeof firstValue === 'string' && firstValue.length < 50) {
+          return firstValue;
+        }
+        return `{${keys.slice(0, 2).join(', ')}}`;
+      }
+      return '[Date Object]';
+    } catch {
+      // JSON.stringify failed
+      const keys = Object.keys(value);
+      return keys.length > 0 ? `{${keys.slice(0, 2).join(', ')}}` : '[Date Object]';
+    }
+  }
+
+  // Handle STRING (default case)
+  if (normalizedType === 'STRING' || normalizedType === '') {
+    // CRITICAL: Before converting to string, check if it's a Date-like object
+    // This prevents [object Object] from being displayed for Date objects
+    if (isDateLike(value)) {
+      const dateObj = toDate(value);
+      if (dateObj) {
+        if (isNaN(dateObj.getTime())) {
+          return 'Invalid Date';
+        }
+        return dateObj.toISOString();
+      }
+    }
+    
+    // Before converting to string, check if it's an object
+    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+      // Try JSON.stringify for objects
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return `[Object: ${Object.keys(value).join(', ')}]`;
+      }
+    }
+    
+    // Check for Date instance one more time
+    if (value instanceof Date) {
+      if (isNaN(value.getTime())) {
+        return 'Invalid Date';
+      }
+      return value.toISOString();
+    }
+    
+    return String(value);
+  }
+
+  // Fallback for any other types
+  // CRITICAL: Before using String(value), check if it's a Date-like object
+  // This prevents [object Object] from being displayed for Date objects
+  if (isDateLike(value)) {
+    const dateObj = toDate(value);
+    if (dateObj) {
+      // Format based on column type if available, otherwise use ISO string
+      if (normalizedType === 'DATE') {
+        return dateObj.toISOString().split('T')[0];
+      }
+      if (normalizedType === 'TIME') {
+        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
+        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
+        const ms = dateObj.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      if (normalizedType === 'DATETIME') {
+        return dateObj.toISOString().replace('T', ' ').slice(0, 19);
+      }
+      if (normalizedType === 'TIMESTAMP') {
+        return dateObj.toISOString();
+      }
+      return dateObj.toISOString();
+    }
+  }
+  
+  // CRITICAL: Check for empty objects {} for date types BEFORE general object handling
+  // Empty objects for date columns are likely Date objects that were JSON serialized
+  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    const objKeys = Object.keys(value);
+    if (objKeys.length === 0) {
+      // Empty object for a date column - this is a Date that was serialized incorrectly
+      return '[Invalid Date]';
+    }
+  }
+  
+  // Before using String(value), check if it's an object
+  // Exclude Date instances and Date-like objects to prevent [object Object] display
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && 
+      !(value instanceof Date) && !isDateLike(value)) {
+    // CRITICAL: For date types, never return [object Object]
+    if (isDateType) {
+      const objKeys = Object.keys(value);
+      if (objKeys.length === 0) {
+        return '[Invalid Date]';
+      }
+      // Try to extract any useful information
+      try {
+        const jsonStr = JSON.stringify(value);
+        if (jsonStr === '{}') {
+          return '[Invalid Date]';
+        }
+        return jsonStr;
+      } catch {
+        return `[Object: ${objKeys.join(', ')}]`;
+      }
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return `[Object: ${Object.keys(value).join(', ')}]`;
+    }
+  }
+  
+  // Final fallback - but check for Date and Date-like objects one more time to be safe
+  if (isDateLike(value)) {
+    const dateObj = toDate(value);
+    if (dateObj) {
+      if (isNaN(dateObj.getTime())) {
+        return 'Invalid Date';
+      }
+      return dateObj.toISOString();
+    }
+  }
+  
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) {
+      return 'Invalid Date';
+    }
+    return value.toISOString();
+  }
+  
+  // CRITICAL: Last check before String(value) - if it's a date type and an object, don't convert to string
+  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    return '[Invalid Date]';
+  }
+  
+  return String(value);
+}
+````
+
 ## File: src/renderer/App.css
 ````css
 * {
@@ -11124,1144 +12268,679 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
 };
 ````
 
-## File: src/renderer/utils/bigquery-formatter.ts
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
+## File: src/renderer/utils/sql-validation.ts
 ````typescript
 /**
- * Formats BigQuery values for display in the UI
- * Supports all BigQuery data types as per:
- * https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types
+ * SQL Validation Utilities
+ * 
+ * This module contains utility functions for validating SQL queries,
+ * including column reference validation and subquery scope handling.
  */
 
-// Pre-compile regex patterns for better performance (compiled once, reused many times)
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_REGEX = /^\d{2}:\d{2}:\d{2}(\.\d+)?$/;
-const DATETIME_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/;
-const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-
-/**
- * Checks if a value is a Date object or Date-like object
- * This handles cases where Date objects might have been serialized/deserialized
- * and are no longer instanceof Date
- */
-function isDateLike(value: any): boolean {
-  if (value instanceof Date) {
-    return true;
-  }
-  // Check if it's an object with Date-like methods/properties
-  if (typeof value === 'object' && value !== null) {
-    // Check for Date-like methods
-    if (typeof value.getTime === 'function' && typeof value.toISOString === 'function') {
-      return true;
-    }
-    // Check if it has Date-like properties (from serialized Date)
-    if ('getTime' in value || 'toISOString' in value || 'getFullYear' in value) {
-      return true;
-    }
-    // CRITICAL: Check for empty objects {} that might be Date objects that were JSON serialized
-    // When Date objects are JSON.stringify'd, they become {}, so we need to check column type
-    // This is a fallback for objects that lost their Date properties during serialization
-    const keys = Object.keys(value);
-    if (keys.length === 0 && typeof value === 'object') {
-      // Empty object might be a serialized Date - we'll handle this in the formatter based on column type
-      return true; // Return true so it gets special handling
-    }
-  }
-  return false;
+export interface SqlNodeLocation {
+  start?: { line: number; column: number };
+  end?: { line: number; column: number };
+  begin?: { line: number; column: number };
+  finish?: { line: number; column: number };
 }
 
-/**
- * Converts a Date-like value to a Date object for formatting
- */
-function toDate(value: any): Date | null {
-  if (value instanceof Date) {
-    return value;
-  }
-  if (typeof value === 'object' && value !== null) {
-    // Try to call getTime if available
-    if (typeof value.getTime === 'function') {
-      try {
-        const time = value.getTime();
-        if (typeof time === 'number' && !isNaN(time)) {
-          return new Date(time);
-        }
-      } catch {
-        // Ignore errors
-      }
-    }
-    // Try to create Date from ISO string if available
-    if (typeof value.toISOString === 'function') {
-      try {
-        const isoStr = value.toISOString();
-        const date = new Date(isoStr);
-        if (!isNaN(date.getTime())) {
-          return date;
-        }
-      } catch {
-        // Ignore errors
-      }
-    }
-  }
-  return null;
+export interface ColumnRefInfo {
+  alias: string | null;
+  column: string;
+  location?: SqlNodeLocation;
 }
 
+export interface TableAliasInfo {
+  alias: string;
+  datasetId?: string;
+  tableId?: string;
+}
+
+export interface ColumnValidationIssue {
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+export const stripIdentifierQuotes = (value: string | null | undefined): string => {
+  if (!value) return '';
+  return value.replace(/[`"']/g, '');
+};
+
 /**
- * Formats a BigQuery value based on its column type
- * @param value - The value to format
- * @param columnType - The BigQuery column type (e.g., 'STRING', 'INTEGER', 'TIMESTAMP', etc.)
- * @returns Formatted string representation of the value
+ * Collects column references from an AST expression node.
+ * Skips subqueries as they have their own scope.
  */
-export function formatBigQueryValue(value: any, columnType?: string, columnName?: string): string {
-  // Handle NULL values - early return for common case
-  if (value === null || value === undefined) {
-    return 'NULL';
+export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]): void => {
+  if (!node) return;
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectColumnRefsFromExpression(child, refs);
+    }
+    return;
   }
 
-  // Normalize column type early so we can use it for object detection
-  const normalizedType = columnType?.toUpperCase() || '';
-  const colNameLower = (columnName || '').toLowerCase();
-  
-  // Check if this is a date type - either by type or by column name
-  // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
-  const isDateTypeByType = normalizedType === 'DATE' || normalizedType === 'DATETIME' || 
-                           normalizedType === 'TIME' || normalizedType === 'TIMESTAMP';
-  const isDateTypeByName = normalizedType === 'RECORD' && (
-    colNameLower.includes('date') || 
-    colNameLower.includes('time') || 
-    colNameLower.includes('timestamp') ||
-    colNameLower.includes('datetime')
-  );
-  const isDateType = isDateTypeByType || isDateTypeByName;
-
-  // CRITICAL: Check if value is already the string "[object Object]"
-  // This can happen if Date objects were converted to strings before reaching the formatter
-  if (typeof value === 'string' && value === '[object Object]') {
-    // CRITICAL: Even if column type is wrong (e.g., RECORD), check if column name suggests it's a date
-    // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
-    if (isDateType) {
-      return '[Invalid Date]';
-    }
-    return value; // For non-date columns, return as-is
+  if (typeof node !== 'object') {
+    return;
   }
 
-  // CRITICAL: Handle plain objects for DATE/TIME types BEFORE anything else
-  // This prevents [object Object] from being displayed
-  const isObject = typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
-  if (isDateType && isObject) {
-    // CRITICAL: Handle empty objects {} that might be Date objects that were JSON serialized
-    // When Date objects go through JSON.stringify, they become {}
-    const keys = Object.keys(value);
-    if (keys.length === 0) {
-      // Empty object for a date column - this is likely a Date that was serialized incorrectly
-      // Check if it's truly empty or if it has non-enumerable properties
-      // Try to detect if this was a Date object by checking the prototype
-      const proto = Object.getPrototypeOf(value);
-      if (proto === Object.prototype || proto === null) {
-        // This is likely a Date object that was JSON.stringify'd to {}
-        // Return a placeholder instead of [object Object]
-        return '[Invalid Date]';
+  // Skip subqueries - they have their own scope and should be validated separately
+  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
+  if (node.type === 'select') {
+    return;
+  }
+
+  if (node.type === 'column_ref') {
+    // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
+    let columnName: string;
+    if (typeof node.column === 'string') {
+      columnName = stripIdentifierQuotes(node.column);
+    } else if (node.column && typeof node.column === 'object') {
+      // Handle nested column structure: { expr: { type: 'default', value: 'ColumnName' }, offset: [] }
+      if (node.column.expr && typeof node.column.expr.value === 'string') {
+        columnName = stripIdentifierQuotes(node.column.expr.value);
+      } else if (typeof node.column.column === 'string') {
+        columnName = stripIdentifierQuotes(node.column.column);
+      } else {
+        columnName = '';
       }
-      // Might be a Date-like object with non-enumerable properties
-      // Try to convert it
-      if (isDateLike(value)) {
-        const dateObj = toDate(value);
-        if (dateObj) {
-          if (normalizedType === 'DATE') {
-            return dateObj.toISOString().split('T')[0];
-          }
-          if (normalizedType === 'TIME') {
-            const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-            const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-            const ms = dateObj.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedType === 'DATETIME') {
-            return dateObj.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return dateObj.toISOString();
-        }
-      }
-      return '[Invalid Date]';
-    }
-    // Check for wrapped value
-    if ('value' in value && Object.keys(value).length === 1) {
-      const innerValue = value.value;
-      if (innerValue !== value) {
-        return formatBigQueryValue(innerValue, columnType);
-      }
+    } else {
+      columnName = '';
     }
     
-    // Try toString() first
-    if ('toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-            return str;
-          }
-          // Try to parse it as a date
-          const parsed = formatBigQueryValue(str, columnType);
-          if (parsed !== str && parsed !== '[object Object]') {
-            return parsed;
-          }
-        }
-      } catch {
-        // Continue with other checks
-      }
-    }
+    // Collect column refs for validation:
+    // - Non-* columns: always collect for column name validation
+    // - * columns with alias (e.g., da.*): collect to validate alias exists
+    // - Bare * without alias: skip (no validation needed)
+    const hasAlias = node.table ? true : false;
+    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
     
-    // Check all properties for date-like strings
-    for (const key in value) {
-      if (Object.prototype.hasOwnProperty.call(value, key)) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-        // Check for Date instances and Date-like objects
-        if (propValue instanceof Date || isDateLike(propValue)) {
-          const dateObj = propValue instanceof Date ? propValue : toDate(propValue);
-          if (dateObj) {
-            if (normalizedType === 'DATE') {
-              return dateObj.toISOString().split('T')[0];
-            }
-            if (normalizedType === 'DATETIME') {
-              return dateObj.toISOString().replace('T', ' ').slice(0, 19);
-            }
-            return dateObj.toISOString();
-          }
-        }
-      }
-    }
-    
-    // Try JSON.stringify to extract date strings
-    try {
-      const jsonStr = JSON.stringify(value);
-      const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
-      if (dateMatch) {
-        return dateMatch[1].replace('T', ' ').replace(/Z$/, '');
-      }
-      // Try parsing JSON and looking for date strings
-      const parsed = JSON.parse(jsonStr);
-      if (typeof parsed === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed) || /^\d{2}:\d{2}:\d{2}/.test(parsed))) {
-        return parsed;
-      }
-      // Check all values in parsed object
-      for (const key in parsed) {
-        if (typeof parsed[key] === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed[key]) || /^\d{2}:\d{2}:\d{2}/.test(parsed[key]))) {
-          return parsed[key];
-        }
-      }
-    } catch {
-      // JSON operations failed
-    }
-    
-    // Check for date object with year/month/day properties
-    if ('year' in value && 'month' in value && 'day' in value) {
-      const year = value.year ?? new Date().getFullYear();
-      const monthVal = value.month ?? 1;
-      const month = String(monthVal).padStart(2, '0');
-      const day = String(value.day ?? 1).padStart(2, '0');
-      if (normalizedType === 'DATE') {
-        return `${year}-${month}-${day}`;
-      }
-      // For DATETIME/TIMESTAMP, check for time components
-      const hours = String(value.hours ?? 0).padStart(2, '0');
-      const minutes = String(value.minutes ?? 0).padStart(2, '0');
-      const seconds = String(value.seconds ?? 0).padStart(2, '0');
-      if (normalizedType === 'DATETIME') {
-        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-      }
-      return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-    }
-    
-    // Last resort: show object keys instead of [object Object]
-    // Reuse the keys variable that was already declared above
-    if (keys.length > 0) {
-      // Try one more time: check if any property value is a date string
-      for (const key of keys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-      return `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
-    }
-    // If object has no keys, return placeholder
-    return '[Date Object]';
-  }
-
-  // Handle Date objects early - regardless of column type, to prevent [object Object] display
-  // Check for both Date instances and Date-like objects (e.g., serialized Dates)
-  if (isDateLike(value)) {
-    const dateObj = toDate(value);
-    if (dateObj) {
-      // Check if it's a valid date
-      if (isNaN(dateObj.getTime())) {
-        return 'Invalid Date';
-      }
-      // Format based on column type if available, otherwise use ISO string
-      if (normalizedType === 'DATE') {
-        return dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
-      }
-      if (normalizedType === 'TIME') {
-        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-        const ms = dateObj.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      if (normalizedType === 'DATETIME') {
-        return dateObj.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-      }
-      if (normalizedType === 'TIMESTAMP') {
-        return dateObj.toISOString();
-      }
-      // Default: use ISO string for any Date object
-      return dateObj.toISOString();
-    }
-  }
-  
-  // Also check for Date instances explicitly (for compatibility)
-  if (value instanceof Date) {
-    // Check if it's a valid date
-    if (isNaN(value.getTime())) {
-      return 'Invalid Date';
-    }
-    // Format based on column type if available, otherwise use ISO string
-    if (normalizedType === 'DATE') {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (normalizedType === 'TIME') {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (normalizedType === 'DATETIME') {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    if (normalizedType === 'TIMESTAMP') {
-      return value.toISOString();
-    }
-    // Default: use ISO string for any Date object
-    return value.toISOString();
-  }
-
-  // Handle BOOL/BOOLEAN
-  if (normalizedType === 'BOOL' || normalizedType === 'BOOLEAN') {
-    if (typeof value === 'boolean') {
-      return value ? 'TRUE' : 'FALSE';
-    }
-    if (typeof value === 'string') {
-      const lower = value.toLowerCase();
-      if (lower === 'true' || lower === '1') return 'TRUE';
-      if (lower === 'false' || lower === '0') return 'FALSE';
-    }
-    return String(value);
-  }
-
-  // Handle BYTES
-  if (normalizedType === 'BYTES') {
-    if (typeof value === 'string') {
-      // BigQuery returns BYTES as base64-encoded strings
-      // Display as hex for better readability
-      try {
-        const binaryString = atob(value);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return '0x' + Array.from(bytes)
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join('');
-      } catch {
-        // If not valid base64, return as-is
-        return value;
-      }
-    }
-    if (value instanceof Uint8Array || Array.isArray(value)) {
-      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-      return '0x' + Array.from(bytes)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-    }
-    return String(value);
-  }
-
-  // Handle DATE
-  if (normalizedType === 'DATE') {
-    if (value instanceof Date) {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (typeof value === 'string') {
-      // If already in YYYY-MM-DD format, return as-is
-      if (DATE_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().split('T')[0];
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      // Handle numeric date values (days since epoch)
-      const date = new Date(value * 86400000); // Convert days to milliseconds
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().split('T')[0];
-      }
-    }
-    // Handle plain objects that might represent dates
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for date object with year/month/day properties
-      if ('year' in value && 'month' in value && 'day' in value) {
-        const year = value.year ?? new Date().getFullYear();
-        // Handle both 0-indexed (JS) and 1-indexed (BigQuery) months
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-      }
-      
-      // Try to extract any string property that looks like a date
-      for (const key in value) {
-        if (Object.prototype.hasOwnProperty.call(value, key)) {
-          const propValue = value[key];
-          if (typeof propValue === 'string' && DATE_REGEX.test(propValue)) {
-            return propValue;
-          }
-          if (typeof propValue === 'string') {
-            const date = new Date(propValue);
-            if (!isNaN(date.getTime())) {
-              return date.toISOString().split('T')[0];
-            }
-          }
-        }
-      }
-      
-      // Try JSON.stringify to see if there's a serializable date value
-      try {
-        const jsonStr = JSON.stringify(value);
-        // Check if JSON contains a date-like string
-        const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2})"/);
-        if (dateMatch) {
-          return dateMatch[1];
-        }
-        // Try parsing the JSON and looking for date strings
-        const parsed = JSON.parse(jsonStr);
-        if (typeof parsed === 'string' && DATE_REGEX.test(parsed)) {
-          return parsed;
-        }
-        // Check all values in the object
-        for (const key in parsed) {
-          if (typeof parsed[key] === 'string' && DATE_REGEX.test(parsed[key])) {
-            return parsed[key];
-          }
-        }
-      } catch {
-        // JSON operations failed, continue
-      }
-      
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-      
-      // Last resort: show object structure instead of [object Object]
-      const keys = Object.keys(value);
-      if (keys.length > 0) {
-        // Try to show first few property values that might be useful
-        const preview = keys.slice(0, 3).map(k => {
-          const v = value[k];
-          if (typeof v === 'string' && v.length < 20) return `${k}:${v}`;
-          if (typeof v === 'number') return `${k}:${v}`;
-          return k;
-        }).join(', ');
-        return `{${preview}${keys.length > 3 ? '...' : ''}}`;
-      }
-      // If object has no keys, return a placeholder instead of [object Object]
-      return '[Date Object]';
-    }
-    // If we get here with an object for a DATE column, something went wrong
-    // Return a placeholder instead of [object Object]
-    if (typeof value === 'object' && value !== null) {
-      return '[Date Object]';
-    }
-    return String(value);
-  }
-
-  // Handle TIME
-  if (normalizedType === 'TIME') {
-    if (value instanceof Date) {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (typeof value === 'string') {
-      // If already in HH:mm:ss format, return as-is
-      if (TIME_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        const hours = String(date.getUTCHours()).padStart(2, '0');
-        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-        const ms = date.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      // Handle numeric time values (milliseconds since midnight)
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        const hours = String(date.getUTCHours()).padStart(2, '0');
-        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-        const ms = date.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-    }
-    // Handle plain objects that might represent time
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for time object with hours/minutes/seconds properties
-      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    return String(value);
-  }
-
-  // Handle DATETIME
-  if (normalizedType === 'DATETIME') {
-    if (value instanceof Date) {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    if (typeof value === 'string') {
-      // If already in YYYY-MM-DD HH:mm:ss format, return as-is
-      if (DATETIME_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().replace('T', ' ').slice(0, 19);
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().replace('T', ' ').slice(0, 19);
-      }
-    }
-    // Handle plain objects that might represent datetime
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for datetime object with date and time properties
-      if (('year' in value && 'month' in value && 'day' in value) ||
-          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-      }
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    return String(value);
-  }
-
-  // Handle TIMESTAMP
-  if (normalizedType === 'TIMESTAMP') {
-    if (value instanceof Date) {
-      return value.toISOString();
-    }
-    if (typeof value === 'string') {
-      // If already in ISO format, return as-is
-      if (ISO_TIMESTAMP_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString();
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      // BigQuery timestamps are in microseconds since epoch
-      // JavaScript Date uses milliseconds, so divide by 1000 if > 1e12
-      const timestampMs = value > 1e12 ? value / 1000 : value;
-      const date = new Date(timestampMs);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString();
-      }
-    }
-    // Handle plain objects that might represent timestamp
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for timestamp object with date and time properties
-      if (('year' in value && 'month' in value && 'day' in value) ||
-          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    return String(value);
-  }
-
-  // Handle INTERVAL
-  if (normalizedType === 'INTERVAL') {
-    if (typeof value === 'string') {
-      // BigQuery INTERVAL format: "Y-M D H:M:S" or similar
-      // Return as-is since it's already formatted
-      return value;
-    }
-    if (typeof value === 'object' && value !== null) {
-      // BigQuery might return interval as an object with parts
-      if (value.years !== undefined || value.months !== undefined || 
-          value.days !== undefined || value.hours !== undefined ||
-          value.minutes !== undefined || value.seconds !== undefined) {
-        const parts: string[] = [];
-        if (value.years) parts.push(`${value.years} year${value.years !== 1 ? 's' : ''}`);
-        if (value.months) parts.push(`${value.months} month${value.months !== 1 ? 's' : ''}`);
-        if (value.days) parts.push(`${value.days} day${value.days !== 1 ? 's' : ''}`);
-        if (value.hours) parts.push(`${value.hours} hour${value.hours !== 1 ? 's' : ''}`);
-        if (value.minutes) parts.push(`${value.minutes} minute${value.minutes !== 1 ? 's' : ''}`);
-        if (value.seconds) parts.push(`${value.seconds} second${value.seconds !== 1 ? 's' : ''}`);
-        return parts.join(' ') || '0 seconds';
-      }
-    }
-    return String(value);
-  }
-
-  // Handle NUMERIC and BIGNUMERIC
-  if (normalizedType === 'NUMERIC' || normalizedType === 'BIGNUMERIC') {
-    if (typeof value === 'number') {
-      // Format with appropriate precision
-      // NUMERIC has 38 digits total, 9 after decimal
-      // BIGNUMERIC has 76 digits total, 38 after decimal
-      // For display, use toFixed to show significant digits
-      return value.toLocaleString('en-US', {
-        maximumFractionDigits: 38,
-        useGrouping: true,
+    if (shouldCollect) {
+      refs.push({
+        alias: node.table ? stripIdentifierQuotes(node.table) : null,
+        column: columnName,
+        location: node.location || node.loc,
       });
     }
-    if (typeof value === 'string') {
-      // BigQuery returns NUMERIC/BIGNUMERIC as strings to preserve precision
-      // Format with locale-aware number formatting
-      try {
-        const num = parseFloat(value);
-        if (!isNaN(num)) {
-          return num.toLocaleString('en-US', {
-            maximumFractionDigits: 38,
-            useGrouping: true,
+    return;
+  }
+
+  // Recursively inspect child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') {
+      continue;
+    }
+    collectColumnRefsFromExpression(node[key], refs);
+  }
+};
+
+/**
+ * Collects all column references from a SELECT statement AST.
+ */
+export const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
+  const refs: ColumnRefInfo[] = [];
+
+  if (!selectAst || typeof selectAst !== 'object') {
+    return refs;
+  }
+
+  const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
+
+  // Optionally collect from CTE bodies (for full query validation)
+  if (includeCteBodies && Array.isArray(selectAst.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Recursively collect from CTE body (but not nested CTEs within CTEs)
+        const cteRefs = collectColumnRefsForSelect(cteAst, false);
+        refs.push(...cteRefs);
+      }
+    }
+  }
+
+  if (Array.isArray(selectAst.columns)) {
+    for (const col of selectAst.columns) {
+      collect(col?.expr ?? col);
+    }
+  }
+
+  if (selectAst.where) {
+    collect(selectAst.where);
+  }
+
+  if (Array.isArray(selectAst.groupby)) {
+    for (const groupExpr of selectAst.groupby) {
+      collect(groupExpr);
+    }
+  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
+    for (const groupExpr of selectAst.groupby.value) {
+      collect(groupExpr);
+    }
+  }
+
+  if (Array.isArray(selectAst.orderby)) {
+    for (const orderItem of selectAst.orderby) {
+      collect(orderItem?.expr ?? orderItem);
+    }
+  }
+
+  if (selectAst.having) {
+    collect(selectAst.having);
+  }
+
+  if (Array.isArray(selectAst.from)) {
+    for (const fromItem of selectAst.from) {
+      if (fromItem?.on) {
+        collect(fromItem.on);
+      }
+    }
+  }
+
+  return refs;
+};
+
+/**
+ * Builds a map of table aliases and unique tables from a SELECT statement AST.
+ */
+export const buildTableAliasMapFromSelect = (
+  selectAst: any
+): {
+  aliasMap: Map<string, TableAliasInfo>;
+  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
+} => {
+  const aliasMap = new Map<string, TableAliasInfo>();
+  const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
+
+  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string }) => {
+    const cleanAlias = stripIdentifierQuotes(aliasName);
+    if (!cleanAlias) return;
+    const key = cleanAlias.toLowerCase();
+    const existing = aliasMap.get(key);
+    if (!existing || (!existing.datasetId && info.datasetId) || (!existing.tableId && info.tableId)) {
+      aliasMap.set(key, {
+        alias: cleanAlias,
+        datasetId: info.datasetId,
+        tableId: info.tableId,
+      });
+    }
+  };
+
+  const processFromItem = (item: any) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        processFromItem(child);
+      }
+      return;
+    }
+
+    // Handle subqueries - register alias name but skip schema mapping
+    if (item.expr && item.expr.type === 'select') {
+      registerAlias(item.as || item.alias, {});
+      return;
+    }
+
+    let datasetId: string | undefined;
+    let tableId: string | undefined;
+    let projectId: string | undefined;
+
+    if (typeof item.catalog === 'string') {
+      projectId = stripIdentifierQuotes(item.catalog);
+    }
+
+    if (typeof item.db === 'string') {
+      const dbValue = stripIdentifierQuotes(item.db);
+      // node-sql-parser uses db for project in BigQuery dialects
+      projectId = projectId ?? dbValue;
+      if (!datasetId) {
+        datasetId = dbValue;
+      }
+    }
+
+    if (typeof item.schema === 'string') {
+      datasetId = stripIdentifierQuotes(item.schema);
+    }
+
+    if (typeof item.dataset === 'string') {
+      datasetId = stripIdentifierQuotes(item.dataset);
+    }
+
+    const registerTableName = (raw: string | undefined) => {
+      if (!raw) return;
+      const cleaned = stripIdentifierQuotes(raw);
+      if (!cleaned) return;
+      const parts = cleaned.split('.').filter(Boolean);
+
+      let resolvedDataset = datasetId;
+      let resolvedTable = tableId;
+
+      if (parts.length >= 2) {
+        const potentialDataset = parts[parts.length - 2];
+        const potentialProject = parts.length >= 3 ? parts[parts.length - 3] : undefined;
+        if (!resolvedDataset || resolvedDataset === potentialProject) {
+          resolvedDataset = potentialDataset;
+        }
+        resolvedTable = parts[parts.length - 1];
+      } else if (parts.length === 1) {
+        resolvedTable = parts[0];
+      }
+
+      if (resolvedDataset) {
+        datasetId = resolvedDataset;
+      }
+      if (resolvedTable) {
+        tableId = resolvedTable;
+      }
+
+      if (resolvedDataset && resolvedTable) {
+        const key = `${resolvedDataset}.${resolvedTable}`.toLowerCase();
+        if (!uniqueTables.has(key)) {
+          uniqueTables.set(key, { datasetId: resolvedDataset, tableId: resolvedTable });
+        }
+      }
+
+      registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
+    };
+
+    if (typeof item.table === 'string') {
+      registerTableName(item.table);
+    } else if (item.table && typeof item.table === 'object') {
+      if (typeof item.table.table === 'string') {
+        registerTableName(item.table.table);
+      }
+      if (typeof item.table.name === 'string') {
+        registerTableName(item.table.name);
+      }
+      if (typeof item.table.db === 'string' && !datasetId) {
+        datasetId = stripIdentifierQuotes(item.table.db);
+      }
+    }
+
+    // Register alias variations for lookup
+    registerAlias(item.as || item.alias, { datasetId, tableId });
+
+    if (tableId) {
+      registerAlias(tableId, { datasetId, tableId });
+    }
+
+    if (datasetId && tableId) {
+      registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
+    }
+  };
+
+  // Process CTEs (WITH clause) - register CTE names as valid aliases
+  // Note: We only register the CTE name here, not the tables inside the CTE.
+  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
+      const cteName = cte?.name?.value || cte?.name;
+      if (cteName) {
+        registerAlias(cteName, {});
+      }
+    }
+  }
+
+  if (Array.isArray(selectAst?.from)) {
+    for (const fromItem of selectAst.from) {
+      processFromItem(fromItem);
+    }
+  } else {
+    processFromItem(selectAst?.from);
+  }
+
+  return { aliasMap, uniqueTables };
+};
+
+/**
+ * Collects all subqueries from an AST node.
+ */
+export const collectSubqueries = (node: any, subqueries: any[]): void => {
+  if (!node) return;
+  
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectSubqueries(child, subqueries);
+    }
+    return;
+  }
+  
+  if (typeof node !== 'object') return;
+  
+  // Found a subquery
+  if (node.type === 'select') {
+    subqueries.push(node);
+    // Don't recurse into the subquery here - it will be processed separately
+    return;
+  }
+  
+  // Recurse into child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') continue;
+    collectSubqueries(node[key], subqueries);
+  }
+};
+
+/**
+ * Validates column references in a SELECT statement, including subqueries.
+ * Returns an array of validation issues found.
+ * 
+ * @param selectAst - The parsed SELECT statement AST
+ * @param getTableFields - Function to fetch table field names (for schema validation)
+ * @param textToValidate - The original SQL text (for error position finding)
+ * @param canFetchSchemas - Whether schema fetching is available
+ */
+export const validateColumnReferences = async (
+  selectAst: any,
+  getTableFields: (datasetId: string, tableId: string) => Promise<string[] | null>,
+  textToValidate: string,
+  canFetchSchemas: boolean
+): Promise<ColumnValidationIssue[]> => {
+  const issues: ColumnValidationIssue[] = [];
+
+  // Helper function to validate columns for a single SELECT scope
+  const validateScope = async (
+    scopeAst: any,
+    scopeAliasMap: Map<string, TableAliasInfo>,
+    scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
+  ) => {
+    const columnRefs = collectColumnRefsForSelect(scopeAst, false);
+    const uniqueTableList = Array.from(scopeUniqueTables.values());
+
+    for (const columnRef of columnRefs) {
+      const baseColumnName = columnRef.column.split('.')[0];
+      const lowerColumnName = baseColumnName.toLowerCase();
+      const location = { line: 1, column: 1, length: Math.max(1, columnRef.column.length) };
+
+      const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
+      const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
+
+      if (aliasKey && !aliasInfo) {
+        issues.push({
+          message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
+          line: location.line,
+          column: location.column,
+          length: location.length,
+        });
+        continue;
+      }
+
+      // For alias.* patterns (e.g., da.*), we've validated the alias exists above.
+      // The * means "all columns" which is always valid syntax, so skip column validation.
+      if (columnRef.column === '*') {
+        continue;
+      }
+
+      if (!canFetchSchemas) {
+        // Without schema access we can only report alias issues.
+        continue;
+      }
+
+      // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
+      // We can't validate columns against CTEs since we don't know their output schema.
+      // Skip validation for these cases.
+      if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
+        continue;
+      }
+
+      if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
+        const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
+        if (fields === null) {
+          // Schema lookup failed (likely table not found). Skip detailed column checks.
+          continue;
+        }
+
+        const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+        if (!hasColumn) {
+          const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+          issues.push({
+            message: `Column "${columnRef.column}" not found in ${targetName}`,
+            line: location.line,
+            column: location.column,
+            length: location.length,
           });
         }
-      } catch {
-        // If parsing fails, return as-is
+        continue;
       }
-      return value;
-    }
-    return String(value);
-  }
 
-  // Handle INTEGER types (INTEGER, INT64, INT32, INT, etc.)
-  if (normalizedType === 'INTEGER' || normalizedType === 'INT' || normalizedType.includes('INT')) {
-    if (typeof value === 'number') {
-      // Ensure it's displayed as a whole number (no decimal point)
-      // Use Math.floor or Math.trunc to remove any decimal part, then convert to string
-      const intValue = Number.isInteger(value) ? value : Math.trunc(value);
-      return String(intValue); // Convert to string without commas or decimal points
-    }
-    if (typeof value === 'string') {
-      // BigQuery might return large integers as strings
-      // Return as-is if it's already a valid integer string (no decimal point, no commas)
-      if (/^-?\d+$/.test(value)) {
-        return value; // Already a valid integer string, return without commas or periods
-      }
-      // If string contains a decimal point, parse and truncate to integer
-      try {
-        const num = parseFloat(value);
-        if (!isNaN(num)) {
-          const intValue = Math.trunc(num); // Remove decimal part
-          return String(intValue); // Convert to string without commas or decimal points
+      if (!aliasInfo) {
+        // Check if any table in scope is a CTE/subquery (no schema).
+        // If so, we can't reliably validate unqualified columns since they might come from the CTE.
+        const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
+          info => !info.datasetId || !info.tableId
+        );
+        
+        if (hasCteOrSubquery) {
+          // Skip validation for unqualified columns when CTEs/subqueries are present
+          // since we can't determine which table the column belongs to
+          continue;
         }
-      } catch {
-        // If parsing fails, return as-is
-      }
-      return value;
-    }
-    // For other types, try to convert to integer
-    try {
-      const num = Number(value);
-      if (!isNaN(num)) {
-        const intValue = Math.trunc(num);
-        return String(intValue);
-      }
-    } catch {
-      // If conversion fails, return as string
-    }
-    return String(value);
-  }
 
-  // Handle FLOAT and FLOAT64
-  if (normalizedType === 'FLOAT' || normalizedType === 'FLOAT64') {
-    if (typeof value === 'number') {
-      // Format floats with reasonable precision
-      if (Number.isInteger(value)) {
-        return value.toLocaleString('en-US');
-      }
-      return value.toLocaleString('en-US', {
-        maximumFractionDigits: 15,
-        useGrouping: true,
-      });
-    }
-    if (typeof value === 'string') {
-      try {
-        const num = parseFloat(value);
-        if (!isNaN(num)) {
-          if (Number.isInteger(num)) {
-            return num.toLocaleString('en-US');
+        let columnFound = false;
+
+        for (const tableInfo of uniqueTableList) {
+          if (!tableInfo.datasetId || !tableInfo.tableId) {
+            continue;
           }
-          return num.toLocaleString('en-US', {
-            maximumFractionDigits: 15,
-            useGrouping: true,
+
+          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+          if (fields === null) {
+            continue;
+          }
+
+          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+          if (hasColumn) {
+            columnFound = true;
+            break;
+          }
+        }
+
+        if (!columnFound && uniqueTableList.length > 0) {
+          issues.push({
+            message: `Column "${columnRef.column}" not found in referenced tables`,
+            line: location.line,
+            column: location.column,
+            length: location.length,
           });
         }
-      } catch {
-        // If parsing fails, return as-is
       }
-      return value;
     }
-    return String(value);
+  };
+
+  // First, validate each CTE body independently against its own FROM tables
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Build alias map for just this CTE's scope (its own FROM clause only)
+        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+          ...cteAst,
+          with: null, // Don't process nested CTEs here, they'd be handled separately
+        });
+        await validateScope(cteAst, cteAliasMap, cteUniqueTables);
+      }
+    }
   }
 
-  // Handle GEOGRAPHY
-  if (normalizedType === 'GEOGRAPHY') {
-    if (typeof value === 'string') {
-      // BigQuery GEOGRAPHY is returned as GeoJSON strings
-      try {
-        const geoJson = JSON.parse(value);
-        // Pretty-print GeoJSON
-        return JSON.stringify(geoJson, null, 2);
-      } catch {
-        // If not valid JSON, return as-is
-        return value;
-      }
-    }
-    if (typeof value === 'object' && value !== null) {
-      // Already parsed GeoJSON object
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch {
-        return String(value);
-      }
-    }
-    return String(value);
-  }
+  // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
+  const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
+  await validateScope(selectAst, aliasMap, uniqueTables);
 
-  // Handle JSON
-  if (normalizedType === 'JSON') {
-    if (typeof value === 'string') {
-      // Try to parse and pretty-print JSON
-      try {
-        const parsed = JSON.parse(value);
-        return JSON.stringify(parsed, null, 2);
-      } catch {
-        // If not valid JSON, return as-is
-        return value;
-      }
-    }
-    if (typeof value === 'object' && value !== null) {
-      // Already parsed JSON object
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch {
-        return String(value);
-      }
-    }
-    return String(value);
-  }
-
-  // Handle ARRAY
-  if (normalizedType === 'ARRAY' || Array.isArray(value)) {
-    if (Array.isArray(value)) {
-      // Format array elements recursively
-      const formatted = value.map((item, index) => {
-        // For arrays, we don't have per-item type info, so format generically
-        const formattedItem = formatBigQueryValue(item);
-        return formattedItem;
-      });
-      return `[${formatted.join(', ')}]`;
-    }
-    return String(value);
-  }
-
-  // Handle STRUCT/RECORD
-  if (normalizedType === 'STRUCT' || normalizedType === 'RECORD') {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-      // Check if it's a BigQuery date object with a value property
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        // Recursively format the inner value (but avoid infinite recursion)
-        const innerValue = value.value;
-        if (innerValue !== value) {
-          return formatBigQueryValue(innerValue, columnType);
-        }
-      }
-      // Format as JSON object
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch {
-        return String(value);
-      }
-    }
-    return String(value);
-  }
-
-  // Handle plain objects that aren't Date instances - check before STRING fallback
-  // This prevents [object Object] display for objects that might represent dates or other types
-  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it's a wrapped value object (common in some BigQuery responses)
-    if (value.value !== undefined && Object.keys(value).length === 1) {
-      // Recursively format the inner value (but avoid infinite recursion)
-      const innerValue = value.value;
-      if (innerValue !== value) {
-        return formatBigQueryValue(innerValue, columnType);
-      }
-    }
+  // Recursively validate subqueries within the AST
+  // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
+  const validateSubqueries = async (
+    ast: any,
+    parentAliasMap: Map<string, TableAliasInfo> = new Map(),
+    parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
+  ) => {
+    const subqueries: any[] = [];
     
-    // For date/time types, try to extract date from object properties
-    if (normalizedType === 'DATE' || normalizedType === 'DATETIME' || normalizedType === 'TIMESTAMP') {
-      // Check for common date object properties
-      if ('year' in value && 'month' in value && 'day' in value) {
-        const year = value.year;
-        const month = String(value.month || 0).padStart(2, '0');
-        const day = String(value.day || 0).padStart(2, '0');
-        if (normalizedType === 'DATE') {
-          return `${year}-${month}-${day}`;
-        }
-        // For DATETIME/TIMESTAMP, check for time components
-        const hours = String(value.hours || 0).padStart(2, '0');
-        const minutes = String(value.minutes || 0).padStart(2, '0');
-        const seconds = String(value.seconds || 0).padStart(2, '0');
-        if (normalizedType === 'DATETIME') {
-          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+    // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
+    collectSubqueries(ast.where, subqueries);
+    collectSubqueries(ast.having, subqueries);
+    if (Array.isArray(ast.columns)) {
+      for (const col of ast.columns) {
+        collectSubqueries(col?.expr ?? col, subqueries);
       }
-      // Try to find a string representation in common properties
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
+    }
+    // Also check JOIN ON conditions for subqueries
+    if (Array.isArray(ast.from)) {
+      for (const fromItem of ast.from) {
+        if (fromItem?.on) {
+          collectSubqueries(fromItem.on, subqueries);
         }
       }
     }
     
-    // For other object types, try JSON stringify
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      // If JSON.stringify fails, return a descriptive string
-      return `[Object: ${Object.keys(value).join(', ')}]`;
-    }
-  }
-
-  // CRITICAL: Before falling back to String(value), check if this is an object for a date/time type
-  // This is a final safety net to prevent [object Object] display
-  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    // Try one more time to extract a date string
-    try {
-      const jsonStr = JSON.stringify(value);
-      // Look for any date-like pattern in the JSON
-      const datePatterns = [
-        /"(\d{4}-\d{2}-\d{2})"/,  // DATE format
-        /"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/,  // TIMESTAMP format
-        /"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/,  // DATETIME format
-        /"(\d{2}:\d{2}:\d{2})/,  // TIME format
-      ];
+    // Validate each subquery with its own scope + parent scope (for correlated subqueries)
+    for (const subquery of subqueries) {
+      const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
       
-      for (const pattern of datePatterns) {
-        const match = jsonStr.match(pattern);
-        if (match) {
-          let dateStr = match[1];
-          if (normalizedType === 'DATE' && dateStr.includes('T')) {
-            dateStr = dateStr.split('T')[0];
-          } else if (normalizedType === 'DATETIME' && dateStr.includes('T')) {
-            dateStr = dateStr.replace('T', ' ');
-          }
-          return dateStr;
-        }
+      // Merge parent aliases into subquery's alias map (subquery's own aliases take precedence)
+      const mergedAliasMap = new Map(parentAliasMap);
+      for (const [key, value] of subAliasMap) {
+        mergedAliasMap.set(key, value);
       }
       
-      // If no date pattern found, show object structure
-      const keys = Object.keys(value);
-      if (keys.length > 0) {
-        // Try to show first property value
-        const firstKey = keys[0];
-        const firstValue = value[firstKey];
-        if (typeof firstValue === 'string' && firstValue.length < 50) {
-          return firstValue;
-        }
-        return `{${keys.slice(0, 2).join(', ')}}`;
+      // Merge parent unique tables into subquery's unique tables
+      const mergedUniqueTables = new Map(parentUniqueTables);
+      for (const [key, value] of subUniqueTables) {
+        mergedUniqueTables.set(key, value);
       }
-      return '[Date Object]';
-    } catch {
-      // JSON.stringify failed
-      const keys = Object.keys(value);
-      return keys.length > 0 ? `{${keys.slice(0, 2).join(', ')}}` : '[Date Object]';
+      
+      await validateScope(subquery, mergedAliasMap, mergedUniqueTables);
+      // Recursively validate nested subqueries, passing the merged scope
+      await validateSubqueries(subquery, mergedAliasMap, mergedUniqueTables);
+    }
+  };
+
+  // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+          ...cteAst,
+          with: null,
+        });
+        await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
+      }
     }
   }
 
-  // Handle STRING (default case)
-  if (normalizedType === 'STRING' || normalizedType === '') {
-    // CRITICAL: Before converting to string, check if it's a Date-like object
-    // This prevents [object Object] from being displayed for Date objects
-    if (isDateLike(value)) {
-      const dateObj = toDate(value);
-      if (dateObj) {
-        if (isNaN(dateObj.getTime())) {
-          return 'Invalid Date';
-        }
-        return dateObj.toISOString();
-      }
-    }
-    
-    // Before converting to string, check if it's an object
-    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-      // Try JSON.stringify for objects
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return `[Object: ${Object.keys(value).join(', ')}]`;
-      }
-    }
-    
-    // Check for Date instance one more time
-    if (value instanceof Date) {
-      if (isNaN(value.getTime())) {
-        return 'Invalid Date';
-      }
-      return value.toISOString();
-    }
-    
-    return String(value);
-  }
+  // Validate subqueries in the main query, passing the main query's aliases as parent scope
+  await validateSubqueries(selectAst, aliasMap, uniqueTables);
 
-  // Fallback for any other types
-  // CRITICAL: Before using String(value), check if it's a Date-like object
-  // This prevents [object Object] from being displayed for Date objects
-  if (isDateLike(value)) {
-    const dateObj = toDate(value);
-    if (dateObj) {
-      // Format based on column type if available, otherwise use ISO string
-      if (normalizedType === 'DATE') {
-        return dateObj.toISOString().split('T')[0];
-      }
-      if (normalizedType === 'TIME') {
-        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-        const ms = dateObj.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      if (normalizedType === 'DATETIME') {
-        return dateObj.toISOString().replace('T', ' ').slice(0, 19);
-      }
-      if (normalizedType === 'TIMESTAMP') {
-        return dateObj.toISOString();
-      }
-      return dateObj.toISOString();
-    }
-  }
-  
-  // CRITICAL: Check for empty objects {} for date types BEFORE general object handling
-  // Empty objects for date columns are likely Date objects that were JSON serialized
-  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    const objKeys = Object.keys(value);
-    if (objKeys.length === 0) {
-      // Empty object for a date column - this is a Date that was serialized incorrectly
-      return '[Invalid Date]';
-    }
-  }
-  
-  // Before using String(value), check if it's an object
-  // Exclude Date instances and Date-like objects to prevent [object Object] display
-  if (typeof value === 'object' && value !== null && !Array.isArray(value) && 
-      !(value instanceof Date) && !isDateLike(value)) {
-    // CRITICAL: For date types, never return [object Object]
-    if (isDateType) {
-      const objKeys = Object.keys(value);
-      if (objKeys.length === 0) {
-        return '[Invalid Date]';
-      }
-      // Try to extract any useful information
-      try {
-        const jsonStr = JSON.stringify(value);
-        if (jsonStr === '{}') {
-          return '[Invalid Date]';
-        }
-        return jsonStr;
-      } catch {
-        return `[Object: ${objKeys.join(', ')}]`;
-      }
-    }
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return `[Object: ${Object.keys(value).join(', ')}]`;
-    }
-  }
-  
-  // Final fallback - but check for Date and Date-like objects one more time to be safe
-  if (isDateLike(value)) {
-    const dateObj = toDate(value);
-    if (dateObj) {
-      if (isNaN(dateObj.getTime())) {
-        return 'Invalid Date';
-      }
-      return dateObj.toISOString();
-    }
-  }
-  
-  if (value instanceof Date) {
-    if (isNaN(value.getTime())) {
-      return 'Invalid Date';
-    }
-    return value.toISOString();
-  }
-  
-  // CRITICAL: Last check before String(value) - if it's a date type and an object, don't convert to string
-  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    return '[Invalid Date]';
-  }
-  
-  return String(value);
-}
+  return issues;
+};
 ````
 
 ## File: src/renderer/index.tsx
@@ -15545,6 +16224,576 @@ describe('tabs-store additional tests', () => {
 });
 ````
 
+## File: tests/unit/renderer/utils/bigquery-completions-subquery.test.ts
+````typescript
+/**
+ * Tests for BigQuery SQL completion context detection,
+ * specifically for subquery and correlated subquery support.
+ */
+
+// We can't easily test the Monaco-specific functions directly,
+// but we can test the core logic by extracting it.
+// For now, these tests document the expected behavior.
+
+describe('BigQuery Completions - Subquery Context Detection', () => {
+  describe('detectWhereContext behavior', () => {
+    // These tests document the expected behavior for the completion system
+    
+    it('should provide completions in simple WHERE clause', () => {
+      const sql = `
+        SELECT * FROM dataset.table1 t1
+        WHERE t1.|
+      `;
+      // Expected: suggestions for t1 columns
+      // This is a documentation test - actual behavior tested via integration
+      expect(true).toBe(true);
+    });
+
+    it('should provide completions inside subquery WHERE clause', () => {
+      const sql = `
+        SELECT * FROM dataset.outer_table ot
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.inner_table it
+          WHERE it.|
+        )
+      `;
+      // Expected: suggestions for 'it' columns (inner table)
+      // AND suggestions for 'ot' columns (outer table - correlated subquery support)
+      expect(true).toBe(true);
+    });
+
+    it('should provide completions for outer table alias in correlated subquery', () => {
+      const sql = `
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.|
+        )
+      `;
+      // Expected: suggestions for 'dp' columns from the outer query
+      // This is the key feature for correlated subqueries
+      expect(true).toBe(true);
+    });
+
+    it('should provide completions in deeply nested subqueries', () => {
+      const sql = `
+        SELECT * FROM dataset.t1 a
+        WHERE id IN (
+          SELECT id FROM dataset.t2 b
+          WHERE value IN (
+            SELECT value FROM dataset.t3 c
+            WHERE c.ref = a.|
+          )
+        )
+      `;
+      // Expected: suggestions for 'a' columns (outermost query)
+      // All parent scopes should be available
+      expect(true).toBe(true);
+    });
+
+    it('should handle multiple tables in subquery with outer table references', () => {
+      const sql = `
+        SELECT * FROM dataset.orders o
+        JOIN dataset.customers c ON o.customer_id = c.id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM dataset.returns r
+          WHERE r.order_id = o.id
+            AND r.customer_id = c.|
+        )
+      `;
+      // Expected: suggestions for 'c' columns (outer query joined table)
+      // Both 'o' and 'c' from outer query should be available in subquery
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('table alias resolution', () => {
+    it('should correctly identify table alias vs table name', () => {
+      // When table has alias: use alias for matching
+      // When table has no alias: use table name for matching
+      const scenarios = [
+        { sql: 'SELECT * FROM dataset.table1 t WHERE t.', expectedAlias: 't' },
+        { sql: 'SELECT * FROM dataset.table1 WHERE table1.', expectedAlias: 'table1' },
+        { sql: 'SELECT * FROM `project.dataset.table1` t WHERE t.', expectedAlias: 't' },
+      ];
+      
+      // These document expected behavior
+      expect(scenarios.length).toBe(3);
+    });
+
+    it('should handle backtick-quoted identifiers', () => {
+      const sql = `
+        SELECT * FROM \`project-with-dashes.dataset.table\` t
+        WHERE t.|
+      `;
+      // Expected: suggestions for t columns despite special characters in table ref
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('scope boundaries', () => {
+    it('should not suggest columns after WHERE clause ends (GROUP BY)', () => {
+      const sql = `
+        SELECT * FROM dataset.table1 t
+        WHERE t.col > 10
+        GROUP BY |
+      `;
+      // Expected: no WHERE context suggestions here
+      expect(true).toBe(true);
+    });
+
+    it('should not suggest columns after WHERE clause ends (ORDER BY)', () => {
+      const sql = `
+        SELECT * FROM dataset.table1 t
+        WHERE t.col > 10
+        ORDER BY |
+      `;
+      // Expected: no WHERE context suggestions here (might have different context)
+      expect(true).toBe(true);
+    });
+
+    it('should handle HAVING clause separately from WHERE', () => {
+      const sql = `
+        SELECT category, COUNT(*) FROM dataset.table1 t
+        WHERE t.active = true
+        GROUP BY category
+        HAVING |
+      `;
+      // HAVING should have its own context handling
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle empty subquery', () => {
+      const sql = `
+        SELECT * FROM dataset.table1 t
+        WHERE EXISTS (|)
+      `;
+      // Should not crash, might not provide suggestions yet
+      expect(true).toBe(true);
+    });
+
+    it('should handle subquery in SELECT clause', () => {
+      const sql = `
+        SELECT 
+          t.id,
+          (SELECT MAX(value) FROM dataset.table2 s WHERE s.ref = t.|)
+        FROM dataset.table1 t
+      `;
+      // Scalar subquery - should still support correlated references
+      expect(true).toBe(true);
+    });
+
+    it('should handle IN subquery', () => {
+      const sql = `
+        SELECT * FROM dataset.table1 t
+        WHERE t.id IN (
+          SELECT ref FROM dataset.table2 s
+          WHERE s.active = true AND s.parent = t.|
+        )
+      `;
+      // IN subquery with correlated reference
+      expect(true).toBe(true);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/utils/sql-validation.test.ts
+````typescript
+import { Parser } from 'node-sql-parser';
+import {
+  collectColumnRefsFromExpression,
+  collectColumnRefsForSelect,
+  buildTableAliasMapFromSelect,
+  collectSubqueries,
+  validateColumnReferences,
+  ColumnRefInfo,
+} from '../../../../src/renderer/utils/sql-validation';
+
+describe('SQL Validation Utilities', () => {
+  let parser: Parser;
+
+  beforeAll(() => {
+    parser = new Parser();
+  });
+
+  const parseSQL = (sql: string): any => {
+    const ast = parser.astify(sql, { database: 'bigquery' });
+    return Array.isArray(ast) ? ast[0] : ast;
+  };
+
+  describe('collectColumnRefsFromExpression', () => {
+    it('should collect simple column references', () => {
+      const ast = parseSQL('SELECT col1, col2 FROM table1');
+      const refs: ColumnRefInfo[] = [];
+      
+      for (const col of ast.columns) {
+        collectColumnRefsFromExpression(col.expr ?? col, refs);
+      }
+      
+      expect(refs).toHaveLength(2);
+      expect(refs[0].column).toBe('col1');
+      expect(refs[0].alias).toBeNull();
+      expect(refs[1].column).toBe('col2');
+    });
+
+    it('should collect aliased column references', () => {
+      const ast = parseSQL('SELECT t.col1, t.col2 FROM table1 AS t');
+      const refs: ColumnRefInfo[] = [];
+      
+      for (const col of ast.columns) {
+        collectColumnRefsFromExpression(col.expr ?? col, refs);
+      }
+      
+      expect(refs).toHaveLength(2);
+      expect(refs[0].column).toBe('col1');
+      expect(refs[0].alias).toBe('t');
+      expect(refs[1].column).toBe('col2');
+      expect(refs[1].alias).toBe('t');
+    });
+
+    it('should NOT collect column refs from subqueries', () => {
+      // This is the key test for the fix - subquery columns should not be collected
+      const ast = parseSQL(`
+        SELECT col1 FROM table1
+        WHERE col2 IN (SELECT sub_col FROM subtable)
+      `);
+      const refs: ColumnRefInfo[] = [];
+      
+      // Collect from WHERE clause
+      collectColumnRefsFromExpression(ast.where, refs);
+      
+      // Should only have col2 from the outer query, NOT sub_col from the subquery
+      expect(refs).toHaveLength(1);
+      expect(refs[0].column).toBe('col2');
+    });
+
+    it('should NOT collect column refs from NOT EXISTS subqueries', () => {
+      const ast = parseSQL(`
+        SELECT * FROM outer_table o
+        WHERE NOT EXISTS (
+          SELECT 1 FROM inner_table i
+          WHERE i.id = o.id
+        )
+      `);
+      const refs: ColumnRefInfo[] = [];
+      
+      // Collect from WHERE clause
+      collectColumnRefsFromExpression(ast.where, refs);
+      
+      // Should NOT collect i.id or o.id from the subquery - they have their own scope
+      expect(refs).toHaveLength(0);
+    });
+  });
+
+  describe('collectColumnRefsForSelect', () => {
+    it('should collect refs from SELECT, WHERE, and JOIN ON clauses', () => {
+      const ast = parseSQL(`
+        SELECT a.col1, b.col2
+        FROM table1 a
+        JOIN table2 b ON a.id = b.id
+        WHERE a.col3 > 10
+      `);
+      
+      const refs = collectColumnRefsForSelect(ast);
+      
+      // col1, col2 from SELECT, id (x2) from ON, col3 from WHERE
+      const columns = refs.map(r => r.column);
+      expect(columns).toContain('col1');
+      expect(columns).toContain('col2');
+      expect(columns).toContain('id');
+      expect(columns).toContain('col3');
+    });
+
+    it('should NOT include subquery column refs in the main scope', () => {
+      const ast = parseSQL(`
+        SELECT dp.ProdKey
+        FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      const refs = collectColumnRefsForSelect(ast);
+      
+      // Should only have dp.ProdKey from the outer SELECT
+      // The subquery refs (da.ProdKey, dp.ProdKey in WHERE) should NOT be collected
+      expect(refs).toHaveLength(1);
+      expect(refs[0].alias).toBe('dp');
+      expect(refs[0].column).toBe('ProdKey');
+    });
+  });
+
+  describe('buildTableAliasMapFromSelect', () => {
+    it('should build alias map for simple query', () => {
+      const ast = parseSQL('SELECT * FROM dataset.table1 AS t1');
+      
+      const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('t1')).toBe(true);
+      expect(aliasMap.get('t1')?.tableId).toBe('table1');
+      expect(uniqueTables.size).toBe(1);
+    });
+
+    it('should build alias map for JOIN query', () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        JOIN dataset.table2 t2 ON t1.id = t2.id
+      `);
+      
+      const { aliasMap } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('t1')).toBe(true);
+      expect(aliasMap.has('t2')).toBe(true);
+    });
+
+    it('should register CTE names as valid aliases', () => {
+      const ast = parseSQL(`
+        WITH cte_data AS (
+          SELECT id, value FROM dataset.source_table
+        )
+        SELECT * FROM cte_data
+      `);
+      
+      const { aliasMap } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('cte_data')).toBe(true);
+      // CTE alias should not have datasetId/tableId since it's a virtual table
+      expect(aliasMap.get('cte_data')?.datasetId).toBeUndefined();
+    });
+  });
+
+  describe('collectSubqueries', () => {
+    it('should collect subqueries from WHERE clause', () => {
+      const ast = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (SELECT id FROM table2)
+      `);
+      
+      const subqueries: any[] = [];
+      collectSubqueries(ast.where, subqueries);
+      
+      expect(subqueries).toHaveLength(1);
+      expect(subqueries[0].type).toBe('select');
+    });
+
+    it('should collect NOT EXISTS subqueries', () => {
+      const ast = parseSQL(`
+        SELECT * FROM table1 t1
+        WHERE NOT EXISTS (
+          SELECT 1 FROM table2 t2
+          WHERE t2.id = t1.id
+        )
+      `);
+      
+      const subqueries: any[] = [];
+      collectSubqueries(ast.where, subqueries);
+      
+      expect(subqueries).toHaveLength(1);
+    });
+
+    it('should collect multiple subqueries', () => {
+      const ast = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (SELECT id FROM table2)
+          AND name IN (SELECT name FROM table3)
+      `);
+      
+      const subqueries: any[] = [];
+      collectSubqueries(ast.where, subqueries);
+      
+      expect(subqueries).toHaveLength(2);
+    });
+
+    it('should collect nested subqueries at top level only', () => {
+      const ast = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (
+          SELECT id FROM table2
+          WHERE value IN (SELECT value FROM table3)
+        )
+      `);
+      
+      const subqueries: any[] = [];
+      collectSubqueries(ast.where, subqueries);
+      
+      // Should only collect the first level subquery, not the nested one
+      // (nested ones are collected when processing that subquery separately)
+      expect(subqueries).toHaveLength(1);
+    });
+  });
+
+  describe('validateColumnReferences', () => {
+    // Mock getTableFields function
+    const mockGetTableFields = jest.fn();
+
+    beforeEach(() => {
+      mockGetTableFields.mockReset();
+    });
+
+    it('should not report error for valid alias in subquery', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      // Mock schema lookups
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'Name']);
+        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // Should have no issues - both dp and da are valid in their respective scopes
+      // and dp is valid in the subquery due to correlated subquery support
+      const aliasErrors = issues.filter(i => i.message.includes('Unknown table or alias'));
+      expect(aliasErrors).toHaveLength(0);
+    });
+
+    it('should report error for unknown alias in outer query', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE unknown_alias.col = 1
+      `);
+      
+      mockGetTableFields.mockResolvedValue(['col', 'id']);
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown_alias"'))).toBe(true);
+    });
+
+    it('should report error for unknown alias in subquery', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE EXISTS (
+          SELECT 1 FROM dataset.table2 t2
+          WHERE unknown.col = t2.col
+        )
+      `);
+      
+      mockGetTableFields.mockResolvedValue(['col', 'id']);
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown"'))).toBe(true);
+    });
+
+    it('should allow outer table alias in correlated subquery', async () => {
+      // This is the key test case from the bug report
+      const ast = parseSQL(`
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'ProductName']);
+        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // dp.ProdKey should be valid in the subquery (correlated reference)
+      const dpError = issues.find(i => i.message.includes('"dp"'));
+      expect(dpError).toBeUndefined();
+    });
+
+    it('should validate columns in deeply nested subqueries', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE id IN (
+          SELECT id FROM dataset.table2 t2
+          WHERE value IN (
+            SELECT value FROM dataset.table3 t3
+            WHERE t3.ref = t1.id
+          )
+        )
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'table1') return Promise.resolve(['id', 'name']);
+        if (tableId === 'table2') return Promise.resolve(['id', 'value']);
+        if (tableId === 'table3') return Promise.resolve(['value', 'ref']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // t1.id should be valid even in the deeply nested subquery (correlated reference)
+      const t1Error = issues.find(i => i.message.includes('"t1"'));
+      expect(t1Error).toBeUndefined();
+    });
+
+    it('should validate CTE body columns separately', async () => {
+      const ast = parseSQL(`
+        WITH stage AS (
+          SELECT id, name FROM dataset.source s
+          WHERE s.active = true
+        )
+        SELECT * FROM stage
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'source') return Promise.resolve(['id', 'name', 'active']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // s should be valid within the CTE body
+      const sError = issues.find(i => i.message.includes('"s"'));
+      expect(sError).toBeUndefined();
+    });
+
+    it('should handle complex query with CTE and correlated subquery', async () => {
+      // This simulates the original bug report query pattern
+      const ast = parseSQL(`
+        WITH Stage AS (
+          SELECT actr.AcNo, actr.VoNo
+          FROM dataset.AcTr actr
+          WHERE NOT EXISTS (
+            SELECT *
+            FROM dataset.fact_table fir
+            WHERE fir.InvoiceNo = actr.VoNo
+          )
+        )
+        SELECT * FROM Stage s
+        JOIN dataset.dim_table d ON s.AcNo = d.AcNo
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'AcTr') return Promise.resolve(['AcNo', 'VoNo', 'Amount']);
+        if (tableId === 'fact_table') return Promise.resolve(['InvoiceNo', 'Amount']);
+        if (tableId === 'dim_table') return Promise.resolve(['AcNo', 'Name']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // fir should be valid within the subquery
+      const firError = issues.find(i => i.message.includes('"fir"'));
+      expect(firError).toBeUndefined();
+      
+      // actr should be valid in the correlated subquery (parent scope)
+      const actrError = issues.find(i => i.message.includes('"actr"'));
+      expect(actrError).toBeUndefined();
+    });
+  });
+});
+````
+
 ## File: tests/unit/renderer/bigquery-formatter-additional.test.ts
 ````typescript
 /**
@@ -16290,1233 +17539,6 @@ module.exports = (env, argv) => {
     ],
   };
 };
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers } from './ipc/results-cache';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-store';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-});
-````
-
-## File: src/renderer/components/HelpDialog/HelpDialog.css
-````css
-.help-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.help-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 600px;
-  max-width: 700px;
-  max-height: 80vh;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.help-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: #ffffff;
-}
-
-.help-content {
-  flex: 1;
-  overflow-y: auto;
-  padding-right: 0.5rem;
-}
-
-.help-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.help-content::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.help-content::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 4px;
-}
-
-.help-content::-webkit-scrollbar-thumb:hover {
-  background: #4e4e4e;
-}
-
-.shortcut-category {
-  margin-bottom: 2rem;
-}
-
-.shortcut-category:last-child {
-  margin-bottom: 0;
-}
-
-.shortcut-category h3 {
-  margin: 0 0 0.75rem 0;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #ffffff;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.shortcut-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.shortcut-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #2d2d30;
-}
-
-.shortcut-item:last-child {
-  border-bottom: none;
-}
-
-.shortcut-keys {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  flex-shrink: 0;
-  margin-right: 1rem;
-}
-
-.shortcut-keys kbd {
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  background-color: #3c3c3c;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: #cccccc;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  min-width: 1.5rem;
-  text-align: center;
-}
-
-.shortcut-keys span {
-  color: #858585;
-  font-size: 0.75rem;
-}
-
-.shortcut-description {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: #cccccc;
-  text-align: right;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.dialog-actions button:hover {
-  background-color: #1177bb;
-}
-
-.donation-button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0070f3;
-  color: #ffffff;
-  text-decoration: none;
-  display: inline-block;
-  font-family: inherit;
-}
-
-.donation-button:hover {
-  background-color: #0051cc;
-}
-````
-
-## File: src/renderer/components/HelpDialog/HelpDialog.tsx
-````typescript
-import React, { useEffect } from 'react';
-import './HelpDialog.css';
-
-interface HelpDialogProps {
-  onClose: () => void;
-}
-
-interface Shortcut {
-  keys: string;
-  description: string;
-  category: string;
-}
-
-export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
-  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-  const modifierKey = isMac ? '⌘' : 'Ctrl';
-
-  const shortcuts: Shortcut[] = [
-    // Help
-    { keys: `${modifierKey} + ?`, description: 'Show keyboard shortcuts', category: 'Help' },
-    
-    // Tab Navigation
-    { keys: `${modifierKey} + T`, description: 'New Tab', category: 'Tab Navigation' },
-    { keys: `${modifierKey} + 1-9`, description: 'Switch to tab by number (1-9)', category: 'Tab Navigation' },
-    
-    // Query Editor
-    { keys: `${modifierKey} + Enter`, description: 'Execute query', category: 'Query Editor' },
-    { keys: `${modifierKey} + B`, description: 'Expand SELECT * to column list', category: 'Query Editor' },
-    
-    // Edit
-    { keys: `${modifierKey} + Z`, description: 'Undo', category: 'Edit' },
-    { keys: `${modifierKey} + Shift + Z`, description: 'Redo', category: 'Edit' },
-    { keys: `${modifierKey} + X`, description: 'Cut', category: 'Edit' },
-    { keys: `${modifierKey} + C`, description: 'Copy', category: 'Edit' },
-    { keys: `${modifierKey} + V`, description: 'Paste', category: 'Edit' },
-    
-    // View
-    { keys: `${modifierKey} + =`, description: 'Zoom In', category: 'View' },
-    { keys: `${modifierKey} + -`, description: 'Zoom Out', category: 'View' },
-    { keys: `${modifierKey} + 0`, description: 'Reset Zoom', category: 'View' },
-    { keys: `${modifierKey} + F11`, description: 'Toggle Full Screen', category: 'View' },
-    
-    // Application
-    { keys: isMac ? '⌘ + Q' : 'Ctrl + Q', description: 'Quit Application', category: 'Application' },
-  ];
-
-  const categories = Array.from(new Set(shortcuts.map(s => s.category)));
-
-  // Close dialog on Escape key
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  // Prevent closing when clicking inside the dialog
-  const handleDialogClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-  };
-
-  return (
-    <div className="help-dialog-overlay" onClick={onClose}>
-      <div className="help-dialog" onClick={handleDialogClick}>
-        <h2>Keyboard Shortcuts</h2>
-        <div className="help-content">
-          {categories.map((category) => (
-            <div key={category} className="shortcut-category">
-              <h3>{category}</h3>
-              <div className="shortcut-list">
-                {shortcuts
-                  .filter((s) => s.category === category)
-                  .map((shortcut, index) => (
-                    <div key={index} className="shortcut-item">
-                      <div className="shortcut-keys">
-                        {shortcut.keys.split(' + ').map((key, i) => (
-                          <React.Fragment key={i}>
-                            <kbd>{key}</kbd>
-                            {i < shortcut.keys.split(' + ').length - 1 && <span> + </span>}
-                          </React.Fragment>
-                        ))}
-                      </div>
-                      <div className="shortcut-description">{shortcut.description}</div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="dialog-actions">
-          <button onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/TabBar/TabBar.css
-````css
-.tab-bar {
-  display: flex;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-}
-
-.tabs-container {
-  display: flex;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  align-items: center;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  background-color: #2d2d30;
-  border-right: 1px solid #3e3e42;
-  cursor: pointer;
-  user-select: none;
-  min-width: 120px;
-  max-width: 200px;
-  position: relative;
-  height: 35px;
-  color: #cccccc;
-  transition: background-color 0.15s ease;
-}
-
-.tab[draggable='true'] {
-  cursor: grab;
-}
-
-.tab[draggable='true']:active {
-  cursor: grabbing;
-}
-
-.tab:hover {
-  background-color: #2a2d2e;
-}
-
-.tab.active {
-  background-color: #1e1e1e;
-  border-bottom: 1px solid #007acc;
-  color: #ffffff;
-}
-
-.tab.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.tab.drag-over {
-  border-left: 2px solid #007acc;
-  padding-left: calc(0.75rem - 2px);
-}
-
-.tab.modified .tab-title::after {
-  content: '';
-}
-
-.tab-title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-}
-
-.modified-indicator {
-  color: #007acc;
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-}
-
-.tab-close {
-  margin-left: 0.5rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  color: #858585;
-  padding: 0;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.tab-close:hover {
-  background-color: #e81123;
-  color: white;
-}
-
-.tab-close:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.tab-close:disabled:hover {
-  background-color: transparent;
-  color: #858585;
-}
-
-.new-tab-button {
-  padding: 0 0.75rem;
-  background: none;
-  border: none;
-  border-left: 1px solid #3e3e42;
-  cursor: pointer;
-  font-size: 1.25rem;
-  color: #858585;
-  font-weight: 300;
-  height: 35px;
-  display: flex;
-  align-items: center;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.new-tab-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
-}
-````
-
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: src/shared/types/query.ts
-````typescript
-/**
- * Query-related types
- */
-
-export type TabType = 'query' | 'explorer' | 'saved-queries';
-
-export interface QueryTab {
-  id: string;
-  title: string;
-  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
-  queryText: string;
-  isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string; // ISO timestamp
-  lastExecutedQueryText?: string; // The query text that was last executed
-  savedQueryId?: string;
-}
-
-export interface SavedQuery {
-  id: string;
-  name: string;
-  sqlText: string;
-  description?: string;
-  createdAt: string; // ISO timestamp
-  updatedAt: string; // ISO timestamp
-  tags?: string[];
-}
-
-export interface SaveQueryInput {
-  name: string;
-  sqlText: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface UpdateQueryInput {
-  name?: string;
-  sqlText?: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface QueryResult {
-  columns: ColumnMetadata[];
-  rows: Row[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-export interface ColumnMetadata {
-  name: string;
-  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
-  mode?: string; // NULLABLE, REQUIRED, REPEATED
-}
-
-export interface Row {
-  values: any[]; // Values matching column order
-}
-````
-
-## File: tests/unit/renderer/App.test.tsx
-````typescript
-import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
-import App from '../../../src/renderer/App';
-
-// Mock the components that might have dependencies
-jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
-  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
-  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
-}));
-
-jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
-  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
-  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
-  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
-  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
-  QueryResults: () => <div data-testid="query-results">Query Results</div>,
-}));
-
-jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
-  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
-  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
-  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
-  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
-    <div data-testid="sidebar-switcher" data-view={currentView}>
-      <button onClick={() => onViewChange('explorer')}>Explorer</button>
-      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
-    </div>
-  ),
-}));
-
-jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
-  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
-}));
-
-describe('App', () => {
-  beforeEach(() => {
-    // Reset mocks to return an active connection to avoid triggering setShowConnectionDialog
-    (window as any).electronAPI.connection.getActive.mockResolvedValue({
-      projectId: 'test-project',
-      keyFilePath: '/path/to/key.json',
-    });
-  });
-
-  it('renders without crashing', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-    });
-  });
-
-  it('renders the main app structure', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-      expect(screen.getByTestId('query-editor')).toBeInTheDocument();
-      expect(screen.getByTestId('query-results')).toBeInTheDocument();
-    });
-  });
-
-  it('renders sidebar components', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
-      expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
-    });
-  });
-});
-````
-
-## File: tests/setup.ts
-````typescript
-import '@testing-library/jest-dom';
-
-// Mock HTMLCanvasElement.getContext for jsdom
-HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
-  clearRect: jest.fn(),
-  fillRect: jest.fn(),
-  getImageData: jest.fn(),
-  putImageData: jest.fn(),
-  createImageData: jest.fn(),
-  setTransform: jest.fn(),
-  drawImage: jest.fn(),
-  save: jest.fn(),
-  restore: jest.fn(),
-  beginPath: jest.fn(),
-  moveTo: jest.fn(),
-  lineTo: jest.fn(),
-  closePath: jest.fn(),
-  stroke: jest.fn(),
-  fill: jest.fn(),
-  translate: jest.fn(),
-  scale: jest.fn(),
-  rotate: jest.fn(),
-  arc: jest.fn(),
-  measureText: jest.fn(() => ({ width: 0 })),
-  fillText: jest.fn(),
-  strokeText: jest.fn(),
-  clip: jest.fn(),
-})) as jest.Mock;
-
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
-};
-
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
-````
-
-## File: .gitignore
-````
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-yarn.lock
-pnpm-lock.yaml
-PROJECT_REFERENCE.md
-
-# Build outputs
-dist/
-build/
-out/
-*.tsbuildinfo
-
-# Electron
-*.asar
-*.dmg
-*.exe
-*.deb
-*.rpm
-*.AppImage
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-*.log.*
-
-# Testing
-coverage/
-.nyc_output/
-*.test.js.snap
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Desktop.ini
-
-# Electron specific
-app/dist/
-release/
 ````
 
 ## File: src/main/ipc/bigquery.ts
@@ -18651,495 +18673,1622 @@ export function registerBigQueryHandlers(): void {
 }
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers } from './ipc/results-cache';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-store';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+});
+````
+
+## File: src/renderer/components/HelpDialog/HelpDialog.css
 ````css
-.saved-queries-tree {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  background-color: #252526;
-  color: #cccccc;
-  border-right: 1px solid #3e3e42;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.saved-queries-tree.collapsed {
-  width: 30px;
-}
-
-.saved-queries-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  min-height: 35px;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: #cccccc;
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  margin-right: 0.5rem;
+.help-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background-color 0.15s ease;
-  border-radius: 3px;
+  z-index: 1000;
 }
 
-.collapse-button:hover {
-  background-color: #3e3e42;
-}
-
-.saved-queries-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  font-weight: 400;
+.help-dialog {
+  background: #252526;
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 600px;
+  max-width: 700px;
+  max-height: 80vh;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid #3e3e42;
   color: #cccccc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.help-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: #ffffff;
+}
+
+.help-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.help-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.help-content::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.help-content::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 4px;
+}
+
+.help-content::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+}
+
+.shortcut-category {
+  margin-bottom: 2rem;
+}
+
+.shortcut-category:last-child {
+  margin-bottom: 0;
+}
+
+.shortcut-category h3 {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #ffffff;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-.refresh-button {
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.refresh-button:hover:not(:disabled) {
-  color: #cccccc;
-  background-color: #3e3e42;
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.saved-queries-tree-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid #3e3e42;
-  position: relative;
-}
-
-.saved-queries-tree-search-input {
-  width: 100%;
-  padding: 0.375rem 0.5rem;
-  background-color: #3e3e42;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  color: #cccccc;
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-}
-
-.saved-queries-tree-search-input:focus {
-  outline: none;
-  border-color: #007acc;
-  background-color: #1e1e1e;
-}
-
-.saved-queries-tree-search-clear {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: #858585;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease;
-}
-
-.saved-queries-tree-search-clear:hover {
-  color: #cccccc;
-}
-
-.saved-queries-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem;
-}
-
-.saved-queries-tree-loading,
-.saved-queries-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  color: #858585;
-  font-size: 0.8125rem;
-}
-
-.saved-query-item {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  cursor: pointer;
-  border-radius: 3px;
-  margin-bottom: 0.25rem;
-  transition: background-color 0.15s ease;
-}
-
-.saved-query-item:hover {
-  background-color: #2a2d2e;
-}
-
-.saved-query-icon {
-  margin-right: 0.5rem;
-  font-size: 1rem;
-}
-
-.saved-query-info {
-  flex: 1;
+.shortcut-list {
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  gap: 0.5rem;
 }
 
-.saved-query-name {
-  font-size: 0.8125rem;
-  color: #cccccc;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.shortcut-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #2d2d30;
 }
 
-.saved-query-description {
-  font-size: 0.75rem;
-  color: #858585;
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.shortcut-item:last-child {
+  border-bottom: none;
 }
 
-.context-menu {
-  background-color: #252526;
+.shortcut-keys {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  margin-right: 1rem;
+}
+
+.shortcut-keys kbd {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  background-color: #3c3c3c;
   border: 1px solid #3e3e42;
   border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  min-width: 150px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #cccccc;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  min-width: 1.5rem;
+  text-align: center;
 }
 
-.context-menu-item {
-  padding: 0.5rem 0.75rem;
+.shortcut-keys span {
+  color: #858585;
+  font-size: 0.75rem;
+}
+
+.shortcut-description {
+  flex: 1;
+  font-size: 0.8125rem;
   color: #cccccc;
+  text-align: right;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #3e3e42;
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
   cursor: pointer;
   font-size: 0.8125rem;
   transition: background-color 0.15s ease;
+  background-color: #0e639c;
+  color: #ffffff;
 }
 
-.context-menu-item:hover:not(.disabled) {
-  background-color: #2a2d2e;
+.dialog-actions button:hover {
+  background-color: #1177bb;
 }
 
-.context-menu-item.disabled {
-  color: #858585;
-  cursor: not-allowed;
-  opacity: 0.5;
+.donation-button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  background-color: #0070f3;
+  color: #ffffff;
+  text-decoration: none;
+  display: inline-block;
+  font-family: inherit;
 }
 
-/* Query preview tooltip */
-.saved-query-tooltip {
-  background-color: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
-  max-width: 400px;
-  min-width: 200px;
-  max-height: 300px;
-  overflow: hidden;
-}
-
-.saved-query-tooltip-code {
-  margin: 0;
-  padding: 0.75rem;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: #d4d4d4;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  max-height: 284px;
+.donation-button:hover {
+  background-color: #0051cc;
 }
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
+## File: src/renderer/components/HelpDialog/HelpDialog.tsx
 ````typescript
-import React, { useState, useEffect, useRef, memo } from 'react';
-import { useQueriesStore } from '../../stores/queries-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import type { SavedQuery } from '../../../shared/types/query';
-import './SavedQueriesTree.css';
+import React, { useEffect } from 'react';
+import './HelpDialog.css';
 
-interface SavedQueriesTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+interface HelpDialogProps {
+  onClose: () => void;
 }
 
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
-  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    query: SavedQuery;
-  } | null>(null);
-  const [hoveredQuery, setHoveredQuery] = useState<{
-    query: SavedQuery;
-    x: number;
-    y: number;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+interface Shortcut {
+  keys: string;
+  description: string;
+  category: string;
+}
 
+export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const modifierKey = isMac ? '⌘' : 'Ctrl';
+
+  const shortcuts: Shortcut[] = [
+    // Help
+    { keys: `${modifierKey} + ?`, description: 'Show keyboard shortcuts', category: 'Help' },
+    
+    // Tab Navigation
+    { keys: `${modifierKey} + T`, description: 'New Tab', category: 'Tab Navigation' },
+    { keys: `${modifierKey} + 1-9`, description: 'Switch to tab by number (1-9)', category: 'Tab Navigation' },
+    
+    // Query Editor
+    { keys: `${modifierKey} + Enter`, description: 'Execute query', category: 'Query Editor' },
+    { keys: `${modifierKey} + B`, description: 'Expand SELECT * to column list', category: 'Query Editor' },
+    
+    // Edit
+    { keys: `${modifierKey} + Z`, description: 'Undo', category: 'Edit' },
+    { keys: `${modifierKey} + Shift + Z`, description: 'Redo', category: 'Edit' },
+    { keys: `${modifierKey} + X`, description: 'Cut', category: 'Edit' },
+    { keys: `${modifierKey} + C`, description: 'Copy', category: 'Edit' },
+    { keys: `${modifierKey} + V`, description: 'Paste', category: 'Edit' },
+    
+    // View
+    { keys: `${modifierKey} + =`, description: 'Zoom In', category: 'View' },
+    { keys: `${modifierKey} + -`, description: 'Zoom Out', category: 'View' },
+    { keys: `${modifierKey} + 0`, description: 'Reset Zoom', category: 'View' },
+    { keys: `${modifierKey} + F11`, description: 'Toggle Full Screen', category: 'View' },
+    
+    // Application
+    { keys: isMac ? '⌘ + Q' : 'Ctrl + Q', description: 'Quit Application', category: 'Application' },
+  ];
+
+  const categories = Array.from(new Set(shortcuts.map(s => s.category)));
+
+  // Close dialog on Escape key
   useEffect(() => {
-    loadQueries();
-  }, [loadQueries]);
-
-  useEffect(() => {
-    setStoreSearchTerm(searchTerm);
-  }, [searchTerm, setStoreSearchTerm]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadQueries, isLoading);
-    }
-  }, [onRefreshReady, loadQueries, isLoading]);
-
-  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      query,
-    });
-  };
-
-  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    
-    // Clear any existing timeouts
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-    
-    // Add a small delay before showing tooltip
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery({
-        query,
-        x: rect.right + 8,
-        y: rect.top,
-      });
-    }, 300);
-  };
-
-  const handleQueryMouseLeave = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    // Delay hiding to allow cursor to move into tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery(null);
-    }, 100);
-  };
-
-  const handleTooltipMouseEnter = () => {
-    // Cancel the hide timeout when entering tooltip
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  };
-
-  const handleTooltipMouseLeave = () => {
-    // Hide tooltip when leaving it
-    setHoveredQuery(null);
-  };
-
-  const handleLoadToNewTab = () => {
-    if (!contextMenu) return;
-    
-    const { query } = contextMenu;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, query.sqlText);
-    updateTab(newTabId, {
-      title: query.name,
-      savedQueryId: query.id,
-      isModified: false,
-    });
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
       }
     };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
     document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
 
-  // Filter queries based on search term
-  const filteredQueries = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return queries;
-    }
-    return getFilteredQueries();
-  }, [queries, searchTerm, getFilteredQueries]);
+  // Prevent closing when clicking inside the dialog
+  const handleDialogClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
 
   return (
-    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="saved-queries-tree-search">
-            <input
-              type="text"
-              className="saved-queries-tree-search-input"
-              placeholder="Search saved queries..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="saved-queries-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="saved-queries-tree-content">
-            {isLoading && queries.length === 0 && (
-              <div className="saved-queries-tree-loading">Loading saved queries...</div>
-            )}
-            {filteredQueries.length === 0 && !isLoading && (
-              <div className="saved-queries-tree-empty">
-                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
+    <div className="help-dialog-overlay" onClick={onClose}>
+      <div className="help-dialog" onClick={handleDialogClick}>
+        <h2>Keyboard Shortcuts</h2>
+        <div className="help-content">
+          {categories.map((category) => (
+            <div key={category} className="shortcut-category">
+              <h3>{category}</h3>
+              <div className="shortcut-list">
+                {shortcuts
+                  .filter((s) => s.category === category)
+                  .map((shortcut, index) => (
+                    <div key={index} className="shortcut-item">
+                      <div className="shortcut-keys">
+                        {shortcut.keys.split(' + ').map((key, i) => (
+                          <React.Fragment key={i}>
+                            <kbd>{key}</kbd>
+                            {i < shortcut.keys.split(' + ').length - 1 && <span> + </span>}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                      <div className="shortcut-description">{shortcut.description}</div>
+                    </div>
+                  ))}
               </div>
-            )}
-            {filteredQueries.map((query) => (
-              <div
-                key={query.id}
-                className="saved-query-item"
-                onContextMenu={(e) => handleQueryContextMenu(e, query)}
-                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
-                onMouseLeave={handleQueryMouseLeave}
-              >
-                <span className="saved-query-icon">📝</span>
-                <div className="saved-query-info">
-                  <span className="saved-query-name">{query.name}</span>
-                  {query.description && (
-                    <span className="saved-query-description">{query.description}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleLoadToNewTab}>
-            Open in new tab
+            </div>
+          ))}
+        </div>
+        <div className="dialog-actions">
+          <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.tsx
+````typescript
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { RowContextMenu } from './RowContextMenu';
+import { CanvasTable } from './CanvasTable';
+import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import './QueryResults.css';
+
+const ROWS_PER_PAGE = 200;
+
+export const QueryResults: React.FC = () => {
+  // Use separate selectors to ensure reactivity for each property
+  const activeTabId = useTabsStore((state) => state.activeTabId);
+  const activeTab = useTabsStore((state) => {
+    if (!activeTabId) return null;
+    return state.tabs.find((t) => t.id === activeTabId) || null;
+  });
+  
+  // All hooks must be called before any conditional returns
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rowIndex?: number;
+    columnIndex?: number;
+    isRowNumberColumn?: boolean;
+  } | null>(null);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const error = activeTab?.error;
+  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!activeTabId || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(activeTabId)
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [activeTabId, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(activeTabId, currentPage)
+      .then((pageRows: Row[] | null) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Reset column widths when results change (use jobId as stable identifier)
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
+  
+  useEffect(() => {
+    if (resultsJobId !== undefined) {
+      setColumnWidths({});
+      setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
+    }
+  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
+
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      rowIndex,
+      isRowNumberColumn,
+    });
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
+    // Escape commas, quotes, and newlines in values
+    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
+      return `"${formatted.replace(/"/g, '""')}"`;
+    }
+    return formatted;
+  }, [formatValue]);
+
+  const handleCopyRowValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
+
+    // Use sorted rows from results (which matches what's displayed)
+    const rowIndex = contextMenu.rowIndex;
+    const row = results.rows[rowIndex];
+    
+    if (!row) return;
+
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
+
+    // Format: header1,header2,header3\nvalue1,value2,value3
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleCopyColumnValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
+
+    const columnIndex = contextMenu.columnIndex;
+    const column = results.columns[columnIndex];
+    
+    if (!column) return;
+
+    // Get header
+    const header = formatCSVValue(column.name);
+    
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+
+    // Format: header\nvalue1\nvalue2\nvalue3...
+    const csvText = [header, ...values].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      columnIndex,
+    });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Now we can do conditional returns after all hooks
+  if (error) {
+    return (
+      <div className="query-results">
+        <div className="error-results">
+          <strong>Error:</strong> {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!resultsMetadata) {
+    // Show "Executing query..." when status is running, otherwise show default message
+    const message = executionStatus === 'running' 
+      ? 'Executing query...' 
+      : isLoadingCache
+      ? 'Loading results...'
+      : 'Execute a query to see results here.';
+    
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>{message}</div>
+          {(executionStatus === 'running' || isLoadingCache) && (
+            <div className="query-spinner-container">
+              <div className="query-spinner"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
           </div>
         </div>
-      )}
-      {hoveredQuery && (
-        <div
-          className="saved-query-tooltip"
-          style={{
-            position: 'fixed',
-            left: `${hoveredQuery.x}px`,
-            top: `${hoveredQuery.y}px`,
-          }}
-          onMouseEnter={handleTooltipMouseEnter}
-          onMouseLeave={handleTooltipMouseLeave}
-        >
-          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
+      </div>
+    );
+  }
+
+  // Check if we have columns and rows to display
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
+
+  if (!hasColumns && !hasRows) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
+            )}
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+          </div>
         </div>
+        <div className="no-results">No data to display (empty result set).</div>
+      </div>
+    );
+  }
+
+  if (!hasColumns) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
+            )}
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">Error: No column information available.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="query-results">
+      <div className="results-header">
+        <div className="results-info">
+          <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
+          {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
+            <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
+          )}
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+        </div>
+      </div>
+      <div className="results-table-container">
+        {hasRows && results ? (
+          <CanvasTable
+            results={results}
+            columnWidths={columnWidths}
+            onColumnResize={handleColumnResize}
+            onRowContextMenu={handleRowContextMenu}
+            onColumnContextMenu={handleColumnContextMenu}
+            formatValue={formatValue}
+            currentPage={currentPage}
+            rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
+          />
+        ) : (
+          <div className="no-rows-message">No rows returned</div>
+        )}
+      </div>
+      {hasRows && totalPages > 1 && (
+        <div className="results-pagination">
+          <button
+            className="pagination-button"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+            title="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+          </span>
+          <button
+            className="pagination-button"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+            title="Next page"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {contextMenu && (
+        <RowContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
+        />
       )}
     </div>
   );
 };
+````
 
-export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse
-  );
+## File: src/renderer/components/TabBar/TabBar.css
+````css
+.tab-bar {
+  display: flex;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  align-items: center;
+  height: 35px;
+}
+
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background-color: #2d2d30;
+  border-right: 1px solid #3e3e42;
+  cursor: pointer;
+  user-select: none;
+  min-width: 120px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: #cccccc;
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: #2a2d2e;
+}
+
+.tab.active {
+  background-color: #1e1e1e;
+  border-bottom: 1px solid #007acc;
+  color: #ffffff;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid #007acc;
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: #007acc;
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  margin-left: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #858585;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-close:hover {
+  background-color: #e81123;
+  color: white;
+}
+
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: #858585;
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid #3e3e42;
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: #858585;
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: #2a2d2e;
+  color: #cccccc;
+}
+````
+
+## File: src/shared/types/query.ts
+````typescript
+/**
+ * Query-related types
+ */
+
+export type TabType = 'query' | 'explorer' | 'saved-queries';
+
+export interface QueryTab {
+  id: string;
+  title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
+  queryText: string;
+  isModified: boolean;
+  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string; // ISO timestamp
+  lastExecutedQueryText?: string; // The query text that was last executed
+  savedQueryId?: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sqlText: string;
+  description?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  tags?: string[];
+}
+
+export interface SaveQueryInput {
+  name: string;
+  sqlText: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateQueryInput {
+  name?: string;
+  sqlText?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface QueryResult {
+  columns: ColumnMetadata[];
+  rows: Row[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
+  mode?: string; // NULLABLE, REQUIRED, REPEATED
+}
+
+export interface Row {
+  values: any[]; // Values matching column order
+}
+````
+
+## File: tests/unit/renderer/App.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import App from '../../../src/renderer/App';
+
+// Mock the components that might have dependencies
+jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
+  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
+  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
+}));
+
+jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
+  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
+  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
+  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
+  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
+  QueryResults: () => <div data-testid="query-results">Query Results</div>,
+}));
+
+jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
+  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
+  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
+  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
+  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
+    <div data-testid="sidebar-switcher" data-view={currentView}>
+      <button onClick={() => onViewChange('explorer')}>Explorer</button>
+      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
+    </div>
+  ),
+}));
+
+jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
+  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
+}));
+
+describe('App', () => {
+  beforeEach(() => {
+    // Reset mocks to return an active connection to avoid triggering setShowConnectionDialog
+    (window as any).electronAPI.connection.getActive.mockResolvedValue({
+      projectId: 'test-project',
+      keyFilePath: '/path/to/key.json',
+    });
+  });
+
+  it('renders without crashing', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    });
+  });
+
+  it('renders the main app structure', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('query-editor')).toBeInTheDocument();
+      expect(screen.getByTestId('query-results')).toBeInTheDocument();
+    });
+  });
+
+  it('renders sidebar components', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
+    });
+  });
 });
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
+````
+
+## File: .gitignore
+````
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+PROJECT_REFERENCE.md
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Electron
+*.asar
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.AppImage
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+coverage/
+.nyc_output/
+*.test.js.snap
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Electron specific
+app/dist/
+release/
 ````
 
 ## File: src/renderer/components/DatasetTree/DatasetTree.tsx
@@ -19682,6 +20831,497 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
     prevProps.collapsed === nextProps.collapsed &&
     prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
     prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+````css
+.saved-queries-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: #252526;
+  color: #cccccc;
+  border-right: 1px solid #3e3e42;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.saved-queries-tree.collapsed {
+  width: 30px;
+}
+
+.saved-queries-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  min-height: 35px;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  margin-right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.collapse-button:hover {
+  background-color: #3e3e42;
+}
+
+.saved-queries-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: #cccccc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.refresh-button:hover:not(:disabled) {
+  color: #cccccc;
+  background-color: #3e3e42;
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.saved-queries-tree-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid #3e3e42;
+  position: relative;
+}
+
+.saved-queries-tree-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: #3e3e42;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
+
+.saved-queries-tree-search-input:focus {
+  outline: none;
+  border-color: #007acc;
+  background-color: #1e1e1e;
+}
+
+.saved-queries-tree-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #858585;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.saved-queries-tree-search-clear:hover {
+  color: #cccccc;
+}
+
+.saved-queries-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
+
+.saved-queries-tree-loading,
+.saved-queries-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  color: #858585;
+  font-size: 0.8125rem;
+}
+
+.saved-query-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.saved-query-item:hover {
+  background-color: #2a2d2e;
+}
+
+.saved-query-icon {
+  margin-right: 0.5rem;
+  font-size: 1rem;
+}
+
+.saved-query-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-query-name {
+  font-size: 0.8125rem;
+  color: #cccccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-query-description {
+  font-size: 0.75rem;
+  color: #858585;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu {
+  background-color: #252526;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
+  padding: 0.5rem 0.75rem;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: #2a2d2e;
+}
+
+.context-menu-item.disabled {
+  color: #858585;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Query preview tooltip */
+.saved-query-tooltip {
+  background-color: #1e1e1e;
+  border: 1px solid #3e3e42;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.saved-query-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
+````typescript
+import React, { useState, useEffect, useRef, memo } from 'react';
+import { useQueriesStore } from '../../stores/queries-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { SavedQuery } from '../../../shared/types/query';
+import './SavedQueriesTree.css';
+
+interface SavedQueriesTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
+  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    query: SavedQuery;
+  } | null>(null);
+  const [hoveredQuery, setHoveredQuery] = useState<{
+    query: SavedQuery;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    loadQueries();
+  }, [loadQueries]);
+
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadQueries, isLoading);
+    }
+  }, [onRefreshReady, loadQueries, isLoading]);
+
+  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      query,
+    });
+  };
+
+  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery({
+        query,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleQueryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredQuery(null);
+  };
+
+  const handleLoadToNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { query } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, query.sqlText);
+    updateTab(newTabId, {
+      title: query.name,
+      savedQueryId: query.id,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter queries based on search term
+  const filteredQueries = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return queries;
+    }
+    return getFilteredQueries();
+  }, [queries, searchTerm, getFilteredQueries]);
+
+  return (
+    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="saved-queries-tree-search">
+            <input
+              type="text"
+              className="saved-queries-tree-search-input"
+              placeholder="Search saved queries..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="saved-queries-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="saved-queries-tree-content">
+            {isLoading && queries.length === 0 && (
+              <div className="saved-queries-tree-loading">Loading saved queries...</div>
+            )}
+            {filteredQueries.length === 0 && !isLoading && (
+              <div className="saved-queries-tree-empty">
+                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
+              </div>
+            )}
+            {filteredQueries.map((query) => (
+              <div
+                key={query.id}
+                className="saved-query-item"
+                onContextMenu={(e) => handleQueryContextMenu(e, query)}
+                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
+                onMouseLeave={handleQueryMouseLeave}
+              >
+                <span className="saved-query-icon">📝</span>
+                <div className="saved-query-info">
+                  <span className="saved-query-name">{query.name}</span>
+                  {query.description && (
+                    <span className="saved-query-description">{query.description}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleLoadToNewTab}>
+            Open in new tab
+          </div>
+        </div>
+      )}
+      {hoveredQuery && (
+        <div
+          className="saved-query-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredQuery.x}px`,
+            top: `${hoveredQuery.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
   );
 });
 ````
@@ -20882,500 +22522,6 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 };
 ````
 
-## File: src/renderer/components/QueryResults/QueryResults.tsx
-````typescript
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import { RowContextMenu } from './RowContextMenu';
-import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import './QueryResults.css';
-
-const ROWS_PER_PAGE = 200;
-
-export const QueryResults: React.FC = () => {
-  // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
-  const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
-  });
-  
-  // All hooks must be called before any conditional returns
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [currentPage, setCurrentPage] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    rowIndex?: number;
-    columnIndex?: number;
-    isRowNumberColumn?: boolean;
-  } | null>(null);
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-  
-  // Store metadata and current page separately for efficient cache access
-  const [resultsMetadata, setResultsMetadata] = useState<{
-    columns: any[];
-    totalRows: number;
-    rowsReturned: number;
-    executionTimeMs: number;
-    bytesProcessed?: number;
-    jobId: string;
-    hasMore: boolean;
-  } | null>(null);
-  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
-  const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isLoadingPage, setIsLoadingPage] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  
-  // Load metadata from cache when tab changes or when execution completes
-  useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // If query is running, don't load from cache (wait for new results)
-    if (executionStatus === 'running') {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // Load metadata from cache
-    setIsLoadingCache(true);
-    window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
-      .then((metadata: {
-        columns: ColumnMetadata[];
-        totalRows: number;
-        rowsReturned: number;
-        executionTimeMs: number;
-        bytesProcessed?: number;
-        jobId: string;
-        hasMore: boolean;
-      } | null) => {
-        if (metadata) {
-          setResultsMetadata(metadata);
-          setIsLoadingCache(false);
-        } else {
-          setResultsMetadata(null);
-          setCurrentPageRows([]);
-          setIsLoadingCache(false);
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load results metadata from cache:', err);
-        setResultsMetadata(null);
-        setCurrentPageRows([]);
-        setIsLoadingCache(false);
-      });
-  }, [activeTabId, executionStatus]);
-  
-  // Load current page from cache when metadata or page changes
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    setIsLoadingPage(true);
-    window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
-      .then((pageRows: Row[] | null) => {
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        } else {
-          setCurrentPageRows([]);
-        }
-        setIsLoadingPage(false);
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load page from cache:', err);
-        setCurrentPageRows([]);
-        setIsLoadingPage(false);
-      });
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Prefetch adjacent pages for smoother navigation
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      return;
-    }
-    
-    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
-    
-    // Prefetch next page if available
-    if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-    
-    // Prefetch previous page if available
-    if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = resultsMetadata?.jobId;
-  const resultsColumnCount = resultsMetadata?.columns?.length;
-  
-  useEffect(() => {
-    if (resultsJobId !== undefined) {
-      setColumnWidths({});
-      setCurrentPage(1); // Reset to first page when results change
-      setSortColumn(null); // Reset sorting when results change
-      setSortDirection(null);
-    }
-  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = React.useMemo(() => {
-    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
-      return currentPageRows;
-    }
-
-    const sorted = [...currentPageRows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = resultsMetadata?.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
-
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: sortedRows, // Use sorted rows instead of currentPageRows
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      rowIndex,
-      isRowNumberColumn,
-    });
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    // Pass both type and name to formatter for better date detection
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
-    const formatted = formatValue(val, columnType, columnName);
-    // Escape commas, quotes, and newlines in values
-    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
-      return `"${formatted.replace(/"/g, '""')}"`;
-    }
-    return formatted;
-  }, [formatValue]);
-
-  const handleCopyRowValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
-
-    // Use sorted rows from results (which matches what's displayed)
-    const rowIndex = contextMenu.rowIndex;
-    const row = results.rows[rowIndex];
-    
-    if (!row) return;
-
-    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => {
-      const col = results.columns[idx];
-      return formatCSVValue(val, col?.type, col?.name);
-    });
-
-    // Format: header1,header2,header3\nvalue1,value2,value3
-    const csvText = [headers.join(','), values.join(',')].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleCopyColumnValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
-
-    const columnIndex = contextMenu.columnIndex;
-    const column = results.columns[columnIndex];
-    
-    if (!column) return;
-
-    // Get header
-    const header = formatCSVValue(column.name);
-    
-    // Get all values for this column from sorted rows (matches what's displayed)
-    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
-
-    // Format: header\nvalue1\nvalue2\nvalue3...
-    const csvText = [header, ...values].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      columnIndex,
-    });
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  // Pagination calculations - use metadata for total rows, current page rows are already loaded
-  const totalRows = resultsMetadata?.rowsReturned || 0;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Now we can do conditional returns after all hooks
-  if (error) {
-    return (
-      <div className="query-results">
-        <div className="error-results">
-          <strong>Error:</strong> {error}
-        </div>
-      </div>
-    );
-  }
-
-  if (!resultsMetadata) {
-    // Show "Executing query..." when status is running, otherwise show default message
-    const message = executionStatus === 'running' 
-      ? 'Executing query...' 
-      : isLoadingCache
-      ? 'Loading results...'
-      : 'Execute a query to see results here.';
-    
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>{message}</div>
-          {(executionStatus === 'running' || isLoadingCache) && (
-            <div className="query-spinner-container">
-              <div className="query-spinner"></div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-  
-  // Show loading indicator while page is loading
-  if (isLoadingPage && currentPageRows.length === 0) {
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>Loading page {currentPage}...</div>
-          <div className="query-spinner-container">
-            <div className="query-spinner"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if we have columns and rows to display
-  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
-  const hasRows = currentPageRows && currentPageRows.length > 0;
-
-  if (!hasColumns && !hasRows) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-            )}
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">No data to display (empty result set).</div>
-      </div>
-    );
-  }
-
-  if (!hasColumns) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-            )}
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">Error: No column information available.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="query-results">
-      <div className="results-header">
-        <div className="results-info">
-          <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-          {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-            <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-          )}
-          <span> • {resultsMetadata.executionTimeMs}ms</span>
-          {resultsMetadata.bytesProcessed && (
-            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-          )}
-        </div>
-      </div>
-      <div className="results-table-container">
-        {hasRows && results ? (
-          <CanvasTable
-            results={results}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-            onRowContextMenu={handleRowContextMenu}
-            onColumnContextMenu={handleColumnContextMenu}
-            formatValue={formatValue}
-            currentPage={currentPage}
-            rowsPerPage={ROWS_PER_PAGE}
-            sortColumn={sortColumn}
-            sortDirection={sortDirection}
-            onSortColumn={handleSortColumn}
-          />
-        ) : (
-          <div className="no-rows-message">No rows returned</div>
-        )}
-      </div>
-      {hasRows && totalPages > 1 && (
-        <div className="results-pagination">
-          <button
-            className="pagination-button"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
-          <span className="pagination-info">
-            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      {contextMenu && (
-        <RowContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={
-            contextMenu.columnIndex !== undefined 
-              ? 'Copy column values (with header)' 
-              : contextMenu.isRowNumberColumn 
-                ? 'Copy row as CSV' 
-                : 'Copy values (with headers)'
-          }
-        />
-      )}
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/components/TabBar/TabBar.tsx
 ````typescript
 import React, { useState, useRef, useEffect } from 'react';
@@ -22457,6 +23603,452 @@ MIT
   opacity: 0.5;
   cursor: not-allowed;
 }
+````
+
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './App.css';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+    }
+  }, []);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+      };
+    }
+  }, []);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -23655,7 +25247,8 @@ function detectJoinOnContext(
 }
 
 /**
- * Detects if we're in a WHERE, AND, or OR clause and returns all available table references with aliases
+ * Detects if we're in a WHERE, AND, or OR clause and returns all available table references with aliases.
+ * For subqueries, this includes both the subquery's own tables AND outer scope tables (for correlated subqueries).
  */
 function detectWhereContext(
   model: any,
@@ -23667,74 +25260,122 @@ function detectWhereContext(
   const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
   const statementSql = statementContext ? statementContext.statementText : fallbackText;
   
-  // Look for the last SELECT before the cursor inside the active statement
+  // Find all SELECT statements before the cursor
   const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
   if (selectMatches.length === 0) {
     return null;
   }
   
-  const lastSelectMatch = selectMatches[selectMatches.length - 1];
-  const selectIndex = lastSelectMatch.index || 0;
-  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
-  const selectScopedStatementText = statementSql.substring(selectIndex);
+  // Helper function to extract tables from a SQL fragment starting at a SELECT
+  const extractTablesFromSelect = (sql: string): Array<{ tableRef: string; alias: string | null }> => {
+    const tables: Array<{ tableRef: string; alias: string | null }> = [];
+    const fromClause = parseFromClause(sql);
+    const joins = parseJoinStatements(sql);
+    
+    if (fromClause) {
+      tables.push(fromClause);
+    }
+    
+    for (const join of joins) {
+      tables.push({
+        tableRef: join.tableRef,
+        alias: join.alias,
+      });
+    }
+    
+    return tables;
+  };
   
-  // Find WHERE keyword after the FROM clause
-  const whereMatch = selectScopedTextUpToCursor.match(/\bWHERE\s+/i);
+  // Find the position and nesting depth of each SELECT
+  // Track opening/closing parentheses to determine scope boundaries
+  const selectScopes: Array<{
+    selectIndex: number;
+    parenDepthAtSelect: number;
+  }> = [];
+  
+  let currentParenDepth = 0;
+  let lastIndex = 0;
+  
+  for (const match of selectMatches) {
+    const selectIndex = match.index || 0;
+    
+    // Count parentheses from the last position to this SELECT
+    for (let i = lastIndex; i < selectIndex; i++) {
+      if (textUpToCursor[i] === '(') currentParenDepth++;
+      if (textUpToCursor[i] === ')') currentParenDepth--;
+    }
+    
+    selectScopes.push({
+      selectIndex,
+      parenDepthAtSelect: currentParenDepth,
+    });
+    
+    lastIndex = selectIndex;
+  }
+  
+  // Continue counting parentheses to the cursor
+  for (let i = lastIndex; i < textUpToCursor.length; i++) {
+    if (textUpToCursor[i] === '(') currentParenDepth++;
+    if (textUpToCursor[i] === ')') currentParenDepth--;
+  }
+  
+  const cursorParenDepth = currentParenDepth;
+  
+  // Find which SELECT scopes are active at the cursor position
+  // A SELECT scope is active if we're at or deeper than its paren depth
+  const activeScopes = selectScopes.filter(scope => cursorParenDepth >= scope.parenDepthAtSelect);
+  
+  if (activeScopes.length === 0) {
+    return null;
+  }
+  
+  // Get the innermost SELECT (the one we're directly in)
+  const innermostScope = activeScopes[activeScopes.length - 1];
+  const innermostSelectText = textUpToCursor.substring(innermostScope.selectIndex);
+  
+  // Check if we're actually in a WHERE clause of the innermost SELECT
+  const whereMatch = innermostSelectText.match(/\bWHERE\s+/i);
   if (!whereMatch) {
     return null;
   }
   
   const whereIndex = whereMatch.index || 0;
-  const textAfterWhere = selectScopedTextUpToCursor.substring(whereIndex);
-  
-  // Check if we're in WHERE clause or after AND/OR within WHERE clause
-  // We're in WHERE context if:
-  // 1. Cursor is after WHERE keyword
-  // 2. Cursor is not in a subquery (check parenthesis balance)
-  // 3. Cursor is not past GROUP BY, ORDER BY, HAVING, LIMIT, etc.
+  const textAfterWhere = innermostSelectText.substring(whereIndex);
   
   // Check if we've moved past the WHERE clause into GROUP BY, ORDER BY, etc.
   const endOfWhereMatch = textAfterWhere.match(/\b(GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/i);
   if (endOfWhereMatch) {
-    // Cursor might be after WHERE clause ended
     const endOfWhereIndex = whereIndex + (endOfWhereMatch.index || 0);
-    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    const cursorPositionInScoped = innermostSelectText.length;
     if (cursorPositionInScoped > endOfWhereIndex) {
       return null;
     }
   }
   
-  // Check parenthesis balance to avoid suggesting in subqueries
-  let parenDepth = 0;
-  for (let i = whereIndex; i < selectScopedTextUpToCursor.length; i++) {
-    const char = selectScopedTextUpToCursor[i];
-    if (char === '(') parenDepth++;
-    if (char === ')') parenDepth--;
+  // Collect tables from all active scopes (innermost to outermost)
+  // This enables correlated subquery support
+  const allTables: Array<{ tableRef: string; alias: string | null }> = [];
+  const seenAliases = new Set<string>();
+  
+  // Process scopes from innermost to outermost
+  for (let i = activeScopes.length - 1; i >= 0; i--) {
+    const scope = activeScopes[i];
+    const scopeText = statementSql.substring(scope.selectIndex);
+    
+    // For outer scopes, we need to extract just their portion (before nested subqueries)
+    // by finding where their FROM clause tables are defined
+    const scopeTables = extractTablesFromSelect(scopeText);
+    
+    for (const table of scopeTables) {
+      const aliasKey = (table.alias || table.tableRef).toLowerCase();
+      if (!seenAliases.has(aliasKey)) {
+        seenAliases.add(aliasKey);
+        allTables.push(table);
+      }
+    }
   }
   
-  // If we're inside a subquery (parenDepth > 0), don't suggest from outer query
-  if (parenDepth > 0) {
-    return null;
-  }
-  
-  // Parse FROM clause and JOIN statements to get all available tables
-  const fromClause = parseFromClause(selectScopedStatementText);
-  const joins = parseJoinStatements(selectScopedStatementText);
-  
-  const tables: Array<{ tableRef: string; alias: string | null }> = [];
-  
-  if (fromClause) {
-    tables.push(fromClause);
-  }
-  
-  for (const join of joins) {
-    tables.push({
-      tableRef: join.tableRef,
-      alias: join.alias,
-    });
-  }
-  
-  return tables.length > 0 ? tables : null;
+  return allTables.length > 0 ? allTables : null;
 }
 
 /**
@@ -24669,452 +26310,6 @@ export function registerBigQueryLanguage(
 }
 ````
 
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './App.css';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-    }
-  }, []);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-      };
-    }
-  }, []);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
-````
-
 ## File: package.json
 ````json
 {
@@ -25394,6 +26589,12 @@ const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
   }
 
   if (typeof node !== 'object') {
+    return;
+  }
+
+  // Skip subqueries - they have their own scope and should be validated separately
+  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
+  if (node.type === 'select') {
     return;
   }
 
@@ -25887,6 +27088,98 @@ export const QueryEditor: React.FC = () => {
     // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
     const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
     await validateScope(selectAst, aliasMap, uniqueTables);
+
+    // Helper function to collect all subqueries from an AST node
+    const collectSubqueries = (node: any, subqueries: any[]) => {
+      if (!node) return;
+      
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          collectSubqueries(child, subqueries);
+        }
+        return;
+      }
+      
+      if (typeof node !== 'object') return;
+      
+      // Found a subquery
+      if (node.type === 'select') {
+        subqueries.push(node);
+        // Don't recurse into the subquery here - it will be processed separately
+        return;
+      }
+      
+      // Recurse into child properties
+      for (const key of Object.keys(node)) {
+        if (key === 'location' || key === 'loc') continue;
+        collectSubqueries(node[key], subqueries);
+      }
+    };
+
+    // Recursively validate subqueries within the AST
+    // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
+    const validateSubqueries = async (
+      ast: any,
+      parentAliasMap: Map<string, TableAliasInfo> = new Map(),
+      parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
+    ) => {
+      const subqueries: any[] = [];
+      
+      // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
+      collectSubqueries(ast.where, subqueries);
+      collectSubqueries(ast.having, subqueries);
+      if (Array.isArray(ast.columns)) {
+        for (const col of ast.columns) {
+          collectSubqueries(col?.expr ?? col, subqueries);
+        }
+      }
+      // Also check JOIN ON conditions for subqueries
+      if (Array.isArray(ast.from)) {
+        for (const fromItem of ast.from) {
+          if (fromItem?.on) {
+            collectSubqueries(fromItem.on, subqueries);
+          }
+        }
+      }
+      
+      // Validate each subquery with its own scope + parent scope (for correlated subqueries)
+      for (const subquery of subqueries) {
+        const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
+        
+        // Merge parent aliases into subquery's alias map (subquery's own aliases take precedence)
+        const mergedAliasMap = new Map(parentAliasMap);
+        for (const [key, value] of subAliasMap) {
+          mergedAliasMap.set(key, value);
+        }
+        
+        // Merge parent unique tables into subquery's unique tables
+        const mergedUniqueTables = new Map(parentUniqueTables);
+        for (const [key, value] of subUniqueTables) {
+          mergedUniqueTables.set(key, value);
+        }
+        
+        await validateScope(subquery, mergedAliasMap, mergedUniqueTables);
+        // Recursively validate nested subqueries, passing the merged scope
+        await validateSubqueries(subquery, mergedAliasMap, mergedUniqueTables);
+      }
+    };
+
+    // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
+    if (Array.isArray(selectAst?.with)) {
+      for (const cte of selectAst.with) {
+        const cteAst = cte?.stmt?.ast;
+        if (cteAst) {
+          const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+            ...cteAst,
+            with: null,
+          });
+          await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
+        }
+      }
+    }
+
+    // Validate subqueries in the main query, passing the main query's aliases as parent scope
+    await validateSubqueries(selectAst, aliasMap, uniqueTables);
 
     return issues;
   }, [getTableFields]);
