@@ -4,6 +4,9 @@ import {
   setLeftSidebarWidth,
   getRightSidebarWidth,
   setRightSidebarWidth,
+  getTheme,
+  setTheme,
+  type Theme,
 } from '../storage/ui-settings-store';
 
 export function registerUISettingsHandlers(): void {
@@ -21,6 +24,14 @@ export function registerUISettingsHandlers(): void {
 
   ipcMain.handle('ui-settings:setRightSidebarWidth', async (_event, width: number) => {
     setRightSidebarWidth(width);
+  });
+
+  ipcMain.handle('ui-settings:getTheme', async () => {
+    return getTheme();
+  });
+
+  ipcMain.handle('ui-settings:setTheme', async (_event, theme: Theme) => {
+    setTheme(theme);
   });
 }
 

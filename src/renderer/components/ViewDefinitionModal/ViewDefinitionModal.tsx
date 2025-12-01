@@ -18,6 +18,24 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
   const [definition, setDefinition] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
+
+  // Listen for theme changes
+  useEffect(() => {
+    const updateTheme = () => {
+      const currentTheme = document.documentElement.getAttribute('data-theme');
+      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
+    };
+    
+    // Initial theme
+    updateTheme();
+    
+    // Watch for attribute changes
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const loadViewDefinition = async () => {
@@ -97,7 +115,7 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
                   height="400px"
                   language="sql"
                   value={definition}
-                  theme="vs-dark"
+                  theme={editorTheme}
                   options={{
                     readOnly: true,
                     minimap: { enabled: false },

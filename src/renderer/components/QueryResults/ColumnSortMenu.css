@@ -1,9 +1,9 @@
 .column-sort-menu {
   position: fixed;
-  background-color: #252526;
-  border: 1px solid #3e3e42;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-dropdown);
   z-index: 1000;
   min-width: 150px;
   padding: 4px 0;
@@ -19,7 +19,7 @@
   padding: 6px 12px;
   background: none;
   border: none;
-  color: #cccccc;
+  color: var(--text-primary);
   text-align: left;
   cursor: pointer;
   font-size: 0.75rem;
@@ -27,16 +27,16 @@
 }
 
 .sort-menu-item:hover {
-  background-color: #2a2d2e;
+  background-color: var(--bg-hover);
 }
 
 .sort-menu-item.active {
-  background-color: #094771;
-  color: #ffffff;
+  background-color: var(--bg-active);
+  color: var(--text-white);
 }
 
 .sort-menu-item.active:hover {
-  background-color: #0e639c;
+  background-color: var(--bg-active-hover);
 }
 
 .sort-icon {

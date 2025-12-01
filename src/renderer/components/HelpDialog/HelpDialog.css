@@ -4,7 +4,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,15 +12,15 @@
 }
 
 .help-dialog {
-  background: #252526;
+  background: var(--bg-secondary);
   border-radius: 4px;
   padding: 2rem;
   min-width: 600px;
   max-width: 700px;
   max-height: 80vh;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -30,7 +30,7 @@
   margin: 0 0 1.5rem 0;
   font-size: 1.125rem;
   font-weight: 400;
-  color: #ffffff;
+  color: var(--text-white);
 }
 
 .help-content {
@@ -44,16 +44,16 @@
 }
 
 .help-content::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  background: var(--bg-primary);
 }
 
 .help-content::-webkit-scrollbar-thumb {
-  background: #424242;
+  background: var(--bg-scrollbar-thumb);
   border-radius: 4px;
 }
 
 .help-content::-webkit-scrollbar-thumb:hover {
-  background: #4e4e4e;
+  background: var(--bg-scrollbar-thumb-hover);
 }
 
 .shortcut-category {
@@ -68,7 +68,7 @@
   margin: 0 0 0.75rem 0;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-white);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -84,7 +84,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 0.5rem 0;
-  border-bottom: 1px solid #2d2d30;
+  border-bottom: 1px solid var(--bg-tertiary);
 }
 
 .shortcut-item:last-child {
@@ -102,27 +102,27 @@
 .shortcut-keys kbd {
   display: inline-block;
   padding: 0.25rem 0.5rem;
-  background-color: #3c3c3c;
-  border: 1px solid #3e3e42;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 0.75rem;
   font-weight: 500;
-  color: #cccccc;
+  color: var(--text-primary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   min-width: 1.5rem;
   text-align: center;
 }
 
 .shortcut-keys span {
-  color: #858585;
+  color: var(--text-secondary);
   font-size: 0.75rem;
 }
 
 .shortcut-description {
   flex: 1;
   font-size: 0.8125rem;
-  color: #cccccc;
+  color: var(--text-primary);
   text-align: right;
 }
 
@@ -133,7 +133,7 @@
   gap: 0.5rem;
   margin-top: 1.5rem;
   padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
+  border-top: 1px solid var(--border-primary);
 }
 
 .dialog-actions button {
@@ -143,12 +143,12 @@
   cursor: pointer;
   font-size: 0.8125rem;
   transition: background-color 0.15s ease;
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
 }
 
 .dialog-actions button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .donation-button {

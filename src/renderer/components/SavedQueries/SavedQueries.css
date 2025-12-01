@@ -4,7 +4,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,24 +12,24 @@
 }
 
 .saved-queries-dialog {
-  background: #252526;
+  background: var(--bg-secondary);
   border-radius: 4px;
   padding: 2rem;
   min-width: 600px;
   max-width: 800px;
   max-height: 80vh;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-dialog);
   display: flex;
   flex-direction: column;
-  border: 1px solid #3e3e42;
-  color: #cccccc;
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
 }
 
 .saved-queries-dialog h2 {
   margin: 0 0 1.5rem 0;
   font-size: 1.125rem;
   font-weight: 400;
-  color: #ffffff;
+  color: var(--text-white);
 }
 
 .search-container {
@@ -39,15 +39,15 @@
 .search-input {
   width: 100%;
   padding: 0.5rem;
-  border: 1px solid #3e3e42;
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
   font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
 }
 
 .search-input:focus {
-  outline: 1px solid #007acc;
+  outline: 1px solid var(--accent-primary);
   outline-offset: -1px;
 }
 
@@ -55,7 +55,7 @@
 .no-queries {
   padding: 2rem;
   text-align: center;
-  color: #858585;
+  color: var(--text-secondary);
 }
 
 .queries-list {
@@ -65,16 +65,16 @@
 }
 
 .query-item {
-  border: 1px solid #3e3e42;
+  border: 1px solid var(--border-primary);
   border-radius: 3px;
   padding: 1rem;
   margin-bottom: 1rem;
-  background-color: #2d2d30;
+  background-color: var(--bg-tertiary);
   transition: background-color 0.15s ease;
 }
 
 .query-item:hover {
-  background-color: #323233;
+  background-color: var(--bg-hover);
 }
 
 .query-header {
@@ -87,7 +87,7 @@
 .query-name {
   margin: 0;
   font-size: 0.9375rem;
-  color: #ffffff;
+  color: var(--text-white);
   font-weight: 400;
 }
 
@@ -107,26 +107,26 @@
 }
 
 .load-button {
-  background-color: #0e639c;
-  color: #ffffff;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
 }
 
 .load-button:hover {
-  background-color: #1177bb;
+  background-color: var(--accent-primary-hover);
 }
 
 .delete-button {
-  background-color: #a1260d;
-  color: #ffffff;
+  background-color: var(--accent-danger);
+  color: var(--text-white);
 }
 
 .delete-button:hover {
-  background-color: #c72e0f;
+  background-color: var(--accent-danger-hover);
 }
 
 .query-description {
   margin: 0.5rem 0;
-  color: #858585;
+  color: var(--text-secondary);
   font-size: 0.8125rem;
 }
 
@@ -134,24 +134,24 @@
   display: flex;
   gap: 1rem;
   font-size: 0.8125rem;
-  color: #858585;
+  color: var(--text-secondary);
   margin-bottom: 0.5rem;
 }
 
 .query-tags {
-  color: #4ec9b0;
+  color: var(--text-tags);
 }
 
 .query-preview {
-  background-color: #1e1e1e;
+  background-color: var(--bg-primary);
   padding: 0.5rem;
   border-radius: 3px;
   font-size: 0.75rem;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  color: #cccccc;
+  color: var(--text-primary);
   overflow-x: auto;
   margin: 0;
-  border: 1px solid #3e3e42;
+  border: 1px solid var(--border-primary);
 }
 
 .dialog-actions {
@@ -159,21 +159,21 @@
   justify-content: flex-end;
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid #3e3e42;
+  border-top: 1px solid var(--border-primary);
 }
 
 .dialog-actions button {
   padding: 0.5rem 1rem;
   border: none;
   border-radius: 3px;
-  background-color: #3e3e42;
-  color: #cccccc;
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 0.8125rem;
   transition: background-color 0.15s ease;
 }
 
 .dialog-actions button:hover {
-  background-color: #4a4a4a;
+  background-color: var(--button-secondary-hover);
 }
 

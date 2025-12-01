@@ -3,8 +3,8 @@
   align-items: center;
   justify-content: flex-end;
   padding: 0.5rem;
-  background-color: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
   gap: 0.5rem;
   height: 35px;
 }
@@ -16,7 +16,7 @@
 .collapse-button {
   background: none;
   border: none;
-  color: #858585;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.75rem;
   padding: 0.25rem;
@@ -30,14 +30,14 @@
 }
 
 .collapse-button:hover {
-  background-color: #2a2d2e;
-  color: #cccccc;
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .refresh-button {
   background: none;
   border: none;
-  color: #858585;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.875rem;
   padding: 0.25rem;
@@ -51,8 +51,8 @@
 }
 
 .refresh-button:hover:not(:disabled) {
-  background-color: #2a2d2e;
-  color: #cccccc;
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .refresh-button:disabled {

@@ -61,6 +61,8 @@ global.window = global.window || {};
     setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
     getRightSidebarWidth: jest.fn().mockResolvedValue(300),
     setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getTheme: jest.fn().mockResolvedValue('dark'),
+    setTheme: jest.fn().mockResolvedValue(undefined),
   },
   tabs: {
     getTabs: jest.fn().mockResolvedValue([]),
@@ -78,6 +80,7 @@ global.window = global.window || {};
     onExecuteQuery: jest.fn(() => () => {}),
     onShowConnection: jest.fn(() => () => {}),
     onDisconnect: jest.fn(() => () => {}),
+    onToggleTheme: jest.fn(() => () => {}),
   },
   resultsCache: {
     get: jest.fn().mockResolvedValue(null),

@@ -50,6 +50,8 @@ export interface ElectronAPI {
     setLeftSidebarWidth(width: number): Promise<void>;
     getRightSidebarWidth(): Promise<number>;
     setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
   };
 
   // Tabs management
@@ -89,6 +91,7 @@ export interface ElectronAPI {
     onExecuteQuery(callback: () => void): () => void;
     onShowConnection(callback: () => void): () => void;
     onDisconnect(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
   };
 }
 

@@ -51,6 +51,8 @@ export interface ElectronAPI {
     setLeftSidebarWidth(width: number): Promise<void>;
     getRightSidebarWidth(): Promise<number>;
     setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
   };
 
   // Tabs management
@@ -84,6 +86,7 @@ export interface ElectronAPI {
     onShowHelp(callback: () => void): () => void;
     onNewTab(callback: () => void): () => void;
     onShowAbout(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
   };
 
   // App info
@@ -129,6 +132,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
     getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
     setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
   },
   tabs: {
     getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
@@ -166,6 +171,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = () => callback();
       ipcRenderer.on('menu:show-about', handler);
       return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
     },
   },
   app: {

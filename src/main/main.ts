@@ -115,6 +115,14 @@ function createMenu(): void {
             mainWindow?.webContents.send('menu:show-help');
           },
         },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
       ],
     },
   ];
