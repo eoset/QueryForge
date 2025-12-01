@@ -1192,6 +1192,89 @@ function detectJoinOnContext(
 }
 
 /**
+ * Detects if we're in a WHERE, AND, or OR clause and returns all available table references with aliases
+ */
+function detectWhereContext(
+  model: any,
+  position: any,
+  statementContext?: StatementContext | null
+): Array<{ tableRef: string; alias: string | null }> | null {
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
+  
+  // Look for the last SELECT before the cursor inside the active statement
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
+    return null;
+  }
+  
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
+  
+  // Find WHERE keyword after the FROM clause
+  const whereMatch = selectScopedTextUpToCursor.match(/\bWHERE\s+/i);
+  if (!whereMatch) {
+    return null;
+  }
+  
+  const whereIndex = whereMatch.index || 0;
+  const textAfterWhere = selectScopedTextUpToCursor.substring(whereIndex);
+  
+  // Check if we're in WHERE clause or after AND/OR within WHERE clause
+  // We're in WHERE context if:
+  // 1. Cursor is after WHERE keyword
+  // 2. Cursor is not in a subquery (check parenthesis balance)
+  // 3. Cursor is not past GROUP BY, ORDER BY, HAVING, LIMIT, etc.
+  
+  // Check if we've moved past the WHERE clause into GROUP BY, ORDER BY, etc.
+  const endOfWhereMatch = textAfterWhere.match(/\b(GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/i);
+  if (endOfWhereMatch) {
+    // Cursor might be after WHERE clause ended
+    const endOfWhereIndex = whereIndex + (endOfWhereMatch.index || 0);
+    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    if (cursorPositionInScoped > endOfWhereIndex) {
+      return null;
+    }
+  }
+  
+  // Check parenthesis balance to avoid suggesting in subqueries
+  let parenDepth = 0;
+  for (let i = whereIndex; i < selectScopedTextUpToCursor.length; i++) {
+    const char = selectScopedTextUpToCursor[i];
+    if (char === '(') parenDepth++;
+    if (char === ')') parenDepth--;
+  }
+  
+  // If we're inside a subquery (parenDepth > 0), don't suggest from outer query
+  if (parenDepth > 0) {
+    return null;
+  }
+  
+  // Parse FROM clause and JOIN statements to get all available tables
+  const fromClause = parseFromClause(selectScopedStatementText);
+  const joins = parseJoinStatements(selectScopedStatementText);
+  
+  const tables: Array<{ tableRef: string; alias: string | null }> = [];
+  
+  if (fromClause) {
+    tables.push(fromClause);
+  }
+  
+  for (const join of joins) {
+    tables.push({
+      tableRef: join.tableRef,
+      alias: join.alias,
+    });
+  }
+  
+  return tables.length > 0 ? tables : null;
+}
+
+/**
  * Gets column suggestions for JOIN ON clause
  */
 async function getJoinColumnSuggestions(
@@ -1761,6 +1844,155 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
               }));
             } catch (error) {
               // Silently handle errors
+            }
+          }
+        }
+
+        // Check if we're in a WHERE/AND/OR clause (only if not already in SELECT or JOIN ON context)
+        if (!isSelectContext && !isJoinOnContext) {
+          const whereTables = detectWhereContext(model, position, statementContext);
+          if (whereTables && whereTables.length > 0) {
+            // Check if we're typing after a table alias dot (e.g., "t." or "t.col")
+            const aliasDotMatch = textBeforeCursor.match(/([\w\-]+)\.([\w\-]*)$/);
+            
+            if (aliasDotMatch) {
+              const typedAlias = aliasDotMatch[1];
+              const partialColumn = aliasDotMatch[2] || '';
+              
+              // Find matching table by alias
+              const getTableAlias = (table: { tableRef: string; alias: string | null }): string => {
+                if (table.alias) {
+                  return table.alias;
+                }
+                const cleanRef = table.tableRef.replace(/[`"']/g, '');
+                const parts = cleanRef.split('.').filter(p => p.length > 0);
+                return parts[parts.length - 1] || '';
+              };
+              
+              for (const table of whereTables) {
+                const tableAlias = getTableAlias(table);
+                if (typedAlias.toLowerCase() === tableAlias.toLowerCase()) {
+                  isSelectContext = true; // Reuse isSelectContext to mark we have column suggestions
+                  
+                  const resolvedRef = resolveDatasetTableFromRef(table.tableRef);
+                  
+                  if (resolvedRef) {
+                    const { datasetId, tableId } = resolvedRef;
+                    try {
+                      const schema = await getTableSchema(projectId, datasetId, tableId);
+                      const prefixLower = partialColumn.toLowerCase();
+                      
+                      // Calculate proper range
+                      const dotPosition = textBeforeCursor.lastIndexOf('.');
+                      const rangeStartColumn = partialColumn 
+                        ? (dotPosition + 2)
+                        : position.column;
+                      const rangeEndColumn = position.column;
+                      
+                      for (const field of schema) {
+                        if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                          selectColumnSuggestions.push({
+                            label: field.name,
+                            kind: CompletionItemKind.Property,
+                            insertText: field.name,
+                            detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                            documentation: `Column from ${table.tableRef}`,
+                            range: {
+                              startLineNumber: position.lineNumber,
+                              endLineNumber: position.lineNumber,
+                              startColumn: rangeStartColumn,
+                              endColumn: rangeEndColumn,
+                            },
+                          });
+                        }
+                      }
+                    } catch (error) {
+                      // Silently handle errors
+                    }
+                  }
+                  break;
+                }
+              }
+            }
+
+            if (!isSelectContext) {
+              // Not after a dot, show columns from all tables with aliases/prefixes
+              const dedupedTables: Array<{
+                alias: string | null;
+                tableRef: string;
+                datasetId: string;
+                tableId: string;
+              }> = [];
+              const seenTables = new Set<string>();
+
+              for (const table of whereTables) {
+                const resolvedRef = resolveDatasetTableFromRef(table.tableRef);
+                if (!resolvedRef) {
+                  continue;
+                }
+
+                const key = table.alias
+                  ? `alias:${table.alias.toLowerCase()}`
+                  : `table:${resolvedRef.datasetId.toLowerCase()}.${resolvedRef.tableId.toLowerCase()}`;
+
+                if (seenTables.has(key)) {
+                  continue;
+                }
+
+                seenTables.add(key);
+                dedupedTables.push({
+                  alias: table.alias,
+                  tableRef: table.tableRef,
+                  datasetId: resolvedRef.datasetId,
+                  tableId: resolvedRef.tableId,
+                });
+              }
+
+              if (dedupedTables.length > 0) {
+                try {
+                  const schemaResults = await Promise.all(
+                    dedupedTables.map(async (tableInfo) => ({
+                      tableInfo,
+                      schema: await getTableSchema(projectId, tableInfo.datasetId, tableInfo.tableId),
+                    }))
+                  );
+
+                  const partialColumn = word.word || '';
+                  const prefixLower = partialColumn.toLowerCase();
+                  const baseRange = {
+                    startLineNumber: position.lineNumber,
+                    endLineNumber: position.lineNumber,
+                    startColumn: word.startColumn,
+                    endColumn: word.endColumn,
+                  };
+                  const shouldInsertBareColumns = dedupedTables.length === 1 && !dedupedTables[0].alias;
+
+                  for (const { tableInfo, schema } of schemaResults) {
+                    const displayPrefix = tableInfo.alias || tableInfo.tableId;
+                    for (const field of schema) {
+                      if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                        const label = shouldInsertBareColumns && !tableInfo.alias
+                          ? field.name
+                          : `${displayPrefix}.${field.name}`;
+                        selectColumnSuggestions.push({
+                          label,
+                          kind: CompletionItemKind.Property,
+                          insertText: label,
+                          detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                          documentation: `Column from ${tableInfo.tableRef}`,
+                          range: baseRange,
+                        });
+                      }
+                    }
+                  }
+
+                  if (selectColumnSuggestions.length > 0) {
+                    isSelectContext = true;
+                  }
+                } catch (error) {
+                  // Silently handle errors
+                }
+              }
             }
           }
         }
