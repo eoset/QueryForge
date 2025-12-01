@@ -17192,272 +17192,6 @@ declare global {
 }
 ````
 
-## File: src/renderer/components/DatasetTree/DatasetTree.css
-````css
-.dataset-tree {
-  width: 100%;
-  flex: 1;
-  background-color: var(--bg-secondary);
-  border-right: 1px solid var(--border-primary);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.dataset-tree.collapsed {
-  min-width: 30px;
-  max-width: 30px;
-}
-
-.dataset-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  height: 35px;
-  gap: 0.5rem;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.collapse-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.dataset-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dataset-tree-search {
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.dataset-tree-search-input {
-  flex: 1;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.dataset-tree-search-input:focus {
-  border-color: var(--accent-primary);
-}
-
-.dataset-tree-search-input::placeholder {
-  color: var(--text-secondary);
-}
-
-.dataset-tree-search-clear {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.dataset-tree-search-clear:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.dataset-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
-
-.dataset-tree-loading,
-.dataset-tree-error,
-.dataset-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.dataset-tree-error {
-  color: var(--text-error);
-}
-
-.dataset-item {
-  user-select: none;
-}
-
-.dataset-header {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.dataset-header:hover {
-  background-color: var(--bg-hover);
-}
-
-.dataset-icon {
-  font-size: 0.625rem;
-  color: var(--text-secondary);
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-}
-
-.dataset-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dataset-tables {
-  padding-left: 1rem;
-}
-
-.table-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  padding-left: 1.5rem;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.table-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.table-icon {
-  font-size: 0.75rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
-
-.table-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-loading,
-.table-empty {
-  padding: 0.5rem 1rem;
-  padding-left: 2rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  font-style: italic;
-}
-
-.context-menu {
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  box-shadow: var(--shadow-dropdown);
-  min-width: 180px;
-  padding: 0.25rem 0;
-  z-index: 1000;
-  user-select: none;
-}
-
-.context-menu-item {
-  padding: 0.5rem 1rem;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover {
-  background-color: var(--bg-active);
-}
-
-.context-menu-item:first-child {
-  border-top-left-radius: 3px;
-  border-top-right-radius: 3px;
-}
-
-.context-menu-item:last-child {
-  border-bottom-left-radius: 3px;
-  border-bottom-right-radius: 3px;
-}
-````
-
 ## File: src/renderer/components/HelpDialog/HelpDialog.css
 ````css
 .help-dialog-overlay {
@@ -20316,548 +20050,319 @@ app.on('will-quit', () => {
 });
 ````
 
-## File: src/renderer/components/DatasetTree/DatasetTree.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
-import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
-import type { Dataset, Table } from '../../../shared/types/dataset';
-import './DatasetTree.css';
-
-interface DatasetWithTables extends Dataset {
-  tables?: Table[];
-  expanded?: boolean;
-  loading?: boolean;
+## File: src/renderer/components/DatasetTree/DatasetTree.css
+````css
+.dataset-tree {
+  width: 100%;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
 }
 
-interface DatasetTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+.dataset-tree.collapsed {
+  min-width: 30px;
+  max-width: 30px;
 }
 
-const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
-  const connection = useConnectionStore((state) => state.connection);
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    dataset: Dataset;
-    table: Table;
-  } | null>(null);
-  const [sampleDataModal, setSampleDataModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
+.dataset-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+  gap: 0.5rem;
+}
 
-  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 
-  const loadDatasets = useCallback(async () => {
-    if (!connection || !window.electronAPI) {
-      return;
-    }
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-    setIsLoading(true);
-    setError(null);
+.dataset-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
-    try {
-      const datasetList = await window.electronAPI.bigquery.listDatasets();
-      const datasetsWithState = datasetList.map((ds) => ({
-        ...ds,
-        expanded: false,
-        loading: false,
-      }));
-      setDatasets(datasetsWithState);
-      
-      // Also store in metadata store for completion provider
-      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
-      
-      // Preload tables for all datasets in the background
-      datasetList.forEach((dataset) => {
-        window.electronAPI!.bigquery
-          .listTables(dataset.id)
-          .then((tables) => {
-            setDatasetTables(dataset.id, tables);
-          })
-          .catch((err) => {
-            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
-          });
-      });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load datasets');
-      console.error('Failed to load datasets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [connection, setMetadataDatasets, setDatasetTables]);
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 
-  useEffect(() => {
-    if (connection) {
-      loadDatasets();
-    } else {
-      setDatasets([]);
-    }
-  }, [connection, loadDatasets]);
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadDatasets, isLoading);
-    }
-  }, [onRefreshReady, loadDatasets, isLoading]);
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-  const toggleDataset = async (datasetId: string) => {
-    if (!window.electronAPI) return;
+.dataset-tree-search {
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
 
-    setDatasets((prev) =>
-      prev.map((ds) => {
-        if (ds.id === datasetId) {
-          if (ds.expanded) {
-            // Collapse
-            return { ...ds, expanded: false };
-          } else {
-            // Expand - load tables if not already loaded
-            if (!ds.tables) {
-              // Set loading state
-              const updated = { ...ds, expanded: true, loading: true };
-              
-              // Load tables
-              window.electronAPI.bigquery
-                .listTables(datasetId)
-                .then((tables) => {
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, tables, loading: false }
-                        : d
-                    )
-                  );
-                  // Also store in metadata store
-                  setDatasetTables(datasetId, tables);
-                })
-                .catch((err) => {
-                  console.error('Failed to load tables:', err);
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, loading: false }
-                        : d
-                    )
-                  );
-                });
-              
-              return updated;
-            }
-            return { ...ds, expanded: true };
-          }
-        }
-        return ds;
-      })
-    );
-  };
+.dataset-tree-search-input {
+  flex: 1;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  padding: 0.375rem 0.5rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
 
-  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    // Handle Ctrl/Cmd+click to insert SELECT statement
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
-      const selectStatement = `SELECT * FROM ${tableRef}`;
-      window.dispatchEvent(
-        new CustomEvent('insertTableReference', { detail: selectStatement })
-      );
-    }
-    // Regular left click does nothing (removed table insertion feature)
-  };
+.dataset-tree-search-input:focus {
+  border-color: var(--accent-primary);
+}
 
-  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
-    if (event.ctrlKey || event.metaKey) {
-      if (onShowSchema && connection?.projectId) {
-        onShowSchema(connection.projectId, dataset.id, table.id);
-      }
-      return;
-    }
-    
-    // Show context menu
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      dataset,
-      table,
-    });
-  };
+.dataset-tree-search-input::placeholder {
+  color: var(--text-secondary);
+}
 
-  const handleOpenInNewTab = () => {
-    if (!contextMenu || !connection) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const queryText = `SELECT * FROM ${tableRef}`;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, queryText);
-    updateTab(newTabId, {
-      title: `${dataset.name}.${table.name}`,
-    });
-    
-    setContextMenu(null);
-  };
+.dataset-tree-search-clear {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
 
-  const handleShowSchema = () => {
-    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
-    
-    const { dataset, table } = contextMenu;
-    onShowSchema(connection.projectId, dataset.id, table.id);
-    setContextMenu(null);
-  };
+.dataset-tree-search-clear:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-  const handleViewSampleData = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setSampleDataModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
+.dataset-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
 
-  const handleViewDefinition = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setViewDefinitionModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
+.dataset-tree-loading,
+.dataset-tree-error,
+.dataset-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
 
-  const handleAddWithJoin = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
-    
-    // Get the active tab's query
-    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
-    const currentQuery = activeTab?.queryText || '';
-    
-    let newQuery: string;
-    
-    if (!currentQuery.trim()) {
-      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
-      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
-    } else {
-      const trimmedQuery = currentQuery.trim();
-      const upperQuery = trimmedQuery.toUpperCase();
-      
-      // Check if there's already a FROM clause
-      const fromMatch = upperQuery.match(/\bFROM\b/i);
-      
-      if (fromMatch) {
-        // There's already a FROM clause, add JOIN
-        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
-        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
-        
-        if (clauseMatch && clauseMatch.index !== undefined) {
-          // Insert JOIN before the clause
-          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
-          const afterClause = trimmedQuery.substring(clauseMatch.index);
-          // Find the last table reference to use in JOIN condition
-          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
-          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
-            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
-            : 't1';
-          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        } else {
-          // No WHERE/ORDER/etc clause, append JOIN at the end
-          // Try to find the first table alias from FROM clause
-          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
-          const firstTableAlias = fromTableMatch?.[1] || 't1';
-          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        }
-      } else {
-        // No FROM clause found, add FROM (can't add JOIN without a first table)
-        // Check if it starts with SELECT
-        if (upperQuery.startsWith('SELECT')) {
-          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
-        } else {
-          // Not a SELECT query, prepend SELECT and add FROM
-          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
-        }
-      }
-    }
-    
-    // Update the active tab, or create a new one if none exists
-    if (activeTab) {
-      setTabQuery(activeTab.id, newQuery);
-    } else {
-      const newTabId = createTab();
-      setTabQuery(newTabId, newQuery);
-    }
-    
-    setContextMenu(null);
-  };
+.dataset-tree-error {
+  color: var(--text-error);
+}
 
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
+/* Skeleton loading styles */
+.dataset-tree-skeleton {
+  padding: 0.25rem 0;
+}
 
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
+.skeleton-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  gap: 0.375rem;
+}
 
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
+.skeleton-icon {
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
 
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
+.skeleton-text {
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 3px;
+}
 
-  // Filter datasets and tables based on search term
-  const filteredDatasets = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return datasets;
-    }
-
-    const searchLower = searchTerm.toLowerCase().trim();
-    
-    return datasets
-      .filter((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-        return datasetMatches || matchingTables.length > 0;
-      })
-      .map((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-
-        return {
-          ...dataset,
-          // Auto-expand if searching and there are matching tables or dataset matches
-          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
-          // Show all tables if dataset name matches, otherwise show only matching tables
-          // Prefer local tables if available, otherwise use metadata tables
-          tables: datasetMatches 
-            ? (localTables.length > 0 ? localTables : allTables)
-            : matchingTables.length > 0 
-              ? matchingTables 
-              : (localTables.length > 0 ? localTables : allTables),
-        };
-      });
-  }, [datasets, searchTerm, getDatasetTables]);
-
-  if (!connection) {
-    return (
-      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-        {!collapsed && (
-          <div className="dataset-tree-empty">Not connected</div>
-        )}
-      </div>
-    );
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
   }
+  100% {
+    background-position: -200% 0;
+  }
+}
 
-  return (
-    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="dataset-tree-search">
-            <input
-              type="text"
-              className="dataset-tree-search-input"
-              placeholder="Search datasets and tables..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                // Prevent closing context menu when typing in search
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="dataset-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="dataset-tree-content">
-            {isLoading && datasets.length === 0 && (
-              <div className="dataset-tree-loading">Loading datasets...</div>
-            )}
-            {error && <div className="dataset-tree-error">{error}</div>}
-            {filteredDatasets.length === 0 && !isLoading && !error && (
-              <div className="dataset-tree-empty">
-                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
-              </div>
-            )}
-            {filteredDatasets.map((dataset) => (
-            <div key={dataset.id} className="dataset-item">
-              <div
-                className="dataset-header"
-                onClick={() => toggleDataset(dataset.id)}
-              >
-                <span className="dataset-icon">
-                  {dataset.expanded ? '▼' : '▶'}
-                </span>
-                <span className="dataset-name">{dataset.name}</span>
-              </div>
-              {dataset.expanded && (
-                <div className="dataset-tables">
-                  {dataset.loading ? (
-                    <div className="table-loading">Loading tables...</div>
-                  ) : (
-                    dataset.tables?.map((table) => (
-                      <div
-                        key={table.id}
-                        className="table-item"
-                        onClick={(e) => handleTableClick(e, dataset, table)}
-                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
-                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
-                      >
-                        <span className="table-icon">
-                          {table.type === 'VIEW' ? '📄' : '🗄'}
-                        </span>
-                        <span className="table-name">{table.name}</span>
-                      </div>
-                    ))
-                  )}
-                  {dataset.tables && dataset.tables.length === 0 && (
-                    <div className="table-empty">No tables</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleOpenInNewTab}>
-            Open in new tab
-          </div>
-          <div className="context-menu-item" onClick={handleAddWithJoin}>
-            Add with JOIN
-          </div>
-          <div className="context-menu-item" onClick={handleViewSampleData}>
-            View sample data
-          </div>
-          {contextMenu.table.type === 'VIEW' && (
-            <div className="context-menu-item" onClick={handleViewDefinition}>
-              Show view definition
-            </div>
-          )}
-          {onShowSchema && connection?.projectId && (
-            <div className="context-menu-item" onClick={handleShowSchema}>
-              Show schema
-            </div>
-          )}
-        </div>
-      )}
-      {sampleDataModal && (
-        <SampleDataModal
-          projectId={sampleDataModal.projectId}
-          datasetId={sampleDataModal.datasetId}
-          tableId={sampleDataModal.tableId}
-          onClose={() => setSampleDataModal(null)}
-        />
-      )}
-      {viewDefinitionModal && (
-        <ViewDefinitionModal
-          projectId={viewDefinitionModal.projectId}
-          datasetId={viewDefinitionModal.datasetId}
-          tableId={viewDefinitionModal.tableId}
-          onClose={() => setViewDefinitionModal(null)}
-        />
-      )}
-    </div>
-  );
-};
+.dataset-item {
+  user-select: none;
+}
 
-export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
-  // Only re-render if these props change
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
-    prevProps.onShowSchema === nextProps.onShowSchema
-  );
-});
+.dataset-header {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.dataset-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.dataset-icon {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+.dataset-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-tables {
+  padding-left: 1rem;
+}
+
+.table-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  padding-left: 1.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.table-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.table-icon {
+  font-size: 0.75rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+.table-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-loading,
+.table-empty {
+  padding: 0.5rem 1rem;
+  padding-left: 2rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.context-menu {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  min-width: 180px;
+  padding: 0.25rem 0;
+  z-index: 1000;
+  user-select: none;
+}
+
+.context-menu-item {
+  padding: 0.5rem 1rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-active);
+}
+
+.context-menu-item:first-child {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.context-menu-item:last-child {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
 ````
 
 ## File: src/renderer/components/QueryEditor/QueryEditor.css
@@ -21719,6 +21224,557 @@ jest.mock('@monaco-editor/react', () => ({
 }));
 ````
 
+## File: src/renderer/components/DatasetTree/DatasetTree.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
+import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
+import type { Dataset, Table } from '../../../shared/types/dataset';
+import './DatasetTree.css';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  expanded?: boolean;
+  loading?: boolean;
+}
+
+interface DatasetTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
+  const connection = useConnectionStore((state) => state.connection);
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    dataset: Dataset;
+    table: Table;
+  } | null>(null);
+  const [sampleDataModal, setSampleDataModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+
+  const loadDatasets = useCallback(async () => {
+    if (!connection || !window.electronAPI) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const datasetList = await window.electronAPI.bigquery.listDatasets();
+      const datasetsWithState = datasetList.map((ds) => ({
+        ...ds,
+        expanded: false,
+        loading: false,
+      }));
+      setDatasets(datasetsWithState);
+      
+      // Also store in metadata store for completion provider
+      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
+      
+      // Preload tables for all datasets in the background
+      datasetList.forEach((dataset) => {
+        window.electronAPI!.bigquery
+          .listTables(dataset.id)
+          .then((tables) => {
+            setDatasetTables(dataset.id, tables);
+          })
+          .catch((err) => {
+            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
+          });
+      });
+    } catch (err: any) {
+      setError(err.message || 'Failed to load datasets');
+      console.error('Failed to load datasets:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connection, setMetadataDatasets, setDatasetTables]);
+
+  useEffect(() => {
+    if (connection) {
+      loadDatasets();
+    } else {
+      setDatasets([]);
+    }
+  }, [connection, loadDatasets]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadDatasets, isLoading);
+    }
+  }, [onRefreshReady, loadDatasets, isLoading]);
+
+  const toggleDataset = async (datasetId: string) => {
+    if (!window.electronAPI) return;
+
+    setDatasets((prev) =>
+      prev.map((ds) => {
+        if (ds.id === datasetId) {
+          if (ds.expanded) {
+            // Collapse
+            return { ...ds, expanded: false };
+          } else {
+            // Expand - load tables if not already loaded
+            if (!ds.tables) {
+              // Set loading state
+              const updated = { ...ds, expanded: true, loading: true };
+              
+              // Load tables
+              window.electronAPI.bigquery
+                .listTables(datasetId)
+                .then((tables) => {
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, tables, loading: false }
+                        : d
+                    )
+                  );
+                  // Also store in metadata store
+                  setDatasetTables(datasetId, tables);
+                })
+                .catch((err) => {
+                  console.error('Failed to load tables:', err);
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, loading: false }
+                        : d
+                    )
+                  );
+                });
+              
+              return updated;
+            }
+            return { ...ds, expanded: true };
+          }
+        }
+        return ds;
+      })
+    );
+  };
+
+  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    // Handle Ctrl/Cmd+click to insert SELECT statement
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
+      const selectStatement = `SELECT * FROM ${tableRef}`;
+      window.dispatchEvent(
+        new CustomEvent('insertTableReference', { detail: selectStatement })
+      );
+    }
+    // Regular left click does nothing (removed table insertion feature)
+  };
+
+  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
+    if (event.ctrlKey || event.metaKey) {
+      if (onShowSchema && connection?.projectId) {
+        onShowSchema(connection.projectId, dataset.id, table.id);
+      }
+      return;
+    }
+    
+    // Show context menu
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      dataset,
+      table,
+    });
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu || !connection) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const queryText = `SELECT * FROM ${tableRef}`;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, queryText);
+    updateTab(newTabId, {
+      title: `${dataset.name}.${table.name}`,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleShowSchema = () => {
+    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
+    
+    const { dataset, table } = contextMenu;
+    onShowSchema(connection.projectId, dataset.id, table.id);
+    setContextMenu(null);
+  };
+
+  const handleViewSampleData = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setSampleDataModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleViewDefinition = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setViewDefinitionModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleAddWithJoin = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
+    
+    // Get the active tab's query
+    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
+    const currentQuery = activeTab?.queryText || '';
+    
+    let newQuery: string;
+    
+    if (!currentQuery.trim()) {
+      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
+      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
+    } else {
+      const trimmedQuery = currentQuery.trim();
+      const upperQuery = trimmedQuery.toUpperCase();
+      
+      // Check if there's already a FROM clause
+      const fromMatch = upperQuery.match(/\bFROM\b/i);
+      
+      if (fromMatch) {
+        // There's already a FROM clause, add JOIN
+        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
+        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
+        
+        if (clauseMatch && clauseMatch.index !== undefined) {
+          // Insert JOIN before the clause
+          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
+          const afterClause = trimmedQuery.substring(clauseMatch.index);
+          // Find the last table reference to use in JOIN condition
+          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
+          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
+            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
+            : 't1';
+          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        } else {
+          // No WHERE/ORDER/etc clause, append JOIN at the end
+          // Try to find the first table alias from FROM clause
+          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
+          const firstTableAlias = fromTableMatch?.[1] || 't1';
+          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        }
+      } else {
+        // No FROM clause found, add FROM (can't add JOIN without a first table)
+        // Check if it starts with SELECT
+        if (upperQuery.startsWith('SELECT')) {
+          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
+        } else {
+          // Not a SELECT query, prepend SELECT and add FROM
+          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
+        }
+      }
+    }
+    
+    // Update the active tab, or create a new one if none exists
+    if (activeTab) {
+      setTabQuery(activeTab.id, newQuery);
+    } else {
+      const newTabId = createTab();
+      setTabQuery(newTabId, newQuery);
+    }
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter datasets and tables based on search term
+  const filteredDatasets = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return datasets;
+    }
+
+    const searchLower = searchTerm.toLowerCase().trim();
+    
+    return datasets
+      .filter((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+        return datasetMatches || matchingTables.length > 0;
+      })
+      .map((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+
+        return {
+          ...dataset,
+          // Auto-expand if searching and there are matching tables or dataset matches
+          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
+          // Show all tables if dataset name matches, otherwise show only matching tables
+          // Prefer local tables if available, otherwise use metadata tables
+          tables: datasetMatches 
+            ? (localTables.length > 0 ? localTables : allTables)
+            : matchingTables.length > 0 
+              ? matchingTables 
+              : (localTables.length > 0 ? localTables : allTables),
+        };
+      });
+  }, [datasets, searchTerm, getDatasetTables]);
+
+  if (!connection) {
+    return (
+      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <div className="dataset-tree-empty">Not connected</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="dataset-tree-search">
+            <input
+              type="text"
+              className="dataset-tree-search-input"
+              placeholder="Search datasets and tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                // Prevent closing context menu when typing in search
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="dataset-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="dataset-tree-content">
+            {isLoading && datasets.length === 0 && (
+              <div className="dataset-tree-skeleton">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
+                  <div key={i} className="skeleton-item">
+                    <div className="skeleton-icon" />
+                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {error && <div className="dataset-tree-error">{error}</div>}
+            {filteredDatasets.length === 0 && !isLoading && !error && (
+              <div className="dataset-tree-empty">
+                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
+              </div>
+            )}
+            {filteredDatasets.map((dataset) => (
+            <div key={dataset.id} className="dataset-item">
+              <div
+                className="dataset-header"
+                onClick={() => toggleDataset(dataset.id)}
+              >
+                <span className="dataset-icon">
+                  {dataset.expanded ? '▼' : '▶'}
+                </span>
+                <span className="dataset-name">{dataset.name}</span>
+              </div>
+              {dataset.expanded && (
+                <div className="dataset-tables">
+                  {dataset.loading ? (
+                    <div className="table-loading">Loading tables...</div>
+                  ) : (
+                    dataset.tables?.map((table) => (
+                      <div
+                        key={table.id}
+                        className="table-item"
+                        onClick={(e) => handleTableClick(e, dataset, table)}
+                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
+                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
+                      >
+                        <span className="table-icon">
+                          {table.type === 'VIEW' ? '📄' : '🗄'}
+                        </span>
+                        <span className="table-name">{table.name}</span>
+                      </div>
+                    ))
+                  )}
+                  {dataset.tables && dataset.tables.length === 0 && (
+                    <div className="table-empty">No tables</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleAddWithJoin}>
+            Add with JOIN
+          </div>
+          <div className="context-menu-item" onClick={handleViewSampleData}>
+            View sample data
+          </div>
+          {contextMenu.table.type === 'VIEW' && (
+            <div className="context-menu-item" onClick={handleViewDefinition}>
+              Show view definition
+            </div>
+          )}
+          {onShowSchema && connection?.projectId && (
+            <div className="context-menu-item" onClick={handleShowSchema}>
+              Show schema
+            </div>
+          )}
+        </div>
+      )}
+      {sampleDataModal && (
+        <SampleDataModal
+          projectId={sampleDataModal.projectId}
+          datasetId={sampleDataModal.datasetId}
+          tableId={sampleDataModal.tableId}
+          onClose={() => setSampleDataModal(null)}
+        />
+      )}
+      {viewDefinitionModal && (
+        <ViewDefinitionModal
+          projectId={viewDefinitionModal.projectId}
+          datasetId={viewDefinitionModal.datasetId}
+          tableId={viewDefinitionModal.tableId}
+          onClose={() => setViewDefinitionModal(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
+    prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
+````
+
 ## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
 ````css
 .saved-queries-tree {
@@ -22387,295 +22443,6 @@ export function initializeTabsStore(): void {
 if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
   initializeTabsStore();
 }
-````
-
-## File: README.md
-````markdown
-# QueryForge
-
-A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
-
-## Features
-
-### Connection Management
-- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
-- **Connection Persistence**: Connection settings persist across sessions
-- **Connection Testing**: Validate credentials before establishing connection
-
-### Query Execution
-- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
-- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
-- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
-- **Query Validation**: Syntax validation before execution
-- **Query Cancellation**: Cancel long-running queries
-- **Progress Indication**: Visual feedback during query execution
-
-### Multi-Tab Workflow
-- **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
-- **Tab Persistence**: Tabs and their content persist across sessions
-- **Drag & Drop Reordering**: Reorganize tabs by dragging
-- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
-- **Modified Indicator**: Blue dot shows unsaved changes
-
-### Query Management
-- **Save Queries**: Save frequently used queries locally with names and descriptions
-- **Saved Queries Tree**: Browse saved queries in the sidebar
-- **Search Queries**: Find saved queries by name or SQL content
-- **Load Queries**: Open saved queries in new tabs with one click
-
-### Dataset Explorer
-- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
-- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
-- **Quick Actions**: Right-click context menu for table operations
-- **Search**: Filter datasets and tables
-
-### Schema Inspection
-- **Schema Sidebar**: View detailed table schemas in a dedicated panel
-- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
-- **Table Metadata**: View row count, table size, and creation time
-- **View Definitions**: Inspect SQL definitions for views
-
-### Query Results
-- **High-Performance Table**: Canvas-based rendering for large datasets
-- **Pagination**: Navigate through results with 200 rows per page (up to 100,000 total)
-- **Column Sorting**: Sort results by any column
-- **Column Resizing**: Adjust column widths by dragging
-- **Copy Values**: Right-click to copy cell values
-- **Results Caching**: Fast page navigation with cached results
-
-### Sample Data
-- **Quick Preview**: View sample data from any table
-- **One-Click Access**: Right-click table and select "View Sample Data"
-
-### UI Customization
-- **Resizable Panels**: Adjust sidebar and editor/results split
-- **Collapsible Sidebar**: Maximize editor space when needed
-- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
-- **Dark Theme**: Modern dark interface
-
-## Prerequisites
-
-- Node.js 18+ and npm
-- Google Cloud Platform account with BigQuery API enabled
-- GCP project with BigQuery access
-- Service account key file (JSON) OR Application Default Credentials configured
-
-### Installing Node.js and npm
-
-npm (Node Package Manager) comes bundled with Node.js. To install both:
-
-1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
-2. **Install Node.js**: Run the installer and follow the installation wizard
-3. **Verify installation**: Open a terminal and run:
-   ```bash
-   node --version
-   npm --version
-   ```
-   Both commands should display version numbers (Node.js 18+ and npm 9+)
-
-Alternatively, you can use a package manager:
-- **macOS**: `brew install node` (using Homebrew)
-- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
-- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
-
-### Setting Up Google Application Default Credentials
-
-Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
-
-#### Option 1: Using gcloud CLI (Recommended)
-
-1. **Install Google Cloud SDK**:
-   - **macOS**: `brew install google-cloud-sdk`
-   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
-   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
-
-2. **Authenticate with your Google account**:
-   ```bash
-   gcloud auth login
-   ```
-   This will open a browser window for you to sign in with your Google account.
-
-3. **Set your default project** (optional but recommended):
-   ```bash
-   gcloud config set project YOUR_PROJECT_ID
-   ```
-
-4. **Set up Application Default Credentials**:
-   ```bash
-   gcloud auth application-default login
-   ```
-   This command will:
-   - Open a browser for authentication
-   - Store credentials in a well-known location that QueryForge can automatically find
-
-#### Option 2: Using Service Account Key File
-
-If you prefer to use a service account key file, you can set it as Application Default Credentials:
-
-1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
-
-2. **Set the environment variable**:
-   ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
-   ```
-
-   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
-   ```bash
-   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
-   source ~/.zshrc
-   ```
-
-   **Windows (PowerShell)**:
-   ```powershell
-   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
-   ```
-
-#### Verifying Your Setup
-
-To verify that Application Default Credentials are configured correctly:
-
-```bash
-gcloud auth application-default print-access-token
-```
-
-If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
-
-**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd QueryForge
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Build the application:
-```bash
-npm run build
-```
-
-4. Start the application:
-```bash
-npm start
-```
-
-## Development
-
-For development with hot reload:
-```bash
-npm run dev
-```
-
-## Usage
-
-### Connecting to BigQuery
-
-1. Launch the application 
-2. Click "Configure Connection" in the header
-3. Enter your GCP Project ID
-4. Select authentication method:
-   - **Service Account Key**: Provide path to JSON key file or paste key content
-   - **Application Default Credentials**: Uses your local gcloud credentials
-5. Click "Connect"
-
-### Executing Queries
-
-1. Type your SQL query in the editor
-2. Click "Execute" or press Cmd/Ctrl+Enter
-3. View results in the table below
-4. Use "Cancel" to stop a running query
-5. Format your SQL with Cmd/Ctrl+Shift+F
-
-### Browsing Datasets
-
-1. Connect to BigQuery
-2. Browse datasets in the left sidebar
-3. Click a dataset to expand and view tables
-4. Right-click a table for options:
-   - **Open in new tab**: Generate a SELECT * query
-   - **View Schema**: Open schema details in sidebar
-   - **View Sample Data**: Preview table contents
-   - **View Definition**: See SQL for views
-
-### Managing Tabs
-
-- Click "+" button to create a new tab
-- Click on a tab to switch between queries
-- Drag tabs to reorder them
-- Click "×" on a tab to close it
-- Modified tabs show a blue dot indicator
-- Use Cmd/Ctrl+1-9 to quickly switch tabs
-
-### Saving Queries
-
-1. Write your query in the editor
-2. Click "Save" button
-3. Enter a name and optional description
-4. Click "Save" to persist the query
-
-### Loading Saved Queries
-
-1. Switch to "SAVED QUERIES" view in the sidebar
-2. Search or browse your saved queries
-3. Click a query to load it in a new tab
-4. Right-click for additional options
-
-## Keyboard Shortcuts
-
-| Action | macOS | Windows/Linux |
-|--------|-------|---------------|
-| New Tab | Cmd+T | Ctrl+T |
-| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
-| Execute Query | Cmd+Enter | Ctrl+Enter |
-| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
-| Show Help | Cmd+? | Ctrl+? |
-| Quit | Cmd+Q | Alt+F4 |
-
-## Project Structure
-
-```
-src/
-├── main/           # Electron main process
-│   ├── ipc/        # IPC handlers
-│   └── storage/    # Local storage
-├── renderer/       # React renderer process
-│   ├── components/ # UI components
-│   ├── hooks/      # React hooks
-│   └── stores/     # State management
-└── shared/         # Shared types/utilities
-```
-
-## Building for Production
-
-Build for your platform:
-```bash
-npm run package
-```
-
-Build for specific platforms:
-```bash
-npm run package:mac    # macOS
-npm run package:win    # Windows
-npm run package:linux  # Linux
-```
-
-## Donate
-
-If you find QueryForge useful, please consider supporting its development:
-
-![Donation QR Code](donation_qr.png)
-
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
-
-## License
-
-MIT
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -23910,6 +23677,295 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     </div>
   );
 };
+````
+
+## File: README.md
+````markdown
+# QueryForge
+
+A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
+
+## Features
+
+### Connection Management
+- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
+- **Connection Persistence**: Connection settings persist across sessions
+- **Connection Testing**: Validate credentials before establishing connection
+
+### Query Execution
+- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
+- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
+- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
+- **Query Validation**: Syntax validation before execution
+- **Query Cancellation**: Cancel long-running queries
+- **Progress Indication**: Visual feedback during query execution
+
+### Multi-Tab Workflow
+- **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
+- **Tab Persistence**: Tabs and their content persist across sessions
+- **Drag & Drop Reordering**: Reorganize tabs by dragging
+- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
+- **Modified Indicator**: Blue dot shows unsaved changes
+
+### Query Management
+- **Save Queries**: Save frequently used queries locally with names and descriptions
+- **Saved Queries Tree**: Browse saved queries in the sidebar
+- **Search Queries**: Find saved queries by name or SQL content
+- **Load Queries**: Open saved queries in new tabs with one click
+
+### Dataset Explorer
+- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
+- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
+- **Quick Actions**: Right-click context menu for table operations
+- **Search**: Filter datasets and tables
+
+### Schema Inspection
+- **Schema Sidebar**: View detailed table schemas in a dedicated panel
+- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
+- **Table Metadata**: View row count, table size, and creation time
+- **View Definitions**: Inspect SQL definitions for views
+
+### Query Results
+- **High-Performance Table**: Canvas-based rendering for large datasets
+- **Pagination**: Navigate through results with 200 rows per page (up to 100,000 total)
+- **Column Sorting**: Sort results by any column
+- **Column Resizing**: Adjust column widths by dragging
+- **Copy Values**: Right-click to copy cell values
+- **Results Caching**: Fast page navigation with cached results
+
+### Sample Data
+- **Quick Preview**: View sample data from any table
+- **One-Click Access**: Right-click table and select "View Sample Data"
+
+### UI Customization
+- **Resizable Panels**: Adjust sidebar and editor/results split
+- **Collapsible Sidebar**: Maximize editor space when needed
+- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
+- **Dark/Light Mode**: Toggle between dark and light themes to suit your preference
+
+## Prerequisites
+
+- Node.js 18+ and npm
+- Google Cloud Platform account with BigQuery API enabled
+- GCP project with BigQuery access
+- Service account key file (JSON) OR Application Default Credentials configured
+
+### Installing Node.js and npm
+
+npm (Node Package Manager) comes bundled with Node.js. To install both:
+
+1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
+2. **Install Node.js**: Run the installer and follow the installation wizard
+3. **Verify installation**: Open a terminal and run:
+   ```bash
+   node --version
+   npm --version
+   ```
+   Both commands should display version numbers (Node.js 18+ and npm 9+)
+
+Alternatively, you can use a package manager:
+- **macOS**: `brew install node` (using Homebrew)
+- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
+- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
+
+### Setting Up Google Application Default Credentials
+
+Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
+
+#### Option 1: Using gcloud CLI (Recommended)
+
+1. **Install Google Cloud SDK**:
+   - **macOS**: `brew install google-cloud-sdk`
+   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+
+2. **Authenticate with your Google account**:
+   ```bash
+   gcloud auth login
+   ```
+   This will open a browser window for you to sign in with your Google account.
+
+3. **Set your default project** (optional but recommended):
+   ```bash
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+4. **Set up Application Default Credentials**:
+   ```bash
+   gcloud auth application-default login
+   ```
+   This command will:
+   - Open a browser for authentication
+   - Store credentials in a well-known location that QueryForge can automatically find
+
+#### Option 2: Using Service Account Key File
+
+If you prefer to use a service account key file, you can set it as Application Default Credentials:
+
+1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
+
+2. **Set the environment variable**:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+   ```
+
+   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
+   ```bash
+   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   **Windows (PowerShell)**:
+   ```powershell
+   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
+   ```
+
+#### Verifying Your Setup
+
+To verify that Application Default Credentials are configured correctly:
+
+```bash
+gcloud auth application-default print-access-token
+```
+
+If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
+
+**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd QueryForge
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Build the application:
+```bash
+npm run build
+```
+
+4. Start the application:
+```bash
+npm start
+```
+
+## Development
+
+For development with hot reload:
+```bash
+npm run dev
+```
+
+## Usage
+
+### Connecting to BigQuery
+
+1. Launch the application 
+2. Click "Configure Connection" in the header
+3. Enter your GCP Project ID
+4. Select authentication method:
+   - **Service Account Key**: Provide path to JSON key file or paste key content
+   - **Application Default Credentials**: Uses your local gcloud credentials
+5. Click "Connect"
+
+### Executing Queries
+
+1. Type your SQL query in the editor
+2. Click "Execute" or press Cmd/Ctrl+Enter
+3. View results in the table below
+4. Use "Cancel" to stop a running query
+5. Format your SQL with Cmd/Ctrl+Shift+F
+
+### Browsing Datasets
+
+1. Connect to BigQuery
+2. Browse datasets in the left sidebar
+3. Click a dataset to expand and view tables
+4. Right-click a table for options:
+   - **Open in new tab**: Generate a SELECT * query
+   - **View Schema**: Open schema details in sidebar
+   - **View Sample Data**: Preview table contents
+   - **View Definition**: See SQL for views
+
+### Managing Tabs
+
+- Click "+" button to create a new tab
+- Click on a tab to switch between queries
+- Drag tabs to reorder them
+- Click "×" on a tab to close it
+- Modified tabs show a blue dot indicator
+- Use Cmd/Ctrl+1-9 to quickly switch tabs
+
+### Saving Queries
+
+1. Write your query in the editor
+2. Click "Save" button
+3. Enter a name and optional description
+4. Click "Save" to persist the query
+
+### Loading Saved Queries
+
+1. Switch to "SAVED QUERIES" view in the sidebar
+2. Search or browse your saved queries
+3. Click a query to load it in a new tab
+4. Right-click for additional options
+
+## Keyboard Shortcuts
+
+| Action | macOS | Windows/Linux |
+|--------|-------|---------------|
+| New Tab | Cmd+T | Ctrl+T |
+| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
+| Execute Query | Cmd+Enter | Ctrl+Enter |
+| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
+| Show Help | Cmd+? | Ctrl+? |
+| Quit | Cmd+Q | Alt+F4 |
+
+## Project Structure
+
+```
+src/
+├── main/           # Electron main process
+│   ├── ipc/        # IPC handlers
+│   └── storage/    # Local storage
+├── renderer/       # React renderer process
+│   ├── components/ # UI components
+│   ├── hooks/      # React hooks
+│   └── stores/     # State management
+└── shared/         # Shared types/utilities
+```
+
+## Building for Production
+
+Build for your platform:
+```bash
+npm run package
+```
+
+Build for specific platforms:
+```bash
+npm run package:mac    # macOS
+npm run package:win    # Windows
+npm run package:linux  # Linux
+```
+
+## Donate
+
+If you find QueryForge useful, please consider supporting its development:
+
+![Donation QR Code](donation_qr.png)
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
+
+## License
+
+MIT
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
