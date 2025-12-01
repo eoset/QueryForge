@@ -668,7 +668,12 @@ export const QueryEditor: React.FC = () => {
     };
 
     // Recursively validate subqueries within the AST
-    const validateSubqueries = async (ast: any) => {
+    // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
+    const validateSubqueries = async (
+      ast: any,
+      parentAliasMap: Map<string, TableAliasInfo> = new Map(),
+      parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
+    ) => {
       const subqueries: any[] = [];
       
       // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
@@ -688,27 +693,44 @@ export const QueryEditor: React.FC = () => {
         }
       }
       
-      // Validate each subquery with its own scope
+      // Validate each subquery with its own scope + parent scope (for correlated subqueries)
       for (const subquery of subqueries) {
         const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
-        await validateScope(subquery, subAliasMap, subUniqueTables);
-        // Recursively validate nested subqueries
-        await validateSubqueries(subquery);
+        
+        // Merge parent aliases into subquery's alias map (subquery's own aliases take precedence)
+        const mergedAliasMap = new Map(parentAliasMap);
+        for (const [key, value] of subAliasMap) {
+          mergedAliasMap.set(key, value);
+        }
+        
+        // Merge parent unique tables into subquery's unique tables
+        const mergedUniqueTables = new Map(parentUniqueTables);
+        for (const [key, value] of subUniqueTables) {
+          mergedUniqueTables.set(key, value);
+        }
+        
+        await validateScope(subquery, mergedAliasMap, mergedUniqueTables);
+        // Recursively validate nested subqueries, passing the merged scope
+        await validateSubqueries(subquery, mergedAliasMap, mergedUniqueTables);
       }
     };
 
-    // Validate subqueries in CTEs
+    // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
     if (Array.isArray(selectAst?.with)) {
       for (const cte of selectAst.with) {
         const cteAst = cte?.stmt?.ast;
         if (cteAst) {
-          await validateSubqueries(cteAst);
+          const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+            ...cteAst,
+            with: null,
+          });
+          await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
         }
       }
     }
 
-    // Validate subqueries in the main query
-    await validateSubqueries(selectAst);
+    // Validate subqueries in the main query, passing the main query's aliases as parent scope
+    await validateSubqueries(selectAst, aliasMap, uniqueTables);
 
     return issues;
   }, [getTableFields]);

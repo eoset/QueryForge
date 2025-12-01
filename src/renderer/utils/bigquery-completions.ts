@@ -1192,7 +1192,8 @@ function detectJoinOnContext(
 }
 
 /**
- * Detects if we're in a WHERE, AND, or OR clause and returns all available table references with aliases
+ * Detects if we're in a WHERE, AND, or OR clause and returns all available table references with aliases.
+ * For subqueries, this includes both the subquery's own tables AND outer scope tables (for correlated subqueries).
  */
 function detectWhereContext(
   model: any,
@@ -1204,74 +1205,122 @@ function detectWhereContext(
   const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
   const statementSql = statementContext ? statementContext.statementText : fallbackText;
   
-  // Look for the last SELECT before the cursor inside the active statement
+  // Find all SELECT statements before the cursor
   const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
   if (selectMatches.length === 0) {
     return null;
   }
   
-  const lastSelectMatch = selectMatches[selectMatches.length - 1];
-  const selectIndex = lastSelectMatch.index || 0;
-  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
-  const selectScopedStatementText = statementSql.substring(selectIndex);
+  // Helper function to extract tables from a SQL fragment starting at a SELECT
+  const extractTablesFromSelect = (sql: string): Array<{ tableRef: string; alias: string | null }> => {
+    const tables: Array<{ tableRef: string; alias: string | null }> = [];
+    const fromClause = parseFromClause(sql);
+    const joins = parseJoinStatements(sql);
+    
+    if (fromClause) {
+      tables.push(fromClause);
+    }
+    
+    for (const join of joins) {
+      tables.push({
+        tableRef: join.tableRef,
+        alias: join.alias,
+      });
+    }
+    
+    return tables;
+  };
   
-  // Find WHERE keyword after the FROM clause
-  const whereMatch = selectScopedTextUpToCursor.match(/\bWHERE\s+/i);
+  // Find the position and nesting depth of each SELECT
+  // Track opening/closing parentheses to determine scope boundaries
+  const selectScopes: Array<{
+    selectIndex: number;
+    parenDepthAtSelect: number;
+  }> = [];
+  
+  let currentParenDepth = 0;
+  let lastIndex = 0;
+  
+  for (const match of selectMatches) {
+    const selectIndex = match.index || 0;
+    
+    // Count parentheses from the last position to this SELECT
+    for (let i = lastIndex; i < selectIndex; i++) {
+      if (textUpToCursor[i] === '(') currentParenDepth++;
+      if (textUpToCursor[i] === ')') currentParenDepth--;
+    }
+    
+    selectScopes.push({
+      selectIndex,
+      parenDepthAtSelect: currentParenDepth,
+    });
+    
+    lastIndex = selectIndex;
+  }
+  
+  // Continue counting parentheses to the cursor
+  for (let i = lastIndex; i < textUpToCursor.length; i++) {
+    if (textUpToCursor[i] === '(') currentParenDepth++;
+    if (textUpToCursor[i] === ')') currentParenDepth--;
+  }
+  
+  const cursorParenDepth = currentParenDepth;
+  
+  // Find which SELECT scopes are active at the cursor position
+  // A SELECT scope is active if we're at or deeper than its paren depth
+  const activeScopes = selectScopes.filter(scope => cursorParenDepth >= scope.parenDepthAtSelect);
+  
+  if (activeScopes.length === 0) {
+    return null;
+  }
+  
+  // Get the innermost SELECT (the one we're directly in)
+  const innermostScope = activeScopes[activeScopes.length - 1];
+  const innermostSelectText = textUpToCursor.substring(innermostScope.selectIndex);
+  
+  // Check if we're actually in a WHERE clause of the innermost SELECT
+  const whereMatch = innermostSelectText.match(/\bWHERE\s+/i);
   if (!whereMatch) {
     return null;
   }
   
   const whereIndex = whereMatch.index || 0;
-  const textAfterWhere = selectScopedTextUpToCursor.substring(whereIndex);
-  
-  // Check if we're in WHERE clause or after AND/OR within WHERE clause
-  // We're in WHERE context if:
-  // 1. Cursor is after WHERE keyword
-  // 2. Cursor is not in a subquery (check parenthesis balance)
-  // 3. Cursor is not past GROUP BY, ORDER BY, HAVING, LIMIT, etc.
+  const textAfterWhere = innermostSelectText.substring(whereIndex);
   
   // Check if we've moved past the WHERE clause into GROUP BY, ORDER BY, etc.
   const endOfWhereMatch = textAfterWhere.match(/\b(GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/i);
   if (endOfWhereMatch) {
-    // Cursor might be after WHERE clause ended
     const endOfWhereIndex = whereIndex + (endOfWhereMatch.index || 0);
-    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    const cursorPositionInScoped = innermostSelectText.length;
     if (cursorPositionInScoped > endOfWhereIndex) {
       return null;
     }
   }
   
-  // Check parenthesis balance to avoid suggesting in subqueries
-  let parenDepth = 0;
-  for (let i = whereIndex; i < selectScopedTextUpToCursor.length; i++) {
-    const char = selectScopedTextUpToCursor[i];
-    if (char === '(') parenDepth++;
-    if (char === ')') parenDepth--;
+  // Collect tables from all active scopes (innermost to outermost)
+  // This enables correlated subquery support
+  const allTables: Array<{ tableRef: string; alias: string | null }> = [];
+  const seenAliases = new Set<string>();
+  
+  // Process scopes from innermost to outermost
+  for (let i = activeScopes.length - 1; i >= 0; i--) {
+    const scope = activeScopes[i];
+    const scopeText = statementSql.substring(scope.selectIndex);
+    
+    // For outer scopes, we need to extract just their portion (before nested subqueries)
+    // by finding where their FROM clause tables are defined
+    const scopeTables = extractTablesFromSelect(scopeText);
+    
+    for (const table of scopeTables) {
+      const aliasKey = (table.alias || table.tableRef).toLowerCase();
+      if (!seenAliases.has(aliasKey)) {
+        seenAliases.add(aliasKey);
+        allTables.push(table);
+      }
+    }
   }
   
-  // If we're inside a subquery (parenDepth > 0), don't suggest from outer query
-  if (parenDepth > 0) {
-    return null;
-  }
-  
-  // Parse FROM clause and JOIN statements to get all available tables
-  const fromClause = parseFromClause(selectScopedStatementText);
-  const joins = parseJoinStatements(selectScopedStatementText);
-  
-  const tables: Array<{ tableRef: string; alias: string | null }> = [];
-  
-  if (fromClause) {
-    tables.push(fromClause);
-  }
-  
-  for (const join of joins) {
-    tables.push({
-      tableRef: join.tableRef,
-      alias: join.alias,
-    });
-  }
-  
-  return tables.length > 0 ? tables : null;
+  return allTables.length > 0 ? allTables : null;
 }
 
 /**
