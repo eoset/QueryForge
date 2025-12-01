@@ -430,7 +430,14 @@ const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, o
           </div>
           <div className="dataset-tree-content">
             {isLoading && datasets.length === 0 && (
-              <div className="dataset-tree-loading">Loading datasets...</div>
+              <div className="dataset-tree-skeleton">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
+                  <div key={i} className="skeleton-item">
+                    <div className="skeleton-icon" />
+                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
+                  </div>
+                ))}
+              </div>
             )}
             {error && <div className="dataset-tree-error">{error}</div>}
             {filteredDatasets.length === 0 && !isLoading && !error && (
