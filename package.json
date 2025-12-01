@@ -4,8 +4,9 @@
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
-    "build": "tsc && webpack --config webpack.renderer.config.js --mode production",
+    "build": "tsc -p tsconfig.prod.json && NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
     "build:main": "tsc",
+    "build:main:prod": "tsc -p tsconfig.prod.json",
     "build:renderer": "webpack --config webpack.renderer.config.js",
     "build:icon": "node -e \"if (process.platform === 'darwin') { require('child_process').execSync('mkdir -p build/icon.iconset && sips -z 16 16 queryforge_icon.png --out build/icon.iconset/icon_16x16.png && sips -z 32 32 queryforge_icon.png --out build/icon.iconset/icon_16x16@2x.png && sips -z 32 32 queryforge_icon.png --out build/icon.iconset/icon_32x32.png && sips -z 64 64 queryforge_icon.png --out build/icon.iconset/icon_32x32@2x.png && sips -z 128 128 queryforge_icon.png --out build/icon.iconset/icon_128x128.png && sips -z 256 256 queryforge_icon.png --out build/icon.iconset/icon_128x128@2x.png && sips -z 256 256 queryforge_icon.png --out build/icon.iconset/icon_256x256.png && sips -z 512 512 queryforge_icon.png --out build/icon.iconset/icon_256x256@2x.png && sips -z 512 512 queryforge_icon.png --out build/icon.iconset/icon_512x512.png && sips -z 1024 1024 queryforge_icon.png --out build/icon.iconset/icon_512x512@2x.png && iconutil -c icns build/icon.iconset -o build/icon.icns', {stdio: 'inherit', shell: true}) }\"",
     "start": "npm run build && electron .",
@@ -33,16 +34,16 @@
   },
   "dependencies": {
     "@google-cloud/bigquery": "^7.0.0",
+    "electron-store": "^10.0.0"
+  },
+  "devDependencies": {
     "@monaco-editor/react": "^4.6.0",
-    "electron-store": "^10.0.0",
     "node-sql-parser": "^5.3.13",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-window": "^1.8.10",
     "sql-formatter": "^15.6.10",
-    "zustand": "^4.4.7"
-  },
-  "devDependencies": {
+    "zustand": "^4.4.7",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
@@ -78,10 +79,37 @@
   "build": {
     "appId": "com.query-forge",
     "productName": "QueryForge",
+    "asar": true,
     "files": [
-      "dist/**/*",
-      "package.json"
+      "dist/main/**/*",
+      "dist/renderer/**/*",
+      "dist/shared/**/*",
+      "package.json",
+      "!dist/**/*.map",
+      "!dist/**/*.d.ts",
+      "!dist/**/*.d.ts.map",
+      "!dist/**/*.dmg",
+      "!dist/**/*.zip",
+      "!dist/**/*.blockmap",
+      "!dist/mac-*/**",
+      "!dist/win-*/**",
+      "!dist/linux-*/**",
+      "!dist/builder-*.yml",
+      "!dist/builder-*.yaml",
+      "!dist/latest-*.yml",
+      "!**/node_modules/**/*.d.ts",
+      "!**/node_modules/**/*.map",
+      "!**/node_modules/**/{README,README.md,README.txt,CHANGELOG,CHANGELOG.md,CHANGELOG.txt,LICENSE,LICENSE.txt,LICENSE.md,*.md}",
+      "!**/node_modules/**/{test,__tests__,tests,powered-test,example,examples,*.test.js,*.test.ts,*.spec.js,*.spec.ts}",
+      "!**/node_modules/**/.{eslintrc,babelrc,prettierrc,prettierrc.js,prettierrc.json,eslintignore,babelignore,prettierignore}",
+      "!**/node_modules/**/{.nyc_output,coverage,docs,documentation}"
     ],
+    "extraMetadata": {
+      "main": "dist/main/main.js"
+    },
+    "directories": {
+      "output": "dist"
+    },
     "mac": {
       "icon": "queryforge_icon.icns",
       "category": "public.app-category.developer-tools",
