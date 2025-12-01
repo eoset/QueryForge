@@ -173,6 +173,7 @@ function createWindow(): void {
     height: windowState.height,
     x: windowState.x,
     y: windowState.y,
+    backgroundColor: '#1e1e1e',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,

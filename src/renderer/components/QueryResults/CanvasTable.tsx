@@ -1100,6 +1100,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         height: '100%',
         position: 'relative',
         overflow: 'hidden',
+        backgroundColor: '#1e1e1e',
       }}
     >
       {/* Scrollable container - this handles all scrolling */}
@@ -1146,6 +1147,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           left: 0,
           pointerEvents: 'none',
           overflow: 'hidden',
+          backgroundColor: '#1e1e1e',
         }}
       >
         <canvas
