@@ -944,6 +944,139 @@ export const QueryEditor: React.FC = () => {
           database: 'bigquery',
         });
         
+        // Additional validation: Check for JOINs without ON/USING clause
+        // node-sql-parser allows JOINs without ON, but BigQuery requires them
+        const validateJoins = (ast: any): { valid: boolean; error?: string; line?: number; column?: number } => {
+          const checkFromClause = (fromItems: any[]): { valid: boolean; error?: string; tableName?: string } | null => {
+            if (!Array.isArray(fromItems)) return null;
+            
+            for (const item of fromItems) {
+              // Check if this is a JOIN (not CROSS JOIN)
+              if (item.join && typeof item.join === 'string') {
+                const joinType = item.join.toUpperCase();
+                // CROSS JOIN doesn't require ON/USING
+                if (!joinType.includes('CROSS')) {
+                  // Regular JOIN, LEFT JOIN, RIGHT JOIN, etc. require ON or USING
+                  if (!item.on && !item.using) {
+                    const tableName = item.table || item.expr?.table || 'table';
+                    return { valid: false, error: `${joinType} is missing ON or USING clause`, tableName };
+                  }
+                }
+              }
+              
+              // Check nested subqueries in FROM clause
+              if (item.expr && item.expr.ast) {
+                const nestedResult = checkFromClause(item.expr.ast.from);
+                if (nestedResult && !nestedResult.valid) return nestedResult;
+              }
+            }
+            return null;
+          };
+          
+          // Handle both single statement and array of statements
+          const statements = Array.isArray(ast) ? ast : [ast];
+          
+          for (const stmt of statements) {
+            if (stmt.type === 'select' && stmt.from) {
+              const result = checkFromClause(stmt.from);
+              if (result && !result.valid) {
+                // Try to find the position of the JOIN in the query
+                // Search for JOIN keyword followed by any characters until we find the table name
+                let line = 1;
+                let column = 1;
+                
+                // Build a pattern to find the JOIN with this table
+                // Handle both simple table names and fully qualified names (project.dataset.table)
+                const escapedTableName = result.tableName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') || '';
+                
+                // Look for the JOIN keyword that precedes this table reference
+                // Pattern: optional join type (LEFT, RIGHT, etc.) + JOIN + whitespace + table reference
+                const lines = trimmedQuery.split('\n');
+                for (let i = 0; i < lines.length; i++) {
+                  const lineText = lines[i];
+                  // Check if this line contains a JOIN with the problematic table
+                  const joinRegex = new RegExp(`\\b(?:LEFT\\s+|RIGHT\\s+|INNER\\s+|OUTER\\s+|FULL\\s+)?JOIN\\b`, 'i');
+                  const joinMatch = lineText.match(joinRegex);
+                  
+                  if (joinMatch) {
+                    // Check if this line also contains the table name (or part of it)
+                    const tableNameParts = (result.tableName || '').split('.');
+                    const lastPart = tableNameParts[tableNameParts.length - 1] || result.tableName || '';
+                    
+                    if (lineText.toLowerCase().includes(lastPart.toLowerCase())) {
+                      line = i + 1;
+                      column = (joinMatch.index || 0) + 1;
+                      break;
+                    }
+                  }
+                }
+                
+                return { valid: false, error: result.error, line, column };
+              }
+            }
+            
+            // Check CTEs (WITH clause)
+            if (stmt.with) {
+              for (const cte of stmt.with) {
+                if (cte.stmt && cte.stmt.ast) {
+                  const cteResult = validateJoins(cte.stmt.ast);
+                  if (!cteResult.valid) return cteResult;
+                }
+              }
+            }
+          }
+          
+          return { valid: true };
+        };
+        
+        const joinValidation = validateJoins(parsedAst);
+        if (!joinValidation.valid) {
+          const errorMessage = joinValidation.error || 'JOIN is missing ON or USING clause';
+          const lineNumber = joinValidation.line || 1;
+          const column = joinValidation.column || 1;
+          
+          // Create marker for the error
+          const markers: any[] = [
+            {
+              severity: (window as any).monaco.MarkerSeverity.Error,
+              startLineNumber: lineNumber,
+              startColumn: column,
+              endLineNumber: lineNumber,
+              endColumn: model.getLineLength(lineNumber) + 1,
+              message: errorMessage,
+            },
+          ];
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+          
+          // Add error indicator in glyph margin
+          if (editorRef.current) {
+            const decorations: any[] = [
+              {
+                range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
+                options: {
+                  glyphMarginClassName: 'error-glyph-margin',
+                  glyphMarginHoverMessage: { value: errorMessage },
+                  minimap: {
+                    color: '#f48771',
+                  },
+                  overviewRuler: {
+                    color: '#f48771',
+                    position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
+                  },
+                },
+              },
+            ];
+            
+            errorDecorationsRef.current = editorRef.current.deltaDecorations(
+              errorDecorationsRef.current,
+              decorations
+            );
+          }
+          
+          setSqlValidationStatus({ isValid: false, errorMessage });
+          return;
+        }
+        
         // Parsing succeeded - set valid status immediately
         // (column validation may change this to invalid later if issues are found)
         setSqlValidationStatus((prev) => {

@@ -24,6 +24,8 @@ module.exports = {
       {
         tsconfig: {
           jsx: 'react',
+          esModuleInterop: true,
+          types: ['jest', 'node', '@testing-library/jest-dom'],
         },
       },
     ],
