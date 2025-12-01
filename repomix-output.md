@@ -9564,6 +9564,24 @@ body {
 </html>
 ````
 
+## File: src/renderer/index.tsx
+````typescript
+/// <reference path="./types/electron-api.d.ts" />
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary';
+
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+root.render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>
+);
+````
+
 ## File: src/shared/types/bigquery.ts
 ````typescript
 /**
@@ -9989,6 +10007,1138 @@ jobs:
 ## File: .husky/pre-commit
 ````
 npm test
+````
+
+## File: src/main/ipc/bigquery.ts
+````typescript
+import { ipcMain } from 'electron';
+import { getBigQueryClient, getActiveConnection } from './connection';
+import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+
+/**
+ * Serializes a value to ensure it can be cloned and sent through IPC.
+ * Handles Date objects, BigNumber objects, Buffers, and nested structures.
+ * Uses a WeakSet to track visited objects to prevent circular reference issues.
+ * @param value - The value to serialize
+ * @param visited - WeakSet to track visited objects (for circular reference detection)
+ * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
+ */
+function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
+  // Normalize column type early so it's available throughout the function
+  const normalizedColumnType = columnType?.toUpperCase() || '';
+  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
+  
+  // Handle null and undefined
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
+  // These objects have a 'value' property containing the string representation
+  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it's a BigQuery date/time object with a 'value' property
+    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
+    if ('value' in value && typeof value.value === 'string') {
+      const valueStr = value.value;
+      // Verify it looks like a date/time string
+      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
+          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+        return valueStr;
+      }
+    }
+  }
+
+  // Handle Date objects - convert to ISO string
+  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
+  if (value instanceof Date) {
+    // Check if it's a valid date
+    if (isNaN(value.getTime())) {
+      return null; // Invalid dates become null
+    }
+    // Format based on column type if available
+    if (normalizedColumnType === 'DATE') {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (normalizedColumnType === 'TIME') {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (normalizedColumnType === 'DATETIME') {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    // Default: ISO string for TIMESTAMP or unknown
+    return value.toISOString();
+  }
+  
+  // CRITICAL: Check for Date-like objects BEFORE general object handling
+  // BigQuery might return Date objects that aren't instanceof Date
+  // Check for objects with Date-like methods or properties
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
+    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+      try {
+        // Try to convert to Date
+        let date: Date | null = null;
+        if (typeof value.getTime === 'function') {
+          const time = value.getTime();
+          if (typeof time === 'number' && !isNaN(time)) {
+            date = new Date(time);
+          }
+        } else if (typeof value.toISOString === 'function') {
+          const isoStr = value.toISOString();
+          date = new Date(isoStr);
+        }
+        
+        if (date && !isNaN(date.getTime())) {
+          // Format based on column type
+          if (normalizedColumnType === 'DATE') {
+            return date.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+            const ms = date.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return date.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return date.toISOString();
+        }
+      } catch {
+        // If conversion fails, continue with normal handling
+      }
+    }
+  }
+
+  // Handle Buffer objects - convert to base64 string
+  if (Buffer.isBuffer(value)) {
+    return value.toString('base64');
+  }
+
+  // Handle BigNumber-like objects (from @google-cloud/bigquery)
+  // Check for common BigNumber properties
+  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
+    // Check if it's a BigNumber by looking for valueOf or toNumber methods
+    if ('valueOf' in value || 'toNumber' in value) {
+      try {
+        // Try to convert to number first, fallback to string
+        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
+        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
+          return numValue;
+        }
+        return String(value);
+      } catch {
+        return String(value);
+      }
+    }
+  }
+
+  // Handle arrays - recursively serialize each element
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeValue(item, visited, columnType));
+  }
+
+  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
+  // BigQuery may return these as objects with special properties or methods
+  // This must come after array check but before general object handling
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
+    // BigQuery might return DATE as objects in various formats
+    if (isDateType) {
+      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
+      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
+      // This check should be very lenient - just check if 'value' exists and is a string
+      if ('value' in value) {
+        const innerValue = value.value;
+        // If inner value is a string, return it directly (this is the most common case)
+        if (typeof innerValue === 'string') {
+          return innerValue;
+        }
+        // If inner value is a Date, convert to ISO string
+        if (innerValue instanceof Date) {
+          if (normalizedColumnType === 'DATE') {
+            return innerValue.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
+            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
+            const ms = innerValue.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return innerValue.toISOString();
+        }
+        // Recursively serialize the inner value
+        return serializeValue(innerValue, visited, columnType);
+      }
+      
+      // Check for BigQuery Date object structure - might have year, month, day properties
+      if ('year' in value || 'month' in value || 'day' in value) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        if (normalizedColumnType === 'DATE') {
+          return `${year}-${month}-${day}`;
+        }
+        // For DATETIME/TIMESTAMP, check for time components
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        if (normalizedColumnType === 'DATETIME') {
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      
+      // Check for TIME object structure
+      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      
+      // For any other object structure for DATE/TIME, try to extract a string value
+      // Check all properties for date-like strings
+      const objKeys = Object.keys(value);
+      for (const key of objKeys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+      
+      // If we can't extract a date string, return a placeholder instead of serializing to {}
+      return '[Invalid Date Object]';
+    }
+    
+    // For non-date types, check if it's a BigQuery date object with a value property
+    if ('value' in value && Object.keys(value).length === 1) {
+      const innerValue = value.value;
+      // If inner value is a string that looks like a date, return it
+      if (typeof innerValue === 'string') {
+        return innerValue;
+      }
+      // If inner value is a Date, convert to ISO string
+      if (innerValue instanceof Date) {
+        return innerValue.toISOString();
+      }
+      // Recursively serialize the inner value
+      return serializeValue(innerValue, visited, columnType);
+    }
+    
+    // For DATE/TIME columns, try toString() first before checking properties
+    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Continue with property checking if toString fails
+      }
+      
+      // Also check if any property value is a date-like string
+      const keys = Object.keys(value);
+      for (const key of keys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+    }
+    
+    // Check for date-like objects with year/month/day properties
+    if ('year' in value && 'month' in value && 'day' in value) {
+      const year = value.year;
+      const month = String(value.month ?? 1).padStart(2, '0');
+      const day = String(value.day ?? 1).padStart(2, '0');
+      // Check if it also has time components (DATETIME/TIMESTAMP)
+      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Just date components (DATE)
+      return `${year}-${month}-${day}`;
+    }
+    
+    // Check for time-only objects (TIME)
+    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
+        !('year' in value || 'month' in value || 'day' in value)) {
+      const hours = String(value.hours ?? 0).padStart(2, '0');
+      const minutes = String(value.minutes ?? 0).padStart(2, '0');
+      const seconds = String(value.seconds ?? 0).padStart(2, '0');
+      const ms = value.milliseconds ?? 0;
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    
+    // Try to call toString() if it exists and might give us a useful string
+    // (Only if we haven't already tried it above for date types)
+    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        // If toString gives us something useful (not [object Object]), use it
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Ignore toString errors
+      }
+    }
+  }
+
+  // Handle objects - recursively serialize each property
+  if (typeof value === 'object') {
+    // Check for circular references
+    if (visited.has(value)) {
+      return '[Circular]';
+    }
+    visited.add(value);
+
+    try {
+      // Check if it's a plain object (not a class instance)
+      const proto = Object.getPrototypeOf(value);
+      if (proto === null || proto === Object.prototype) {
+        // For DATE/TIME columns, be very aggressive about converting objects to strings
+        if (isDateType) {
+          // Try toString() first
+          if ('toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with property checking if toString fails
+            }
+          }
+          
+          // Check all properties for date-like strings
+          const keys = Object.keys(value);
+          for (const key of keys) {
+            const propValue = value[key];
+            if (typeof propValue === 'string') {
+              // Check if it looks like a date/time string
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                return propValue;
+              }
+            }
+            // If property is a Date, convert it
+            if (propValue instanceof Date) {
+              if (normalizedColumnType === 'DATE') {
+                return propValue.toISOString().split('T')[0];
+              }
+              return propValue.toISOString();
+            }
+          }
+          
+          // If we still haven't found a date string, try JSON.stringify to extract it
+          try {
+            const jsonStr = JSON.stringify(value);
+            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
+            if (dateMatch) {
+              const dateStr = dateMatch[1];
+              if (normalizedColumnType === 'DATE') {
+                return dateStr.split('T')[0]; // Just the date part
+              }
+              return dateStr.replace('T', ' ').replace(/Z$/, '');
+            }
+            // Also try to find any date-like string in the JSON
+            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
+            for (const match of allDateMatches) {
+              const dateStr = match[1];
+              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
+                return dateStr;
+              }
+              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
+                return dateStr.replace('T', ' ').replace(/Z$/, '');
+              }
+            }
+          } catch {
+            // JSON.stringify failed, continue with normal serialization
+          }
+          
+          // Last resort for DATE columns: convert object to string representation
+          // This prevents [object Object] from being sent through IPC
+          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+              normalizedColumnType === 'TIMESTAMP') {
+            // Try to create a meaningful string from the object
+            const keys = Object.keys(value);
+            if (keys.length === 0) {
+              return '[Empty Date Object]';
+            }
+            // Return first property value if it's a string or number
+            const firstKey = keys[0];
+            const firstValue = value[firstKey];
+            if (typeof firstValue === 'string') {
+              return firstValue;
+            }
+            if (typeof firstValue === 'number') {
+              // Try to interpret as date
+              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
+              if (!isNaN(date.getTime())) {
+                if (normalizedColumnType === 'DATE') {
+                  return date.toISOString().split('T')[0];
+                }
+                return date.toISOString();
+              }
+            }
+            // Return object structure as string
+            return `{${keys.slice(0, 2).join(', ')}}`;
+          }
+        } else {
+          // For non-date types, check if this might be a date-like object
+          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
+          const keys = Object.keys(value);
+          // If object has very few keys and one looks date-like, try toString first
+          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with normal serialization if toString fails
+            }
+          }
+        }
+        
+        const serialized: any = {};
+        for (const key in value) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            serialized[key] = serializeValue(value[key], visited, columnType);
+          }
+        }
+        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
+        // This prevents empty objects from being stored and later displayed as "[object Object]"
+        if (Object.keys(serialized).length === 0 && isDateType) {
+          return '[Invalid Date]';
+        }
+        return serialized;
+      } else {
+        // For non-plain objects (class instances), try to serialize
+        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
+        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
+        if (value instanceof Date) {
+          if (isNaN(value.getTime())) {
+            return null;
+          }
+          if (normalizedColumnType === 'DATE') {
+            return value.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(value.getUTCHours()).padStart(2, '0');
+            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+            const ms = value.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return value.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return value.toISOString();
+        }
+        
+        // Check for Date-like objects (objects with Date methods)
+        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+          try {
+            let date: Date | null = null;
+            if (typeof value.getTime === 'function') {
+              const time = value.getTime();
+              if (typeof time === 'number' && !isNaN(time)) {
+                date = new Date(time);
+              }
+            } else if (typeof value.toISOString === 'function') {
+              const isoStr = value.toISOString();
+              date = new Date(isoStr);
+            }
+            
+            if (date && !isNaN(date.getTime())) {
+              if (normalizedColumnType === 'DATE') {
+                return date.toISOString().split('T')[0];
+              }
+              if (normalizedColumnType === 'TIME') {
+                const hours = String(date.getUTCHours()).padStart(2, '0');
+                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+                const ms = date.getUTCMilliseconds();
+                if (ms > 0) {
+                  const msStr = String(ms).padStart(3, '0');
+                  return `${hours}:${minutes}:${seconds}.${msStr}`;
+                }
+                return `${hours}:${minutes}:${seconds}`;
+              }
+              if (normalizedColumnType === 'DATETIME') {
+                return date.toISOString().replace('T', ' ').slice(0, 19);
+              }
+              return date.toISOString();
+            }
+          } catch {
+            // If conversion fails, continue with normal serialization
+          }
+        }
+        
+        // First try JSON.stringify/parse which handles most cases
+        // BUT: This will convert Date objects to {}, so we check for Dates above
+        try {
+          const jsonStr = JSON.stringify(value);
+          // Check if JSON.stringify produced an empty object for a date type
+          // This happens when Date objects are stringified
+          if (jsonStr === '{}' && isDateType) {
+            // This is likely a Date object that was stringified to {}
+            return '[Invalid Date]';
+          }
+          return JSON.parse(jsonStr);
+        } catch {
+          // If JSON serialization fails (e.g., circular refs, functions),
+          // try to extract enumerable properties
+          const serialized: any = {};
+          for (const key in value) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+              serialized[key] = serializeValue(value[key], visited, columnType);
+            }
+          }
+          // If we got nothing, check if it's a date type before converting to string
+          if (Object.keys(serialized).length === 0 && isDateType) {
+            return '[Invalid Date]';
+          }
+          // If we got nothing, convert to string as last resort
+          return Object.keys(serialized).length > 0 ? serialized : String(value);
+        }
+      }
+    } catch (error) {
+      // If anything goes wrong, check if it's a Date object before converting to string
+      // This prevents [object Object] from being returned for Date objects
+      if (value instanceof Date) {
+        if (isNaN(value.getTime())) {
+          return null;
+        }
+        if (normalizedColumnType === 'DATE') {
+          return value.toISOString().split('T')[0];
+        }
+        if (normalizedColumnType === 'TIME') {
+          const hours = String(value.getUTCHours()).padStart(2, '0');
+          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+          const ms = value.getUTCMilliseconds();
+          if (ms > 0) {
+            const msStr = String(ms).padStart(3, '0');
+            return `${hours}:${minutes}:${seconds}.${msStr}`;
+          }
+          return `${hours}:${minutes}:${seconds}`;
+        }
+        if (normalizedColumnType === 'DATETIME') {
+          return value.toISOString().replace('T', ' ').slice(0, 19);
+        }
+        return value.toISOString();
+      }
+      // For date types, return a placeholder instead of [object Object]
+      if (isDateType && typeof value === 'object' && value !== null) {
+        return '[Invalid Date]';
+      }
+      // Last resort: convert to string
+      return String(value);
+    }
+  }
+
+  // For primitives (string, number, boolean), return as-is
+  return value;
+}
+
+export function registerBigQueryHandlers(): void {
+  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const startTime = Date.now();
+
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create query job
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+      });
+
+      // Wait for job to complete and get all results
+      // Use a large maxResults to get all rows (BigQuery API limit is 10MB per response)
+      // For very large result sets, we'd need pagination, but for now get as many as possible
+      const [rows] = await job.getQueryResults({ maxResults: 100000 });
+      
+      // Get job metadata
+      const [jobMetadata] = await job.getMetadata();
+
+      const executionTimeMs = Date.now() - startTime;
+
+      // Transform schema to ColumnMetadata
+      // Get schema from job metadata - check multiple possible locations
+      let schema = jobMetadata.configuration?.query?.schema || 
+                   jobMetadata.statistics?.query?.schema ||
+                   jobMetadata.schema;
+      
+      let columns: ColumnMetadata[] = [];
+      
+      if (schema?.fields && schema.fields.length > 0) {
+        // Use schema from metadata
+        columns = schema.fields.map((field: any) => {
+          return {
+            name: field.name,
+            type: field.type, // BigQuery returns types like 'DATE', 'TIME', 'DATETIME', 'TIMESTAMP'
+            mode: field.mode,
+          };
+        });
+      } else if (rows && rows.length > 0) {
+        // Fallback: extract column names and types from first row
+        // NOTE: This fallback should rarely be used if schema is available
+        const firstRow = rows[0];
+        columns = Object.keys(firstRow).map((key) => {
+          const value = firstRow[key];
+          let type = 'STRING'; // Default type
+          if (typeof value === 'number') {
+            type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
+          } else if (typeof value === 'boolean') {
+            type = 'BOOLEAN';
+          } else if (value instanceof Date) {
+            type = 'TIMESTAMP';
+          } else if (Array.isArray(value)) {
+            type = 'ARRAY';
+          } else if (value && typeof value === 'object') {
+            // CRITICAL: Check if it's a Date-like object before defaulting to RECORD
+            // BigQuery DATE/TIME objects might not be instanceof Date
+            const keyLower = key.toLowerCase();
+            let isDateLike = false;
+            let detectedType: string | null = null;
+            
+            // Check 1: Date instance or Date-like object with methods
+            if (value instanceof Date || typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+              isDateLike = true;
+              // Try to guess based on column name
+              if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
+                detectedType = 'DATE';
+              } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
+                detectedType = 'TIME';
+              } else if (keyLower.includes('datetime')) {
+                detectedType = 'DATETIME';
+              } else {
+                detectedType = 'TIMESTAMP';
+              }
+            }
+            
+            // Check 2: Object with 'value' property containing date-like string
+            if (!isDateLike && 'value' in value && typeof value.value === 'string') {
+              const valueStr = value.value;
+              if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+                isDateLike = true;
+                if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
+                  detectedType = 'DATE';
+                } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
+                  detectedType = 'TIME';
+                } else if (keyLower.includes('datetime')) {
+                  detectedType = 'DATETIME';
+                } else if (/^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+                  detectedType = 'TIMESTAMP';
+                } else if (/^\d{4}-\d{2}-\d{2}/.test(valueStr)) {
+                  detectedType = 'DATE';
+                } else if (/^\d{2}:\d{2}:\d{2}/.test(valueStr)) {
+                  detectedType = 'TIME';
+                } else {
+                  detectedType = 'TIMESTAMP';
+                }
+              }
+            }
+            
+            // Check 3: Object with year/month/day properties (DATE or DATETIME)
+            if (!isDateLike && ('year' in value || 'month' in value || 'day' in value)) {
+              isDateLike = true;
+              if (keyLower.includes('datetime') || ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+                detectedType = 'DATETIME';
+              } else {
+                detectedType = 'DATE';
+              }
+            }
+            
+            // Check 4: Object with hours/minutes/seconds but no year/month/day (TIME)
+            if (!isDateLike && ('hours' in value || 'minutes' in value || 'seconds' in value) &&
+                !('year' in value || 'month' in value || 'day' in value)) {
+              isDateLike = true;
+              detectedType = 'TIME';
+            }
+            
+            // Check 5: Column name suggests DATE/TIME even if object structure is unclear
+            if (!isDateLike && (keyLower.includes('date') || keyLower.includes('time') || 
+                                keyLower.includes('timestamp') || keyLower.includes('datetime'))) {
+              // Check if object has any string properties that look like dates
+              const keys = Object.keys(value);
+              for (const objKey of keys) {
+                const propValue = value[objKey];
+                if (typeof propValue === 'string') {
+                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                    isDateLike = true;
+                    if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
+                      detectedType = 'DATE';
+                    } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
+                      detectedType = 'TIME';
+                    } else if (keyLower.includes('datetime')) {
+                      detectedType = 'DATETIME';
+                    } else {
+                      detectedType = 'TIMESTAMP';
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+            
+            if (isDateLike && detectedType) {
+              type = detectedType;
+            } else {
+              type = 'RECORD';
+            }
+          }
+          return {
+            name: key,
+            type,
+            mode: 'NULLABLE',
+          };
+        });
+      }
+
+      // Transform rows to Row format
+      // BigQuery returns rows as objects with field names as keys
+      // Serialize all values to ensure they can be cloned and sent through IPC
+      
+      const transformedRows: Row[] = rows.map((row: any) => ({
+        values: columns.map((col) => {
+          const value = row[col.name];
+          
+          // Pass column type to serializeValue to help with date/time serialization
+          let serialized = serializeValue(value, new WeakSet(), col.type);
+          
+          // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
+          // This prevents objects from being stored in cache and later displayed as "[object Object]"
+          const colTypeUpper = (col.type || '').toUpperCase();
+          if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
+              colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
+            // If serialized result is still an object, convert it to a string
+            if (typeof serialized === 'object' && serialized !== null) {
+              // Try to extract a date string from the object
+              const keys = Object.keys(serialized);
+              for (const key of keys) {
+                const propValue = serialized[key];
+                if (typeof propValue === 'string') {
+                  // Check if it looks like a date/time string
+                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                    serialized = propValue;
+                    break;
+                  }
+                }
+              }
+              
+              // If we still have an object, convert to placeholder string
+              if (typeof serialized === 'object' && serialized !== null) {
+                serialized = '[Invalid Date]';
+              }
+            }
+            
+            // CRITICAL: Check if serialized result is "[object Object]" string and fix it
+            if (typeof serialized === 'string' && serialized === '[object Object]') {
+              serialized = '[Invalid Date]';
+            }
+            
+            // Ensure final result is a string (not object, not null, not undefined)
+            if (typeof serialized !== 'string') {
+              if (serialized === null || serialized === undefined) {
+                serialized = '[Invalid Date]';
+              } else {
+                serialized = String(serialized);
+                // If string conversion produced "[object Object]", use placeholder
+                if (serialized === '[object Object]') {
+                  serialized = '[Invalid Date]';
+                }
+              }
+            }
+          }
+          
+          return serialized;
+        }),
+      }));
+
+      // Use the actual number of rows returned, or totalRowsReturned from metadata if available
+      const totalRowsReturned = parseInt(
+        jobMetadata.statistics?.query?.totalRowsReturned || 
+        jobMetadata.statistics?.totalRowsReturned || 
+        String(transformedRows.length), 
+        10
+      );
+
+      const result: QueryResult = {
+        columns,
+        rows: transformedRows,
+        totalRows: totalRowsReturned,
+        rowsReturned: transformedRows.length,
+        executionTimeMs,
+        bytesProcessed: parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10),
+        jobId: job.id || '',
+        hasMore: transformedRows.length < totalRowsReturned, // Indicate if there are more rows available
+      };
+
+      return result;
+    } catch (error: any) {
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        const err = new Error('Network error: Unable to connect to BigQuery');
+        (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      if (error.code === 403 || error.code === 401) {
+        const err = new Error('Authentication error');
+        (err as any).code = BigQueryErrorCode.AUTH_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      
+      // Extract error message from BigQuery error
+      let errorMessage = error.message || 'Query execution failed';
+      
+      // If error has details array, try to extract message from first detail
+      if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        if (firstError.message) {
+          errorMessage = firstError.message;
+        } else if (typeof firstError === 'string') {
+          errorMessage = firstError;
+        }
+      }
+      
+      const err = new Error(errorMessage);
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors || error;
+      throw err;
+    }
+  });
+
+  ipcMain.handle('bigquery:cancel', async (_event, jobId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const job = client.job(jobId);
+      await job.cancel();
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.JOB_NOT_FOUND,
+          message: 'Job not found or already completed',
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.CANCEL_FAILED,
+        message: 'Failed to cancel job',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('bigquery:listDatasets', async () => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const [datasets] = await client.getDatasets();
+      return datasets.map((dataset) => ({
+        id: dataset.id,
+        name: dataset.id,
+        location: dataset.metadata?.location || 'US',
+      }));
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to list datasets',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  ipcMain.handle('bigquery:listTables', async (_event, datasetId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const dataset = client.dataset(datasetId);
+      const [tables] = await dataset.getTables();
+      return tables.map((table) => ({
+        id: table.id,
+        name: table.id,
+        type: table.metadata?.type || 'TABLE',
+      }));
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to list tables',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  // Wrap handler to suppress error logging for table not found errors
+  ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
+    try {
+      return await (async () => {
+        const client = getBigQueryClient();
+        if (!client) {
+          throw {
+            code: BigQueryErrorCode.CONNECTION_FAILED,
+            message: 'No active BigQuery connection',
+          };
+        }
+
+        try {
+          const table = client.dataset(datasetId).table(tableId);
+          const [metadata] = await table.getMetadata();
+          
+          // Extract schema fields
+          const schema = metadata.schema;
+          if (!schema || !schema.fields) {
+            return {
+              fields: [],
+            };
+          }
+
+          // Recursively transform fields to include nested structures
+          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
+            const result: ColumnMetadata & { fields?: any[] } = {
+              name: field.name,
+              type: field.type,
+              mode: field.mode || 'NULLABLE',
+            };
+            
+            if (field.fields && field.fields.length > 0) {
+              result.fields = field.fields.map(transformField);
+            }
+            
+            return result;
+          };
+
+          // Extract table metadata
+          // BigQuery timestamps are in milliseconds, can be string or number
+          const creationTime = metadata.creationTime 
+            ? (typeof metadata.creationTime === 'string' 
+                ? parseInt(metadata.creationTime, 10) 
+                : metadata.creationTime)
+            : undefined;
+          const lastModifiedTime = metadata.lastModifiedTime
+            ? (typeof metadata.lastModifiedTime === 'string'
+                ? parseInt(metadata.lastModifiedTime, 10)
+                : metadata.lastModifiedTime)
+            : undefined;
+          const numRows = metadata.numRows
+            ? (typeof metadata.numRows === 'string'
+                ? parseInt(metadata.numRows, 10)
+                : metadata.numRows)
+            : undefined;
+          const numBytes = metadata.numBytes
+            ? (typeof metadata.numBytes === 'string'
+                ? parseInt(metadata.numBytes, 10)
+                : metadata.numBytes)
+            : undefined;
+
+          return {
+            fields: schema.fields.map(transformField),
+            metadata: {
+              creationTime,
+              lastModifiedTime,
+              numRows,
+              numBytes,
+            },
+          };
+        } catch (error: any) {
+          if (error.code === 404) {
+            // Create error but suppress Electron's automatic logging for table not found errors
+            // These errors are handled in the UI and don't need to be logged
+            const err = new Error('Table not found');
+            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+            (err as any).details = error.message;
+            // Mark error to suppress logging
+            (err as any).suppressLogging = true;
+            throw err;
+          }
+          const err = new Error(error.message || 'Failed to get table schema');
+          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+          (err as any).details = error.errors || error;
+          throw err;
+        }
+      })();
+    } catch (error: any) {
+      // Suppress Electron's automatic error logging for table not found errors
+      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
+          error?.message === 'Table not found') {
+        // Re-throw without Electron logging by using a custom error handler
+        // Electron will still pass the error to the renderer, but won't log it
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.details || error.message;
+        // Use a custom property to signal this shouldn't be logged
+        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
+        throw err;
+      }
+      // Re-throw other errors normally
+      throw error;
+    }
+  });
+
+  ipcMain.handle('bigquery:getViewDefinition', async (_event, datasetId: string, tableId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const table = client.dataset(datasetId).table(tableId);
+      const [metadata] = await table.getMetadata();
+      
+      // Check if this is actually a view
+      if (metadata.type !== 'VIEW' && metadata.type !== 'MATERIALIZED_VIEW') {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'Table is not a view',
+        };
+      }
+
+      // Get view definition from metadata
+      // For regular views: metadata.view.query
+      // For materialized views: metadata.materializedView.query
+      let viewDefinition = '';
+      if (metadata.type === 'VIEW' && metadata.view) {
+        viewDefinition = metadata.view.query || '';
+      } else if (metadata.type === 'MATERIALIZED_VIEW' && metadata.materializedView) {
+        viewDefinition = metadata.materializedView.query || '';
+      }
+      
+      if (!viewDefinition) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'View definition not found',
+        };
+      }
+
+      return {
+        definition: viewDefinition,
+      };
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'View not found',
+          details: error.message,
+        };
+      }
+      if (error.code) {
+        throw error;
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to get view definition',
+        details: error.errors || error,
+      };
+    }
+  });
+}
 ````
 
 ## File: src/main/ipc/connection.ts
@@ -12369,596 +13519,6 @@ declare global {
     electronAPI: ElectronAPI;
   }
 }
-````
-
-## File: src/renderer/utils/sql-validation.ts
-````typescript
-/**
- * SQL Validation Utilities
- * 
- * This module contains utility functions for validating SQL queries,
- * including column reference validation and subquery scope handling.
- */
-
-export interface SqlNodeLocation {
-  start?: { line: number; column: number };
-  end?: { line: number; column: number };
-  begin?: { line: number; column: number };
-  finish?: { line: number; column: number };
-}
-
-export interface ColumnRefInfo {
-  alias: string | null;
-  column: string;
-  location?: SqlNodeLocation;
-}
-
-export interface TableAliasInfo {
-  alias: string;
-  datasetId?: string;
-  tableId?: string;
-}
-
-export interface ColumnValidationIssue {
-  message: string;
-  line: number;
-  column: number;
-  length: number;
-}
-
-export const stripIdentifierQuotes = (value: string | null | undefined): string => {
-  if (!value) return '';
-  return value.replace(/[`"']/g, '');
-};
-
-/**
- * Collects column references from an AST expression node.
- * Skips subqueries as they have their own scope.
- */
-export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]): void => {
-  if (!node) return;
-
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      collectColumnRefsFromExpression(child, refs);
-    }
-    return;
-  }
-
-  if (typeof node !== 'object') {
-    return;
-  }
-
-  // Skip subqueries - they have their own scope and should be validated separately
-  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
-  if (node.type === 'select') {
-    return;
-  }
-
-  if (node.type === 'column_ref') {
-    // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
-    let columnName: string;
-    if (typeof node.column === 'string') {
-      columnName = stripIdentifierQuotes(node.column);
-    } else if (node.column && typeof node.column === 'object') {
-      // Handle nested column structure: { expr: { type: 'default', value: 'ColumnName' }, offset: [] }
-      if (node.column.expr && typeof node.column.expr.value === 'string') {
-        columnName = stripIdentifierQuotes(node.column.expr.value);
-      } else if (typeof node.column.column === 'string') {
-        columnName = stripIdentifierQuotes(node.column.column);
-      } else {
-        columnName = '';
-      }
-    } else {
-      columnName = '';
-    }
-    
-    // Collect column refs for validation:
-    // - Non-* columns: always collect for column name validation
-    // - * columns with alias (e.g., da.*): collect to validate alias exists
-    // - Bare * without alias: skip (no validation needed)
-    const hasAlias = node.table ? true : false;
-    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
-    
-    if (shouldCollect) {
-      refs.push({
-        alias: node.table ? stripIdentifierQuotes(node.table) : null,
-        column: columnName,
-        location: node.location || node.loc,
-      });
-    }
-    return;
-  }
-
-  // Recursively inspect child properties
-  for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') {
-      continue;
-    }
-    collectColumnRefsFromExpression(node[key], refs);
-  }
-};
-
-/**
- * Collects all column references from a SELECT statement AST.
- */
-export const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
-  const refs: ColumnRefInfo[] = [];
-
-  if (!selectAst || typeof selectAst !== 'object') {
-    return refs;
-  }
-
-  const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
-
-  // Optionally collect from CTE bodies (for full query validation)
-  if (includeCteBodies && Array.isArray(selectAst.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        // Recursively collect from CTE body (but not nested CTEs within CTEs)
-        const cteRefs = collectColumnRefsForSelect(cteAst, false);
-        refs.push(...cteRefs);
-      }
-    }
-  }
-
-  if (Array.isArray(selectAst.columns)) {
-    for (const col of selectAst.columns) {
-      collect(col?.expr ?? col);
-    }
-  }
-
-  if (selectAst.where) {
-    collect(selectAst.where);
-  }
-
-  if (Array.isArray(selectAst.groupby)) {
-    for (const groupExpr of selectAst.groupby) {
-      collect(groupExpr);
-    }
-  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
-    for (const groupExpr of selectAst.groupby.value) {
-      collect(groupExpr);
-    }
-  }
-
-  if (Array.isArray(selectAst.orderby)) {
-    for (const orderItem of selectAst.orderby) {
-      collect(orderItem?.expr ?? orderItem);
-    }
-  }
-
-  if (selectAst.having) {
-    collect(selectAst.having);
-  }
-
-  if (Array.isArray(selectAst.from)) {
-    for (const fromItem of selectAst.from) {
-      if (fromItem?.on) {
-        collect(fromItem.on);
-      }
-    }
-  }
-
-  return refs;
-};
-
-/**
- * Builds a map of table aliases and unique tables from a SELECT statement AST.
- */
-export const buildTableAliasMapFromSelect = (
-  selectAst: any
-): {
-  aliasMap: Map<string, TableAliasInfo>;
-  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
-} => {
-  const aliasMap = new Map<string, TableAliasInfo>();
-  const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
-
-  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string }) => {
-    const cleanAlias = stripIdentifierQuotes(aliasName);
-    if (!cleanAlias) return;
-    const key = cleanAlias.toLowerCase();
-    const existing = aliasMap.get(key);
-    if (!existing || (!existing.datasetId && info.datasetId) || (!existing.tableId && info.tableId)) {
-      aliasMap.set(key, {
-        alias: cleanAlias,
-        datasetId: info.datasetId,
-        tableId: info.tableId,
-      });
-    }
-  };
-
-  const processFromItem = (item: any) => {
-    if (!item || typeof item !== 'object') {
-      return;
-    }
-
-    if (Array.isArray(item)) {
-      for (const child of item) {
-        processFromItem(child);
-      }
-      return;
-    }
-
-    // Handle subqueries - register alias name but skip schema mapping
-    if (item.expr && item.expr.type === 'select') {
-      registerAlias(item.as || item.alias, {});
-      return;
-    }
-
-    let datasetId: string | undefined;
-    let tableId: string | undefined;
-    let projectId: string | undefined;
-
-    if (typeof item.catalog === 'string') {
-      projectId = stripIdentifierQuotes(item.catalog);
-    }
-
-    if (typeof item.db === 'string') {
-      const dbValue = stripIdentifierQuotes(item.db);
-      // node-sql-parser uses db for project in BigQuery dialects
-      projectId = projectId ?? dbValue;
-      if (!datasetId) {
-        datasetId = dbValue;
-      }
-    }
-
-    if (typeof item.schema === 'string') {
-      datasetId = stripIdentifierQuotes(item.schema);
-    }
-
-    if (typeof item.dataset === 'string') {
-      datasetId = stripIdentifierQuotes(item.dataset);
-    }
-
-    const registerTableName = (raw: string | undefined) => {
-      if (!raw) return;
-      const cleaned = stripIdentifierQuotes(raw);
-      if (!cleaned) return;
-      const parts = cleaned.split('.').filter(Boolean);
-
-      let resolvedDataset = datasetId;
-      let resolvedTable = tableId;
-
-      if (parts.length >= 2) {
-        const potentialDataset = parts[parts.length - 2];
-        const potentialProject = parts.length >= 3 ? parts[parts.length - 3] : undefined;
-        if (!resolvedDataset || resolvedDataset === potentialProject) {
-          resolvedDataset = potentialDataset;
-        }
-        resolvedTable = parts[parts.length - 1];
-      } else if (parts.length === 1) {
-        resolvedTable = parts[0];
-      }
-
-      if (resolvedDataset) {
-        datasetId = resolvedDataset;
-      }
-      if (resolvedTable) {
-        tableId = resolvedTable;
-      }
-
-      if (resolvedDataset && resolvedTable) {
-        const key = `${resolvedDataset}.${resolvedTable}`.toLowerCase();
-        if (!uniqueTables.has(key)) {
-          uniqueTables.set(key, { datasetId: resolvedDataset, tableId: resolvedTable });
-        }
-      }
-
-      registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
-    };
-
-    if (typeof item.table === 'string') {
-      registerTableName(item.table);
-    } else if (item.table && typeof item.table === 'object') {
-      if (typeof item.table.table === 'string') {
-        registerTableName(item.table.table);
-      }
-      if (typeof item.table.name === 'string') {
-        registerTableName(item.table.name);
-      }
-      if (typeof item.table.db === 'string' && !datasetId) {
-        datasetId = stripIdentifierQuotes(item.table.db);
-      }
-    }
-
-    // Register alias variations for lookup
-    registerAlias(item.as || item.alias, { datasetId, tableId });
-
-    if (tableId) {
-      registerAlias(tableId, { datasetId, tableId });
-    }
-
-    if (datasetId && tableId) {
-      registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
-    }
-  };
-
-  // Process CTEs (WITH clause) - register CTE names as valid aliases
-  // Note: We only register the CTE name here, not the tables inside the CTE.
-  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
-      const cteName = cte?.name?.value || cte?.name;
-      if (cteName) {
-        registerAlias(cteName, {});
-      }
-    }
-  }
-
-  if (Array.isArray(selectAst?.from)) {
-    for (const fromItem of selectAst.from) {
-      processFromItem(fromItem);
-    }
-  } else {
-    processFromItem(selectAst?.from);
-  }
-
-  return { aliasMap, uniqueTables };
-};
-
-/**
- * Collects all subqueries from an AST node.
- */
-export const collectSubqueries = (node: any, subqueries: any[]): void => {
-  if (!node) return;
-  
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      collectSubqueries(child, subqueries);
-    }
-    return;
-  }
-  
-  if (typeof node !== 'object') return;
-  
-  // Found a subquery
-  if (node.type === 'select') {
-    subqueries.push(node);
-    // Don't recurse into the subquery here - it will be processed separately
-    return;
-  }
-  
-  // Recurse into child properties
-  for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') continue;
-    collectSubqueries(node[key], subqueries);
-  }
-};
-
-/**
- * Validates column references in a SELECT statement, including subqueries.
- * Returns an array of validation issues found.
- * 
- * @param selectAst - The parsed SELECT statement AST
- * @param getTableFields - Function to fetch table field names (for schema validation)
- * @param textToValidate - The original SQL text (for error position finding)
- * @param canFetchSchemas - Whether schema fetching is available
- */
-export const validateColumnReferences = async (
-  selectAst: any,
-  getTableFields: (datasetId: string, tableId: string) => Promise<string[] | null>,
-  textToValidate: string,
-  canFetchSchemas: boolean
-): Promise<ColumnValidationIssue[]> => {
-  const issues: ColumnValidationIssue[] = [];
-
-  // Helper function to validate columns for a single SELECT scope
-  const validateScope = async (
-    scopeAst: any,
-    scopeAliasMap: Map<string, TableAliasInfo>,
-    scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
-  ) => {
-    const columnRefs = collectColumnRefsForSelect(scopeAst, false);
-    const uniqueTableList = Array.from(scopeUniqueTables.values());
-
-    for (const columnRef of columnRefs) {
-      const baseColumnName = columnRef.column.split('.')[0];
-      const lowerColumnName = baseColumnName.toLowerCase();
-      const location = { line: 1, column: 1, length: Math.max(1, columnRef.column.length) };
-
-      const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
-      const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
-
-      if (aliasKey && !aliasInfo) {
-        issues.push({
-          message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
-          line: location.line,
-          column: location.column,
-          length: location.length,
-        });
-        continue;
-      }
-
-      // For alias.* patterns (e.g., da.*), we've validated the alias exists above.
-      // The * means "all columns" which is always valid syntax, so skip column validation.
-      if (columnRef.column === '*') {
-        continue;
-      }
-
-      if (!canFetchSchemas) {
-        // Without schema access we can only report alias issues.
-        continue;
-      }
-
-      // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
-      // We can't validate columns against CTEs since we don't know their output schema.
-      // Skip validation for these cases.
-      if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
-        continue;
-      }
-
-      if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
-        const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
-        if (fields === null) {
-          // Schema lookup failed (likely table not found). Skip detailed column checks.
-          continue;
-        }
-
-        const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-        if (!hasColumn) {
-          const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
-          issues.push({
-            message: `Column "${columnRef.column}" not found in ${targetName}`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
-          });
-        }
-        continue;
-      }
-
-      if (!aliasInfo) {
-        // Check if any table in scope is a CTE/subquery (no schema).
-        // If so, we can't reliably validate unqualified columns since they might come from the CTE.
-        const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
-          info => !info.datasetId || !info.tableId
-        );
-        
-        if (hasCteOrSubquery) {
-          // Skip validation for unqualified columns when CTEs/subqueries are present
-          // since we can't determine which table the column belongs to
-          continue;
-        }
-
-        let columnFound = false;
-
-        for (const tableInfo of uniqueTableList) {
-          if (!tableInfo.datasetId || !tableInfo.tableId) {
-            continue;
-          }
-
-          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
-          if (fields === null) {
-            continue;
-          }
-
-          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-          if (hasColumn) {
-            columnFound = true;
-            break;
-          }
-        }
-
-        if (!columnFound && uniqueTableList.length > 0) {
-          issues.push({
-            message: `Column "${columnRef.column}" not found in referenced tables`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
-          });
-        }
-      }
-    }
-  };
-
-  // First, validate each CTE body independently against its own FROM tables
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        // Build alias map for just this CTE's scope (its own FROM clause only)
-        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
-          ...cteAst,
-          with: null, // Don't process nested CTEs here, they'd be handled separately
-        });
-        await validateScope(cteAst, cteAliasMap, cteUniqueTables);
-      }
-    }
-  }
-
-  // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
-  const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
-  await validateScope(selectAst, aliasMap, uniqueTables);
-
-  // Recursively validate subqueries within the AST
-  // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
-  const validateSubqueries = async (
-    ast: any,
-    parentAliasMap: Map<string, TableAliasInfo> = new Map(),
-    parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
-  ) => {
-    const subqueries: any[] = [];
-    
-    // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
-    collectSubqueries(ast.where, subqueries);
-    collectSubqueries(ast.having, subqueries);
-    if (Array.isArray(ast.columns)) {
-      for (const col of ast.columns) {
-        collectSubqueries(col?.expr ?? col, subqueries);
-      }
-    }
-    // Also check JOIN ON conditions for subqueries
-    if (Array.isArray(ast.from)) {
-      for (const fromItem of ast.from) {
-        if (fromItem?.on) {
-          collectSubqueries(fromItem.on, subqueries);
-        }
-      }
-    }
-    
-    // Validate each subquery with its own scope + parent scope (for correlated subqueries)
-    for (const subquery of subqueries) {
-      const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
-      
-      // Merge parent aliases into subquery's alias map (subquery's own aliases take precedence)
-      const mergedAliasMap = new Map(parentAliasMap);
-      for (const [key, value] of subAliasMap) {
-        mergedAliasMap.set(key, value);
-      }
-      
-      // Merge parent unique tables into subquery's unique tables
-      const mergedUniqueTables = new Map(parentUniqueTables);
-      for (const [key, value] of subUniqueTables) {
-        mergedUniqueTables.set(key, value);
-      }
-      
-      await validateScope(subquery, mergedAliasMap, mergedUniqueTables);
-      // Recursively validate nested subqueries, passing the merged scope
-      await validateSubqueries(subquery, mergedAliasMap, mergedUniqueTables);
-    }
-  };
-
-  // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
-          ...cteAst,
-          with: null,
-        });
-        await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
-      }
-    }
-  }
-
-  // Validate subqueries in the main query, passing the main query's aliases as parent scope
-  await validateSubqueries(selectAst, aliasMap, uniqueTables);
-
-  return issues;
-};
-````
-
-## File: src/renderer/index.tsx
-````typescript
-/// <reference path="./types/electron-api.d.ts" />
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary';
-
-const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
-root.render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>
-);
 ````
 
 ## File: src/shared/types/connection.ts
@@ -17541,1138 +18101,6 @@ module.exports = (env, argv) => {
 };
 ````
 
-## File: src/main/ipc/bigquery.ts
-````typescript
-import { ipcMain } from 'electron';
-import { getBigQueryClient, getActiveConnection } from './connection';
-import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
-import { BigQueryErrorCode } from '../../shared/types/bigquery';
-
-/**
- * Serializes a value to ensure it can be cloned and sent through IPC.
- * Handles Date objects, BigNumber objects, Buffers, and nested structures.
- * Uses a WeakSet to track visited objects to prevent circular reference issues.
- * @param value - The value to serialize
- * @param visited - WeakSet to track visited objects (for circular reference detection)
- * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
- */
-function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
-  // Normalize column type early so it's available throughout the function
-  const normalizedColumnType = columnType?.toUpperCase() || '';
-  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
-                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
-  
-  // Handle null and undefined
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
-  // These objects have a 'value' property containing the string representation
-  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it's a BigQuery date/time object with a 'value' property
-    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
-    if ('value' in value && typeof value.value === 'string') {
-      const valueStr = value.value;
-      // Verify it looks like a date/time string
-      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
-          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-        return valueStr;
-      }
-    }
-  }
-
-  // Handle Date objects - convert to ISO string
-  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
-  if (value instanceof Date) {
-    // Check if it's a valid date
-    if (isNaN(value.getTime())) {
-      return null; // Invalid dates become null
-    }
-    // Format based on column type if available
-    if (normalizedColumnType === 'DATE') {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (normalizedColumnType === 'TIME') {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (normalizedColumnType === 'DATETIME') {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    // Default: ISO string for TIMESTAMP or unknown
-    return value.toISOString();
-  }
-  
-  // CRITICAL: Check for Date-like objects BEFORE general object handling
-  // BigQuery might return Date objects that aren't instanceof Date
-  // Check for objects with Date-like methods or properties
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
-    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-      try {
-        // Try to convert to Date
-        let date: Date | null = null;
-        if (typeof value.getTime === 'function') {
-          const time = value.getTime();
-          if (typeof time === 'number' && !isNaN(time)) {
-            date = new Date(time);
-          }
-        } else if (typeof value.toISOString === 'function') {
-          const isoStr = value.toISOString();
-          date = new Date(isoStr);
-        }
-        
-        if (date && !isNaN(date.getTime())) {
-          // Format based on column type
-          if (normalizedColumnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            const ms = date.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return date.toISOString();
-        }
-      } catch {
-        // If conversion fails, continue with normal handling
-      }
-    }
-  }
-
-  // Handle Buffer objects - convert to base64 string
-  if (Buffer.isBuffer(value)) {
-    return value.toString('base64');
-  }
-
-  // Handle BigNumber-like objects (from @google-cloud/bigquery)
-  // Check for common BigNumber properties
-  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
-    // Check if it's a BigNumber by looking for valueOf or toNumber methods
-    if ('valueOf' in value || 'toNumber' in value) {
-      try {
-        // Try to convert to number first, fallback to string
-        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
-        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
-          return numValue;
-        }
-        return String(value);
-      } catch {
-        return String(value);
-      }
-    }
-  }
-
-  // Handle arrays - recursively serialize each element
-  if (Array.isArray(value)) {
-    return value.map((item) => serializeValue(item, visited, columnType));
-  }
-
-  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
-  // BigQuery may return these as objects with special properties or methods
-  // This must come after array check but before general object handling
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
-    // BigQuery might return DATE as objects in various formats
-    if (isDateType) {
-      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
-      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
-      // This check should be very lenient - just check if 'value' exists and is a string
-      if ('value' in value) {
-        const innerValue = value.value;
-        // If inner value is a string, return it directly (this is the most common case)
-        if (typeof innerValue === 'string') {
-          return innerValue;
-        }
-        // If inner value is a Date, convert to ISO string
-        if (innerValue instanceof Date) {
-          if (normalizedColumnType === 'DATE') {
-            return innerValue.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
-            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
-            const ms = innerValue.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return innerValue.toISOString();
-        }
-        // Recursively serialize the inner value
-        return serializeValue(innerValue, visited, columnType);
-      }
-      
-      // Check for BigQuery Date object structure - might have year, month, day properties
-      if ('year' in value || 'month' in value || 'day' in value) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        if (normalizedColumnType === 'DATE') {
-          return `${year}-${month}-${day}`;
-        }
-        // For DATETIME/TIMESTAMP, check for time components
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        if (normalizedColumnType === 'DATETIME') {
-          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      
-      // Check for TIME object structure
-      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      
-      // For any other object structure for DATE/TIME, try to extract a string value
-      // Check all properties for date-like strings
-      const objKeys = Object.keys(value);
-      for (const key of objKeys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-      
-      // If we can't extract a date string, return a placeholder instead of serializing to {}
-      return '[Invalid Date Object]';
-    }
-    
-    // For non-date types, check if it's a BigQuery date object with a value property
-    if ('value' in value && Object.keys(value).length === 1) {
-      const innerValue = value.value;
-      // If inner value is a string that looks like a date, return it
-      if (typeof innerValue === 'string') {
-        return innerValue;
-      }
-      // If inner value is a Date, convert to ISO string
-      if (innerValue instanceof Date) {
-        return innerValue.toISOString();
-      }
-      // Recursively serialize the inner value
-      return serializeValue(innerValue, visited, columnType);
-    }
-    
-    // For DATE/TIME columns, try toString() first before checking properties
-    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-            return str;
-          }
-        }
-      } catch {
-        // Continue with property checking if toString fails
-      }
-      
-      // Also check if any property value is a date-like string
-      const keys = Object.keys(value);
-      for (const key of keys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-    }
-    
-    // Check for date-like objects with year/month/day properties
-    if ('year' in value && 'month' in value && 'day' in value) {
-      const year = value.year;
-      const month = String(value.month ?? 1).padStart(2, '0');
-      const day = String(value.day ?? 1).padStart(2, '0');
-      // Check if it also has time components (DATETIME/TIMESTAMP)
-      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      // Just date components (DATE)
-      return `${year}-${month}-${day}`;
-    }
-    
-    // Check for time-only objects (TIME)
-    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
-        !('year' in value || 'month' in value || 'day' in value)) {
-      const hours = String(value.hours ?? 0).padStart(2, '0');
-      const minutes = String(value.minutes ?? 0).padStart(2, '0');
-      const seconds = String(value.seconds ?? 0).padStart(2, '0');
-      const ms = value.milliseconds ?? 0;
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    
-    // Try to call toString() if it exists and might give us a useful string
-    // (Only if we haven't already tried it above for date types)
-    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        // If toString gives us something useful (not [object Object]), use it
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
-            return str;
-          }
-        }
-      } catch {
-        // Ignore toString errors
-      }
-    }
-  }
-
-  // Handle objects - recursively serialize each property
-  if (typeof value === 'object') {
-    // Check for circular references
-    if (visited.has(value)) {
-      return '[Circular]';
-    }
-    visited.add(value);
-
-    try {
-      // Check if it's a plain object (not a class instance)
-      const proto = Object.getPrototypeOf(value);
-      if (proto === null || proto === Object.prototype) {
-        // For DATE/TIME columns, be very aggressive about converting objects to strings
-        if (isDateType) {
-          // Try toString() first
-          if ('toString' in value && typeof value.toString === 'function') {
-            try {
-              const str = value.toString();
-              if (str && str !== '[object Object]' && typeof str === 'string') {
-                // Check if it looks like a date/time string
-                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-                  return str;
-                }
-              }
-            } catch {
-              // Continue with property checking if toString fails
-            }
-          }
-          
-          // Check all properties for date-like strings
-          const keys = Object.keys(value);
-          for (const key of keys) {
-            const propValue = value[key];
-            if (typeof propValue === 'string') {
-              // Check if it looks like a date/time string
-              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                return propValue;
-              }
-            }
-            // If property is a Date, convert it
-            if (propValue instanceof Date) {
-              if (normalizedColumnType === 'DATE') {
-                return propValue.toISOString().split('T')[0];
-              }
-              return propValue.toISOString();
-            }
-          }
-          
-          // If we still haven't found a date string, try JSON.stringify to extract it
-          try {
-            const jsonStr = JSON.stringify(value);
-            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
-            if (dateMatch) {
-              const dateStr = dateMatch[1];
-              if (normalizedColumnType === 'DATE') {
-                return dateStr.split('T')[0]; // Just the date part
-              }
-              return dateStr.replace('T', ' ').replace(/Z$/, '');
-            }
-            // Also try to find any date-like string in the JSON
-            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
-            for (const match of allDateMatches) {
-              const dateStr = match[1];
-              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
-                return dateStr;
-              }
-              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
-                return dateStr.replace('T', ' ').replace(/Z$/, '');
-              }
-            }
-          } catch {
-            // JSON.stringify failed, continue with normal serialization
-          }
-          
-          // Last resort for DATE columns: convert object to string representation
-          // This prevents [object Object] from being sent through IPC
-          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
-              normalizedColumnType === 'TIMESTAMP') {
-            // Try to create a meaningful string from the object
-            const keys = Object.keys(value);
-            if (keys.length === 0) {
-              return '[Empty Date Object]';
-            }
-            // Return first property value if it's a string or number
-            const firstKey = keys[0];
-            const firstValue = value[firstKey];
-            if (typeof firstValue === 'string') {
-              return firstValue;
-            }
-            if (typeof firstValue === 'number') {
-              // Try to interpret as date
-              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
-              if (!isNaN(date.getTime())) {
-                if (normalizedColumnType === 'DATE') {
-                  return date.toISOString().split('T')[0];
-                }
-                return date.toISOString();
-              }
-            }
-            // Return object structure as string
-            return `{${keys.slice(0, 2).join(', ')}}`;
-          }
-        } else {
-          // For non-date types, check if this might be a date-like object
-          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
-          const keys = Object.keys(value);
-          // If object has very few keys and one looks date-like, try toString first
-          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
-            try {
-              const str = value.toString();
-              if (str && str !== '[object Object]' && typeof str === 'string') {
-                // Check if it looks like a date/time string
-                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
-                  return str;
-                }
-              }
-            } catch {
-              // Continue with normal serialization if toString fails
-            }
-          }
-        }
-        
-        const serialized: any = {};
-        for (const key in value) {
-          if (Object.prototype.hasOwnProperty.call(value, key)) {
-            serialized[key] = serializeValue(value[key], visited, columnType);
-          }
-        }
-        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
-        // This prevents empty objects from being stored and later displayed as "[object Object]"
-        if (Object.keys(serialized).length === 0 && isDateType) {
-          return '[Invalid Date]';
-        }
-        return serialized;
-      } else {
-        // For non-plain objects (class instances), try to serialize
-        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
-        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
-        if (value instanceof Date) {
-          if (isNaN(value.getTime())) {
-            return null;
-          }
-          if (normalizedColumnType === 'DATE') {
-            return value.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(value.getUTCHours()).padStart(2, '0');
-            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-            const ms = value.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return value.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return value.toISOString();
-        }
-        
-        // Check for Date-like objects (objects with Date methods)
-        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-          try {
-            let date: Date | null = null;
-            if (typeof value.getTime === 'function') {
-              const time = value.getTime();
-              if (typeof time === 'number' && !isNaN(time)) {
-                date = new Date(time);
-              }
-            } else if (typeof value.toISOString === 'function') {
-              const isoStr = value.toISOString();
-              date = new Date(isoStr);
-            }
-            
-            if (date && !isNaN(date.getTime())) {
-              if (normalizedColumnType === 'DATE') {
-                return date.toISOString().split('T')[0];
-              }
-              if (normalizedColumnType === 'TIME') {
-                const hours = String(date.getUTCHours()).padStart(2, '0');
-                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-                const ms = date.getUTCMilliseconds();
-                if (ms > 0) {
-                  const msStr = String(ms).padStart(3, '0');
-                  return `${hours}:${minutes}:${seconds}.${msStr}`;
-                }
-                return `${hours}:${minutes}:${seconds}`;
-              }
-              if (normalizedColumnType === 'DATETIME') {
-                return date.toISOString().replace('T', ' ').slice(0, 19);
-              }
-              return date.toISOString();
-            }
-          } catch {
-            // If conversion fails, continue with normal serialization
-          }
-        }
-        
-        // First try JSON.stringify/parse which handles most cases
-        // BUT: This will convert Date objects to {}, so we check for Dates above
-        try {
-          const jsonStr = JSON.stringify(value);
-          // Check if JSON.stringify produced an empty object for a date type
-          // This happens when Date objects are stringified
-          if (jsonStr === '{}' && isDateType) {
-            // This is likely a Date object that was stringified to {}
-            return '[Invalid Date]';
-          }
-          return JSON.parse(jsonStr);
-        } catch {
-          // If JSON serialization fails (e.g., circular refs, functions),
-          // try to extract enumerable properties
-          const serialized: any = {};
-          for (const key in value) {
-            if (Object.prototype.hasOwnProperty.call(value, key)) {
-              serialized[key] = serializeValue(value[key], visited, columnType);
-            }
-          }
-          // If we got nothing, check if it's a date type before converting to string
-          if (Object.keys(serialized).length === 0 && isDateType) {
-            return '[Invalid Date]';
-          }
-          // If we got nothing, convert to string as last resort
-          return Object.keys(serialized).length > 0 ? serialized : String(value);
-        }
-      }
-    } catch (error) {
-      // If anything goes wrong, check if it's a Date object before converting to string
-      // This prevents [object Object] from being returned for Date objects
-      if (value instanceof Date) {
-        if (isNaN(value.getTime())) {
-          return null;
-        }
-        if (normalizedColumnType === 'DATE') {
-          return value.toISOString().split('T')[0];
-        }
-        if (normalizedColumnType === 'TIME') {
-          const hours = String(value.getUTCHours()).padStart(2, '0');
-          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-          const ms = value.getUTCMilliseconds();
-          if (ms > 0) {
-            const msStr = String(ms).padStart(3, '0');
-            return `${hours}:${minutes}:${seconds}.${msStr}`;
-          }
-          return `${hours}:${minutes}:${seconds}`;
-        }
-        if (normalizedColumnType === 'DATETIME') {
-          return value.toISOString().replace('T', ' ').slice(0, 19);
-        }
-        return value.toISOString();
-      }
-      // For date types, return a placeholder instead of [object Object]
-      if (isDateType && typeof value === 'object' && value !== null) {
-        return '[Invalid Date]';
-      }
-      // Last resort: convert to string
-      return String(value);
-    }
-  }
-
-  // For primitives (string, number, boolean), return as-is
-  return value;
-}
-
-export function registerBigQueryHandlers(): void {
-  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const startTime = Date.now();
-
-      // Get location from active connection, default to EU
-      const connection = getActiveConnection();
-      const location = connection?.location || 'EU';
-
-      // Create query job
-      const [job] = await client.createQueryJob({
-        query: queryText,
-        location,
-      });
-
-      // Wait for job to complete and get all results
-      // Use a large maxResults to get all rows (BigQuery API limit is 10MB per response)
-      // For very large result sets, we'd need pagination, but for now get as many as possible
-      const [rows] = await job.getQueryResults({ maxResults: 100000 });
-      
-      // Get job metadata
-      const [jobMetadata] = await job.getMetadata();
-
-      const executionTimeMs = Date.now() - startTime;
-
-      // Transform schema to ColumnMetadata
-      // Get schema from job metadata - check multiple possible locations
-      let schema = jobMetadata.configuration?.query?.schema || 
-                   jobMetadata.statistics?.query?.schema ||
-                   jobMetadata.schema;
-      
-      let columns: ColumnMetadata[] = [];
-      
-      if (schema?.fields && schema.fields.length > 0) {
-        // Use schema from metadata
-        columns = schema.fields.map((field: any) => {
-          return {
-            name: field.name,
-            type: field.type, // BigQuery returns types like 'DATE', 'TIME', 'DATETIME', 'TIMESTAMP'
-            mode: field.mode,
-          };
-        });
-      } else if (rows && rows.length > 0) {
-        // Fallback: extract column names and types from first row
-        // NOTE: This fallback should rarely be used if schema is available
-        const firstRow = rows[0];
-        columns = Object.keys(firstRow).map((key) => {
-          const value = firstRow[key];
-          let type = 'STRING'; // Default type
-          if (typeof value === 'number') {
-            type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
-          } else if (typeof value === 'boolean') {
-            type = 'BOOLEAN';
-          } else if (value instanceof Date) {
-            type = 'TIMESTAMP';
-          } else if (Array.isArray(value)) {
-            type = 'ARRAY';
-          } else if (value && typeof value === 'object') {
-            // CRITICAL: Check if it's a Date-like object before defaulting to RECORD
-            // BigQuery DATE/TIME objects might not be instanceof Date
-            const keyLower = key.toLowerCase();
-            let isDateLike = false;
-            let detectedType: string | null = null;
-            
-            // Check 1: Date instance or Date-like object with methods
-            if (value instanceof Date || typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-              isDateLike = true;
-              // Try to guess based on column name
-              if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
-                detectedType = 'DATE';
-              } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
-                detectedType = 'TIME';
-              } else if (keyLower.includes('datetime')) {
-                detectedType = 'DATETIME';
-              } else {
-                detectedType = 'TIMESTAMP';
-              }
-            }
-            
-            // Check 2: Object with 'value' property containing date-like string
-            if (!isDateLike && 'value' in value && typeof value.value === 'string') {
-              const valueStr = value.value;
-              if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-                isDateLike = true;
-                if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
-                  detectedType = 'DATE';
-                } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
-                  detectedType = 'TIME';
-                } else if (keyLower.includes('datetime')) {
-                  detectedType = 'DATETIME';
-                } else if (/^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-                  detectedType = 'TIMESTAMP';
-                } else if (/^\d{4}-\d{2}-\d{2}/.test(valueStr)) {
-                  detectedType = 'DATE';
-                } else if (/^\d{2}:\d{2}:\d{2}/.test(valueStr)) {
-                  detectedType = 'TIME';
-                } else {
-                  detectedType = 'TIMESTAMP';
-                }
-              }
-            }
-            
-            // Check 3: Object with year/month/day properties (DATE or DATETIME)
-            if (!isDateLike && ('year' in value || 'month' in value || 'day' in value)) {
-              isDateLike = true;
-              if (keyLower.includes('datetime') || ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-                detectedType = 'DATETIME';
-              } else {
-                detectedType = 'DATE';
-              }
-            }
-            
-            // Check 4: Object with hours/minutes/seconds but no year/month/day (TIME)
-            if (!isDateLike && ('hours' in value || 'minutes' in value || 'seconds' in value) &&
-                !('year' in value || 'month' in value || 'day' in value)) {
-              isDateLike = true;
-              detectedType = 'TIME';
-            }
-            
-            // Check 5: Column name suggests DATE/TIME even if object structure is unclear
-            if (!isDateLike && (keyLower.includes('date') || keyLower.includes('time') || 
-                                keyLower.includes('timestamp') || keyLower.includes('datetime'))) {
-              // Check if object has any string properties that look like dates
-              const keys = Object.keys(value);
-              for (const objKey of keys) {
-                const propValue = value[objKey];
-                if (typeof propValue === 'string') {
-                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                    isDateLike = true;
-                    if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
-                      detectedType = 'DATE';
-                    } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
-                      detectedType = 'TIME';
-                    } else if (keyLower.includes('datetime')) {
-                      detectedType = 'DATETIME';
-                    } else {
-                      detectedType = 'TIMESTAMP';
-                    }
-                    break;
-                  }
-                }
-              }
-            }
-            
-            if (isDateLike && detectedType) {
-              type = detectedType;
-            } else {
-              type = 'RECORD';
-            }
-          }
-          return {
-            name: key,
-            type,
-            mode: 'NULLABLE',
-          };
-        });
-      }
-
-      // Transform rows to Row format
-      // BigQuery returns rows as objects with field names as keys
-      // Serialize all values to ensure they can be cloned and sent through IPC
-      
-      const transformedRows: Row[] = rows.map((row: any) => ({
-        values: columns.map((col) => {
-          const value = row[col.name];
-          
-          // Pass column type to serializeValue to help with date/time serialization
-          let serialized = serializeValue(value, new WeakSet(), col.type);
-          
-          // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
-          // This prevents objects from being stored in cache and later displayed as "[object Object]"
-          const colTypeUpper = (col.type || '').toUpperCase();
-          if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
-              colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
-            // If serialized result is still an object, convert it to a string
-            if (typeof serialized === 'object' && serialized !== null) {
-              // Try to extract a date string from the object
-              const keys = Object.keys(serialized);
-              for (const key of keys) {
-                const propValue = serialized[key];
-                if (typeof propValue === 'string') {
-                  // Check if it looks like a date/time string
-                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                    serialized = propValue;
-                    break;
-                  }
-                }
-              }
-              
-              // If we still have an object, convert to placeholder string
-              if (typeof serialized === 'object' && serialized !== null) {
-                serialized = '[Invalid Date]';
-              }
-            }
-            
-            // CRITICAL: Check if serialized result is "[object Object]" string and fix it
-            if (typeof serialized === 'string' && serialized === '[object Object]') {
-              serialized = '[Invalid Date]';
-            }
-            
-            // Ensure final result is a string (not object, not null, not undefined)
-            if (typeof serialized !== 'string') {
-              if (serialized === null || serialized === undefined) {
-                serialized = '[Invalid Date]';
-              } else {
-                serialized = String(serialized);
-                // If string conversion produced "[object Object]", use placeholder
-                if (serialized === '[object Object]') {
-                  serialized = '[Invalid Date]';
-                }
-              }
-            }
-          }
-          
-          return serialized;
-        }),
-      }));
-
-      // Use the actual number of rows returned, or totalRowsReturned from metadata if available
-      const totalRowsReturned = parseInt(
-        jobMetadata.statistics?.query?.totalRowsReturned || 
-        jobMetadata.statistics?.totalRowsReturned || 
-        String(transformedRows.length), 
-        10
-      );
-
-      const result: QueryResult = {
-        columns,
-        rows: transformedRows,
-        totalRows: totalRowsReturned,
-        rowsReturned: transformedRows.length,
-        executionTimeMs,
-        bytesProcessed: parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10),
-        jobId: job.id || '',
-        hasMore: transformedRows.length < totalRowsReturned, // Indicate if there are more rows available
-      };
-
-      return result;
-    } catch (error: any) {
-      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-        const err = new Error('Network error: Unable to connect to BigQuery');
-        (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      if (error.code === 403 || error.code === 401) {
-        const err = new Error('Authentication error');
-        (err as any).code = BigQueryErrorCode.AUTH_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      
-      // Extract error message from BigQuery error
-      let errorMessage = error.message || 'Query execution failed';
-      
-      // If error has details array, try to extract message from first detail
-      if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
-        const firstError = error.errors[0];
-        if (firstError.message) {
-          errorMessage = firstError.message;
-        } else if (typeof firstError === 'string') {
-          errorMessage = firstError;
-        }
-      }
-      
-      const err = new Error(errorMessage);
-      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-      (err as any).details = error.errors || error;
-      throw err;
-    }
-  });
-
-  ipcMain.handle('bigquery:cancel', async (_event, jobId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const job = client.job(jobId);
-      await job.cancel();
-    } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.JOB_NOT_FOUND,
-          message: 'Job not found or already completed',
-        };
-      }
-      throw {
-        code: BigQueryErrorCode.CANCEL_FAILED,
-        message: 'Failed to cancel job',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('bigquery:listDatasets', async () => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const [datasets] = await client.getDatasets();
-      return datasets.map((dataset) => ({
-        id: dataset.id,
-        name: dataset.id,
-        location: dataset.metadata?.location || 'US',
-      }));
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to list datasets',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  ipcMain.handle('bigquery:listTables', async (_event, datasetId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const dataset = client.dataset(datasetId);
-      const [tables] = await dataset.getTables();
-      return tables.map((table) => ({
-        id: table.id,
-        name: table.id,
-        type: table.metadata?.type || 'TABLE',
-      }));
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to list tables',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  // Wrap handler to suppress error logging for table not found errors
-  ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
-    try {
-      return await (async () => {
-        const client = getBigQueryClient();
-        if (!client) {
-          throw {
-            code: BigQueryErrorCode.CONNECTION_FAILED,
-            message: 'No active BigQuery connection',
-          };
-        }
-
-        try {
-          const table = client.dataset(datasetId).table(tableId);
-          const [metadata] = await table.getMetadata();
-          
-          // Extract schema fields
-          const schema = metadata.schema;
-          if (!schema || !schema.fields) {
-            return {
-              fields: [],
-            };
-          }
-
-          // Recursively transform fields to include nested structures
-          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
-            const result: ColumnMetadata & { fields?: any[] } = {
-              name: field.name,
-              type: field.type,
-              mode: field.mode || 'NULLABLE',
-            };
-            
-            if (field.fields && field.fields.length > 0) {
-              result.fields = field.fields.map(transformField);
-            }
-            
-            return result;
-          };
-
-          // Extract table metadata
-          // BigQuery timestamps are in milliseconds, can be string or number
-          const creationTime = metadata.creationTime 
-            ? (typeof metadata.creationTime === 'string' 
-                ? parseInt(metadata.creationTime, 10) 
-                : metadata.creationTime)
-            : undefined;
-          const lastModifiedTime = metadata.lastModifiedTime
-            ? (typeof metadata.lastModifiedTime === 'string'
-                ? parseInt(metadata.lastModifiedTime, 10)
-                : metadata.lastModifiedTime)
-            : undefined;
-          const numRows = metadata.numRows
-            ? (typeof metadata.numRows === 'string'
-                ? parseInt(metadata.numRows, 10)
-                : metadata.numRows)
-            : undefined;
-          const numBytes = metadata.numBytes
-            ? (typeof metadata.numBytes === 'string'
-                ? parseInt(metadata.numBytes, 10)
-                : metadata.numBytes)
-            : undefined;
-
-          return {
-            fields: schema.fields.map(transformField),
-            metadata: {
-              creationTime,
-              lastModifiedTime,
-              numRows,
-              numBytes,
-            },
-          };
-        } catch (error: any) {
-          if (error.code === 404) {
-            // Create error but suppress Electron's automatic logging for table not found errors
-            // These errors are handled in the UI and don't need to be logged
-            const err = new Error('Table not found');
-            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-            (err as any).details = error.message;
-            // Mark error to suppress logging
-            (err as any).suppressLogging = true;
-            throw err;
-          }
-          const err = new Error(error.message || 'Failed to get table schema');
-          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-          (err as any).details = error.errors || error;
-          throw err;
-        }
-      })();
-    } catch (error: any) {
-      // Suppress Electron's automatic error logging for table not found errors
-      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
-          error?.message === 'Table not found') {
-        // Re-throw without Electron logging by using a custom error handler
-        // Electron will still pass the error to the renderer, but won't log it
-        const err = new Error('Table not found');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        (err as any).details = error.details || error.message;
-        // Use a custom property to signal this shouldn't be logged
-        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
-        throw err;
-      }
-      // Re-throw other errors normally
-      throw error;
-    }
-  });
-
-  ipcMain.handle('bigquery:getViewDefinition', async (_event, datasetId: string, tableId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const table = client.dataset(datasetId).table(tableId);
-      const [metadata] = await table.getMetadata();
-      
-      // Check if this is actually a view
-      if (metadata.type !== 'VIEW' && metadata.type !== 'MATERIALIZED_VIEW') {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'Table is not a view',
-        };
-      }
-
-      // Get view definition from metadata
-      // For regular views: metadata.view.query
-      // For materialized views: metadata.materializedView.query
-      let viewDefinition = '';
-      if (metadata.type === 'VIEW' && metadata.view) {
-        viewDefinition = metadata.view.query || '';
-      } else if (metadata.type === 'MATERIALIZED_VIEW' && metadata.materializedView) {
-        viewDefinition = metadata.materializedView.query || '';
-      }
-      
-      if (!viewDefinition) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'View definition not found',
-        };
-      }
-
-      return {
-        definition: viewDefinition,
-      };
-    } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'View not found',
-          details: error.message,
-        };
-      }
-      if (error.code) {
-        throw error;
-      }
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to get view definition',
-        details: error.errors || error,
-      };
-    }
-  });
-}
-````
-
 ## File: src/main/main.ts
 ````typescript
 import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
@@ -19958,6 +19386,638 @@ export const QueryResults: React.FC = () => {
   background-color: #2a2d2e;
   color: #cccccc;
 }
+````
+
+## File: src/renderer/utils/sql-validation.ts
+````typescript
+/**
+ * SQL Validation Utilities
+ * 
+ * This module contains utility functions for validating SQL queries,
+ * including column reference validation and subquery scope handling.
+ */
+
+export interface SqlNodeLocation {
+  start?: { line: number; column: number };
+  end?: { line: number; column: number };
+  begin?: { line: number; column: number };
+  finish?: { line: number; column: number };
+}
+
+export interface ColumnRefInfo {
+  alias: string | null;
+  column: string;
+  location?: SqlNodeLocation;
+}
+
+export interface TableAliasInfo {
+  alias: string;
+  datasetId?: string;
+  tableId?: string;
+  cteColumns?: string[];
+}
+
+export interface ColumnValidationIssue {
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+export const stripIdentifierQuotes = (value: string | null | undefined): string => {
+  if (!value) return '';
+  return value.replace(/[`"']/g, '');
+};
+
+/**
+ * Collects column references from an AST expression node.
+ * Skips subqueries as they have their own scope.
+ */
+export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]): void => {
+  if (!node) return;
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectColumnRefsFromExpression(child, refs);
+    }
+    return;
+  }
+
+  if (typeof node !== 'object') {
+    return;
+  }
+
+  // Skip subqueries - they have their own scope and should be validated separately
+  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
+  if (node.type === 'select') {
+    return;
+  }
+
+  if (node.type === 'column_ref') {
+    // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
+    let columnName: string;
+    if (typeof node.column === 'string') {
+      columnName = stripIdentifierQuotes(node.column);
+    } else if (node.column && typeof node.column === 'object') {
+      // Handle nested column structure: { expr: { type: 'default', value: 'ColumnName' }, offset: [] }
+      if (node.column.expr && typeof node.column.expr.value === 'string') {
+        columnName = stripIdentifierQuotes(node.column.expr.value);
+      } else if (typeof node.column.column === 'string') {
+        columnName = stripIdentifierQuotes(node.column.column);
+      } else {
+        columnName = '';
+      }
+    } else {
+      columnName = '';
+    }
+    
+    // Collect column refs for validation:
+    // - Non-* columns: always collect for column name validation
+    // - * columns with alias (e.g., da.*): collect to validate alias exists
+    // - Bare * without alias: skip (no validation needed)
+    const hasAlias = node.table ? true : false;
+    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
+    
+    if (shouldCollect) {
+      refs.push({
+        alias: node.table ? stripIdentifierQuotes(node.table) : null,
+        column: columnName,
+        location: node.location || node.loc,
+      });
+    }
+    return;
+  }
+
+  // Recursively inspect child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') {
+      continue;
+    }
+    collectColumnRefsFromExpression(node[key], refs);
+  }
+};
+
+/**
+ * Collects all column references from a SELECT statement AST.
+ */
+export const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
+  const refs: ColumnRefInfo[] = [];
+
+  if (!selectAst || typeof selectAst !== 'object') {
+    return refs;
+  }
+
+  const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
+
+  // Optionally collect from CTE bodies (for full query validation)
+  if (includeCteBodies && Array.isArray(selectAst.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Recursively collect from CTE body (but not nested CTEs within CTEs)
+        const cteRefs = collectColumnRefsForSelect(cteAst, false);
+        refs.push(...cteRefs);
+      }
+    }
+  }
+
+  if (Array.isArray(selectAst.columns)) {
+    for (const col of selectAst.columns) {
+      collect(col?.expr ?? col);
+    }
+  }
+
+  if (selectAst.where) {
+    collect(selectAst.where);
+  }
+
+  if (Array.isArray(selectAst.groupby)) {
+    for (const groupExpr of selectAst.groupby) {
+      collect(groupExpr);
+    }
+  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
+    for (const groupExpr of selectAst.groupby.value) {
+      collect(groupExpr);
+    }
+  }
+
+  if (Array.isArray(selectAst.orderby)) {
+    for (const orderItem of selectAst.orderby) {
+      collect(orderItem?.expr ?? orderItem);
+    }
+  }
+
+  if (selectAst.having) {
+    collect(selectAst.having);
+  }
+
+  if (Array.isArray(selectAst.from)) {
+    for (const fromItem of selectAst.from) {
+      if (fromItem?.on) {
+        collect(fromItem.on);
+      }
+    }
+  }
+
+  return refs;
+};
+
+/**
+ * Extracts output column names from a CTE's SELECT clause.
+ * Returns the column aliases (AS names) or the column names if no alias is specified.
+ */
+export const extractCteColumnNames = (cteAst: any): string[] => {
+  const columns: string[] = [];
+  
+  if (!cteAst || !Array.isArray(cteAst.columns)) {
+    return columns;
+  }
+  
+  for (const col of cteAst.columns) {
+    // Skip SELECT * - we can't determine column names without schema
+    if (col === '*' || (col?.expr?.type === 'star')) {
+      continue;
+    }
+    
+    // Check for explicit alias (AS clause)
+    const alias = col?.as || col?.alias;
+    if (alias) {
+      const aliasName = typeof alias === 'string' ? alias : alias?.value;
+      if (aliasName) {
+        columns.push(stripIdentifierQuotes(aliasName));
+        continue;
+      }
+    }
+    
+    // No alias - try to get column name from expression
+    const expr = col?.expr ?? col;
+    
+    // Column reference: { type: 'column_ref', column: 'name' } or { type: 'column_ref', column: { expr: { value: 'name' } } }
+    if (expr?.type === 'column_ref') {
+      let columnName: string | undefined;
+      if (typeof expr.column === 'string') {
+        columnName = expr.column;
+      } else if (expr.column?.expr?.value) {
+        columnName = expr.column.expr.value;
+      } else if (expr.column?.column) {
+        columnName = expr.column.column;
+      }
+      if (columnName) {
+        columns.push(stripIdentifierQuotes(columnName));
+      }
+    }
+    // Function call without alias - use function name (common in BigQuery)
+    else if (expr?.type === 'function' || expr?.type === 'aggr_func') {
+      // Function calls without alias are hard to reference, skip them
+      // BigQuery would use the function expression as the column name
+    }
+  }
+  
+  return columns;
+};
+
+/**
+ * Builds a map of table aliases and unique tables from a SELECT statement AST.
+ */
+export const buildTableAliasMapFromSelect = (
+  selectAst: any
+): {
+  aliasMap: Map<string, TableAliasInfo>;
+  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
+} => {
+  const aliasMap = new Map<string, TableAliasInfo>();
+  const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
+
+  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string; cteColumns?: string[] }) => {
+    const cleanAlias = stripIdentifierQuotes(aliasName);
+    if (!cleanAlias) return;
+    const key = cleanAlias.toLowerCase();
+    const existing = aliasMap.get(key);
+    if (!existing || (!existing.datasetId && info.datasetId) || (!existing.tableId && info.tableId)) {
+      aliasMap.set(key, {
+        alias: cleanAlias,
+        datasetId: info.datasetId,
+        tableId: info.tableId,
+        // Preserve cteColumns from existing entry if not provided in new info
+        cteColumns: info.cteColumns ?? existing?.cteColumns,
+      });
+    }
+  };
+
+  const processFromItem = (item: any) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        processFromItem(child);
+      }
+      return;
+    }
+
+    // Handle subqueries - register alias name but skip schema mapping
+    if (item.expr && item.expr.type === 'select') {
+      registerAlias(item.as || item.alias, {});
+      return;
+    }
+
+    let datasetId: string | undefined;
+    let tableId: string | undefined;
+    let projectId: string | undefined;
+
+    if (typeof item.catalog === 'string') {
+      projectId = stripIdentifierQuotes(item.catalog);
+    }
+
+    if (typeof item.db === 'string') {
+      const dbValue = stripIdentifierQuotes(item.db);
+      // node-sql-parser uses db for project in BigQuery dialects
+      projectId = projectId ?? dbValue;
+      if (!datasetId) {
+        datasetId = dbValue;
+      }
+    }
+
+    if (typeof item.schema === 'string') {
+      datasetId = stripIdentifierQuotes(item.schema);
+    }
+
+    if (typeof item.dataset === 'string') {
+      datasetId = stripIdentifierQuotes(item.dataset);
+    }
+
+    const registerTableName = (raw: string | undefined) => {
+      if (!raw) return;
+      const cleaned = stripIdentifierQuotes(raw);
+      if (!cleaned) return;
+      const parts = cleaned.split('.').filter(Boolean);
+
+      let resolvedDataset = datasetId;
+      let resolvedTable = tableId;
+
+      if (parts.length >= 2) {
+        const potentialDataset = parts[parts.length - 2];
+        const potentialProject = parts.length >= 3 ? parts[parts.length - 3] : undefined;
+        if (!resolvedDataset || resolvedDataset === potentialProject) {
+          resolvedDataset = potentialDataset;
+        }
+        resolvedTable = parts[parts.length - 1];
+      } else if (parts.length === 1) {
+        resolvedTable = parts[0];
+      }
+
+      if (resolvedDataset) {
+        datasetId = resolvedDataset;
+      }
+      if (resolvedTable) {
+        tableId = resolvedTable;
+      }
+
+      if (resolvedDataset && resolvedTable) {
+        const key = `${resolvedDataset}.${resolvedTable}`.toLowerCase();
+        if (!uniqueTables.has(key)) {
+          uniqueTables.set(key, { datasetId: resolvedDataset, tableId: resolvedTable });
+        }
+      }
+
+      registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
+    };
+
+    if (typeof item.table === 'string') {
+      registerTableName(item.table);
+    } else if (item.table && typeof item.table === 'object') {
+      if (typeof item.table.table === 'string') {
+        registerTableName(item.table.table);
+      }
+      if (typeof item.table.name === 'string') {
+        registerTableName(item.table.name);
+      }
+      if (typeof item.table.db === 'string' && !datasetId) {
+        datasetId = stripIdentifierQuotes(item.table.db);
+      }
+    }
+
+    // Register alias variations for lookup
+    registerAlias(item.as || item.alias, { datasetId, tableId });
+
+    if (tableId) {
+      registerAlias(tableId, { datasetId, tableId });
+    }
+
+    if (datasetId && tableId) {
+      registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
+    }
+  };
+
+  // Process CTEs (WITH clause) - register CTE names as valid aliases
+  // Note: We only register the CTE name here, not the tables inside the CTE.
+  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
+      const cteName = cte?.name?.value || cte?.name;
+      if (cteName) {
+        // Extract the column names from the CTE's SELECT clause
+        const cteAst = cte?.stmt?.ast;
+        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
+        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
+      }
+    }
+  }
+
+  if (Array.isArray(selectAst?.from)) {
+    for (const fromItem of selectAst.from) {
+      processFromItem(fromItem);
+    }
+  } else {
+    processFromItem(selectAst?.from);
+  }
+
+  return { aliasMap, uniqueTables };
+};
+
+/**
+ * Collects all subqueries from an AST node.
+ */
+export const collectSubqueries = (node: any, subqueries: any[]): void => {
+  if (!node) return;
+  
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectSubqueries(child, subqueries);
+    }
+    return;
+  }
+  
+  if (typeof node !== 'object') return;
+  
+  // Found a subquery
+  if (node.type === 'select') {
+    subqueries.push(node);
+    // Don't recurse into the subquery here - it will be processed separately
+    return;
+  }
+  
+  // Recurse into child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') continue;
+    collectSubqueries(node[key], subqueries);
+  }
+};
+
+/**
+ * Validates column references in a SELECT statement, including subqueries.
+ * Returns an array of validation issues found.
+ * 
+ * @param selectAst - The parsed SELECT statement AST
+ * @param getTableFields - Function to fetch table field names (for schema validation)
+ * @param textToValidate - The original SQL text (for error position finding)
+ * @param canFetchSchemas - Whether schema fetching is available
+ */
+export const validateColumnReferences = async (
+  selectAst: any,
+  getTableFields: (datasetId: string, tableId: string) => Promise<string[] | null>,
+  textToValidate: string,
+  canFetchSchemas: boolean
+): Promise<ColumnValidationIssue[]> => {
+  const issues: ColumnValidationIssue[] = [];
+
+  // Helper function to validate columns for a single SELECT scope
+  const validateScope = async (
+    scopeAst: any,
+    scopeAliasMap: Map<string, TableAliasInfo>,
+    scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
+  ) => {
+    const columnRefs = collectColumnRefsForSelect(scopeAst, false);
+    const uniqueTableList = Array.from(scopeUniqueTables.values());
+
+    for (const columnRef of columnRefs) {
+      const baseColumnName = columnRef.column.split('.')[0];
+      const lowerColumnName = baseColumnName.toLowerCase();
+      const location = { line: 1, column: 1, length: Math.max(1, columnRef.column.length) };
+
+      const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
+      const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
+
+      if (aliasKey && !aliasInfo) {
+        issues.push({
+          message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
+          line: location.line,
+          column: location.column,
+          length: location.length,
+        });
+        continue;
+      }
+
+      // For alias.* patterns (e.g., da.*), we've validated the alias exists above.
+      // The * means "all columns" which is always valid syntax, so skip column validation.
+      if (columnRef.column === '*') {
+        continue;
+      }
+
+      if (!canFetchSchemas) {
+        // Without schema access we can only report alias issues.
+        continue;
+      }
+
+      // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
+      // We can't validate columns against CTEs since we don't know their output schema.
+      // Skip validation for these cases.
+      if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
+        continue;
+      }
+
+      if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
+        const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
+        if (fields === null) {
+          // Schema lookup failed (likely table not found). Skip detailed column checks.
+          continue;
+        }
+
+        const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+        if (!hasColumn) {
+          const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+          issues.push({
+            message: `Column "${columnRef.column}" not found in ${targetName}`,
+            line: location.line,
+            column: location.column,
+            length: location.length,
+          });
+        }
+        continue;
+      }
+
+      if (!aliasInfo) {
+        // Check if any table in scope is a CTE/subquery (no schema).
+        // If so, we can't reliably validate unqualified columns since they might come from the CTE.
+        const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
+          info => !info.datasetId || !info.tableId
+        );
+        
+        if (hasCteOrSubquery) {
+          // Skip validation for unqualified columns when CTEs/subqueries are present
+          // since we can't determine which table the column belongs to
+          continue;
+        }
+
+        let columnFound = false;
+
+        for (const tableInfo of uniqueTableList) {
+          if (!tableInfo.datasetId || !tableInfo.tableId) {
+            continue;
+          }
+
+          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+          if (fields === null) {
+            continue;
+          }
+
+          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
+          if (hasColumn) {
+            columnFound = true;
+            break;
+          }
+        }
+
+        if (!columnFound && uniqueTableList.length > 0) {
+          issues.push({
+            message: `Column "${columnRef.column}" not found in referenced tables`,
+            line: location.line,
+            column: location.column,
+            length: location.length,
+          });
+        }
+      }
+    }
+  };
+
+  // First, validate each CTE body independently against its own FROM tables
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Build alias map for just this CTE's scope (its own FROM clause only)
+        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+          ...cteAst,
+          with: null, // Don't process nested CTEs here, they'd be handled separately
+        });
+        await validateScope(cteAst, cteAliasMap, cteUniqueTables);
+      }
+    }
+  }
+
+  // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
+  const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
+  await validateScope(selectAst, aliasMap, uniqueTables);
+
+  // Recursively validate subqueries within the AST
+  // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
+  const validateSubqueries = async (
+    ast: any,
+    parentAliasMap: Map<string, TableAliasInfo> = new Map(),
+    parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
+  ) => {
+    const subqueries: any[] = [];
+    
+    // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
+    collectSubqueries(ast.where, subqueries);
+    collectSubqueries(ast.having, subqueries);
+    if (Array.isArray(ast.columns)) {
+      for (const col of ast.columns) {
+        collectSubqueries(col?.expr ?? col, subqueries);
+      }
+    }
+    // Also check JOIN ON conditions for subqueries
+    if (Array.isArray(ast.from)) {
+      for (const fromItem of ast.from) {
+        if (fromItem?.on) {
+          collectSubqueries(fromItem.on, subqueries);
+        }
+      }
+    }
+    
+    // Validate each subquery with its own scope + parent scope (for correlated subqueries)
+    for (const subquery of subqueries) {
+      const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
+      
+      // Merge parent aliases into subquery's alias map (subquery's own aliases take precedence)
+      const mergedAliasMap = new Map(parentAliasMap);
+      for (const [key, value] of subAliasMap) {
+        mergedAliasMap.set(key, value);
+      }
+      
+      // Merge parent unique tables into subquery's unique tables
+      const mergedUniqueTables = new Map(parentUniqueTables);
+      for (const [key, value] of subUniqueTables) {
+        mergedUniqueTables.set(key, value);
+      }
+      
+      await validateScope(subquery, mergedAliasMap, mergedUniqueTables);
+      // Recursively validate nested subqueries, passing the merged scope
+      await validateSubqueries(subquery, mergedAliasMap, mergedUniqueTables);
+    }
+  };
+
+  // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+          ...cteAst,
+          with: null,
+        });
+        await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
+      }
+    }
+  }
+
+  // Validate subqueries in the main query, passing the main query's aliases as parent scope
+  await validateSubqueries(selectAst, aliasMap, uniqueTables);
+
+  return issues;
+};
 ````
 
 ## File: src/shared/types/query.ts
@@ -22958,6 +23018,370 @@ if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
 }
 ````
 
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: #1e1e1e;
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: #252526;
+  border-bottom: 1px solid #3e3e42;
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: #0e639c;
+  color: #ffffff;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: #1177bb;
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #3e3e42;
+}
+
+.query-editor-toolbar .run-button {
+  background-color: #0e639c;
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: #1177bb;
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: #ff694a;
+  color: #ffffff;
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: #ff8566;
+}
+
+.query-editor-toolbar .save-button {
+  background-color: #0e7c3c;
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: #0f8f45;
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: #a1260d;
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: #c72e0f;
+}
+
+.connection-warning {
+  color: #dcdcaa;
+  background-color: #3e3e42;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: #3a1d1d;
+  color: #f48771;
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid #6a1f1f;
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: #252526;
+  border-top: 1px solid #3e3e42;
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: #858585;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: #4ec9b0;
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: #f48771;
+}
+
+.editor-status-bar .status-valid {
+  color: #4ec9b0;
+}
+
+.editor-status-bar .status-invalid {
+  color: #f48771;
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #858585;
+  background-color: #1e1e1e;
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: #252526;
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid #3e3e42;
+  color: #cccccc;
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: #ffffff;
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: #cccccc;
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: #3c3c3c;
+  color: #cccccc;
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid #007acc;
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: #3e3e42;
+  color: #cccccc;
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: #4a4a4a;
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: #0e639c;
+  color: #ffffff;
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: #1177bb;
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+````
+
 ## File: README.md
 ````markdown
 # QueryForge
@@ -23245,364 +23669,6 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
-````
-
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: #1e1e1e;
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: #252526;
-  border-bottom: 1px solid #3e3e42;
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: #0e639c;
-  color: #ffffff;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background-color: #3e3e42;
-}
-
-.query-editor-toolbar .run-button {
-  background-color: #0e639c;
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: #1177bb;
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: #4a4a4a;
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: #ff694a;
-  color: #ffffff;
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: #ff8566;
-}
-
-.query-editor-toolbar .save-button {
-  background-color: #0e7c3c;
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: #0f8f45;
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: #a1260d;
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: #c72e0f;
-}
-
-.connection-warning {
-  color: #dcdcaa;
-  background-color: #3e3e42;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: #3a1d1d;
-  color: #f48771;
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid #6a1f1f;
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: #252526;
-  border-top: 1px solid #3e3e42;
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: #858585;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: #4ec9b0;
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: #f48771;
-}
-
-.editor-status-bar .status-valid {
-  color: #4ec9b0;
-}
-
-.editor-status-bar .status-invalid {
-  color: #f48771;
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #858585;
-  background-color: #1e1e1e;
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: #252526;
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid #3e3e42;
-  color: #cccccc;
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: #ffffff;
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: #cccccc;
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: #3c3c3c;
-  color: #cccccc;
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid #007acc;
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: #3e3e42;
-  color: #cccccc;
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: #4a4a4a;
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: #0e639c;
-  color: #ffffff;
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: #1177bb;
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 ````
 
 ## File: src/renderer/App.tsx
@@ -26476,6 +26542,7 @@ interface TableAliasInfo {
   alias: string;
   datasetId?: string;
   tableId?: string;
+  cteColumns?: string[];
 }
 
 interface ColumnValidationIssue {
@@ -26704,6 +26771,56 @@ const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): C
   return refs;
 };
 
+/**
+ * Extracts output column names from a CTE's SELECT clause.
+ * Returns the column aliases (AS names) or the column names if no alias is specified.
+ */
+const extractCteColumnNames = (cteAst: any): string[] => {
+  const columns: string[] = [];
+  
+  if (!cteAst || !Array.isArray(cteAst.columns)) {
+    return columns;
+  }
+  
+  for (const col of cteAst.columns) {
+    // Skip SELECT * - we can't determine column names without schema
+    if (col === '*' || (col?.expr?.type === 'star')) {
+      continue;
+    }
+    
+    // Check for explicit alias (AS clause)
+    const alias = col?.as || col?.alias;
+    if (alias) {
+      const aliasName = typeof alias === 'string' ? alias : alias?.value;
+      if (aliasName) {
+        columns.push(stripIdentifierQuotes(aliasName));
+        continue;
+      }
+    }
+    
+    // No alias - try to get column name from expression
+    const expr = col?.expr ?? col;
+    
+    // Column reference: { type: 'column_ref', column: 'name' } or { type: 'column_ref', column: { expr: { value: 'name' } } }
+    if (expr?.type === 'column_ref') {
+      let columnName: string | undefined;
+      if (typeof expr.column === 'string') {
+        columnName = expr.column;
+      } else if (expr.column?.expr?.value) {
+        columnName = expr.column.expr.value;
+      } else if (expr.column?.column) {
+        columnName = expr.column.column;
+      }
+      if (columnName) {
+        columns.push(stripIdentifierQuotes(columnName));
+      }
+    }
+    // Function call without alias - skip (BigQuery would use the function expression as the column name)
+  }
+  
+  return columns;
+};
+
 const buildTableAliasMapFromSelect = (
   selectAst: any
 ): {
@@ -26713,7 +26830,7 @@ const buildTableAliasMapFromSelect = (
   const aliasMap = new Map<string, TableAliasInfo>();
   const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
 
-  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string }) => {
+  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string; cteColumns?: string[] }) => {
     const cleanAlias = stripIdentifierQuotes(aliasName);
     if (!cleanAlias) return;
     const key = cleanAlias.toLowerCase();
@@ -26723,6 +26840,8 @@ const buildTableAliasMapFromSelect = (
         alias: cleanAlias,
         datasetId: info.datasetId,
         tableId: info.tableId,
+        // Preserve cteColumns from existing entry if not provided in new info
+        cteColumns: info.cteColumns ?? existing?.cteColumns,
       });
     }
   };
@@ -26841,7 +26960,10 @@ const buildTableAliasMapFromSelect = (
       // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
       const cteName = cte?.name?.value || cte?.name;
       if (cteName) {
-        registerAlias(cteName, {});
+        // Extract the column names from the CTE's SELECT clause
+        const cteAst = cte?.stmt?.ast;
+        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
+        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
       }
     }
   }
@@ -26864,7 +26986,8 @@ export const QueryEditor: React.FC = () => {
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
     errorMessage: string | null;
-  }>({ isValid: null, errorMessage: null });
+    errorLine: number | null;
+  }>({ isValid: null, errorMessage: null, errorLine: null });
   const [expectedQuerySize, setExpectedQuerySize] = useState<number | null>(null);
   const [isLoadingQuerySize, setIsLoadingQuerySize] = useState(false);
   const [selectedText, setSelectedText] = useState<string>('');
@@ -27000,9 +27123,23 @@ export const QueryEditor: React.FC = () => {
         }
 
         // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
-        // We can't validate columns against CTEs since we don't know their output schema.
-        // Skip validation for these cases.
+        // Check if we have CTE column information to validate against.
         if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
+          // If we have CTE columns, validate against them
+          if (aliasInfo.cteColumns && aliasInfo.cteColumns.length > 0) {
+            const hasColumn = aliasInfo.cteColumns.some(
+              (col) => col.toLowerCase() === lowerColumnName
+            );
+            if (!hasColumn) {
+              issues.push({
+                message: `Column "${columnRef.column}" not found in ${aliasInfo.alias}`,
+                line: location.line,
+                column: location.column,
+                length: location.length,
+              });
+            }
+          }
+          // If no CTE columns available (e.g., SELECT * in CTE), skip validation
           continue;
         }
 
@@ -27027,15 +27164,37 @@ export const QueryEditor: React.FC = () => {
         }
 
         if (!aliasInfo) {
-          // Check if any table in scope is a CTE/subquery (no schema).
-          // If so, we can't reliably validate unqualified columns since they might come from the CTE.
-          const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
+          // Check if any table in scope is a CTE/subquery (no schema from database).
+          const cteOrSubqueryInfos = Array.from(scopeAliasMap.values()).filter(
             info => !info.datasetId || !info.tableId
           );
           
-          if (hasCteOrSubquery) {
-            // Skip validation for unqualified columns when CTEs/subqueries are present
-            // since we can't determine which table the column belongs to
+          // First, check if the column exists in any CTE that has column info
+          let foundInCte = false;
+          for (const cteInfo of cteOrSubqueryInfos) {
+            if (cteInfo.cteColumns && cteInfo.cteColumns.length > 0) {
+              const hasColumn = cteInfo.cteColumns.some(
+                (col) => col.toLowerCase() === lowerColumnName
+              );
+              if (hasColumn) {
+                foundInCte = true;
+                break;
+              }
+            }
+          }
+          
+          if (foundInCte) {
+            continue;
+          }
+          
+          // Check if there are CTEs without column info (e.g., SELECT * in CTE)
+          // In this case, we can't validate since we don't know the CTE's columns
+          const hasUnknownCteColumns = cteOrSubqueryInfos.some(
+            info => !info.cteColumns || info.cteColumns.length === 0
+          );
+          
+          if (hasUnknownCteColumns) {
+            // Skip validation for unqualified columns when CTEs with unknown columns are present
             continue;
           }
 
@@ -27058,7 +27217,27 @@ export const QueryEditor: React.FC = () => {
             }
           }
 
-          if (!columnFound && uniqueTableList.length > 0) {
+          // If column wasn't found in database tables, also check all CTE columns
+          if (!columnFound) {
+            for (const cteInfo of cteOrSubqueryInfos) {
+              if (cteInfo.cteColumns && cteInfo.cteColumns.length > 0) {
+                const hasColumn = cteInfo.cteColumns.some(
+                  (col) => col.toLowerCase() === lowerColumnName
+                );
+                if (hasColumn) {
+                  columnFound = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          // Report error if column not found in any table or CTE
+          const hasAnySource = uniqueTableList.length > 0 || cteOrSubqueryInfos.some(
+            info => info.cteColumns && info.cteColumns.length > 0
+          );
+          
+          if (!columnFound && hasAnySource) {
             issues.push({
               message: `Column "${columnRef.column}" not found in referenced tables`,
               line: location.line,
@@ -27403,7 +27582,7 @@ export const QueryEditor: React.FC = () => {
           if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
             return prev;
           }
-          return { isValid: null, errorMessage: null };
+          return { isValid: null, errorMessage: null, errorLine: null };
         });
         return;
       }
@@ -27478,7 +27657,8 @@ export const QueryEditor: React.FC = () => {
         
         setSqlValidationStatus({ 
           isValid: false, 
-          errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.' 
+          errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.',
+          errorLine: null
         });
         return;
       }
@@ -27655,7 +27835,7 @@ export const QueryEditor: React.FC = () => {
             );
           }
           
-          setSqlValidationStatus({ isValid: false, errorMessage });
+          setSqlValidationStatus({ isValid: false, errorMessage, errorLine: lineNumber });
           return;
         }
         
@@ -27666,7 +27846,7 @@ export const QueryEditor: React.FC = () => {
           if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
             return prev;
           }
-          return { isValid: true, errorMessage: null };
+          return { isValid: true, errorMessage: null, errorLine: null };
         });
         
         // Clear markers
@@ -27995,7 +28175,7 @@ export const QueryEditor: React.FC = () => {
         }
         
         // Update status bar - invalid SQL syntax (this takes precedence over table not found)
-        setSqlValidationStatus({ isValid: false, errorMessage });
+        setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
         return;
       }
 
@@ -28076,6 +28256,7 @@ export const QueryEditor: React.FC = () => {
         setSqlValidationStatus({
           isValid: false,
           errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
+          errorLine: columnIssues[0]?.line ?? null,
         });
         return;
       }
@@ -28085,7 +28266,7 @@ export const QueryEditor: React.FC = () => {
         if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
           return prev;
         }
-        return { isValid: true, errorMessage: null };
+        return { isValid: true, errorMessage: null, errorLine: null };
       });
     };
 
@@ -29035,6 +29216,7 @@ export const QueryEditor: React.FC = () => {
               return {
                 isValid: false,
                 errorMessage: tableNotFoundError.message,
+                errorLine: null,
               };
             }
             // Keep syntax error if it exists
@@ -29047,7 +29229,7 @@ export const QueryEditor: React.FC = () => {
             // Only clear if the current error is a table not found error
             if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
               // Clear table not found error, restore to valid if syntax was valid
-              return { isValid: true, errorMessage: null };
+              return { isValid: true, errorMessage: null, errorLine: null };
             }
             // Keep other errors (syntax errors)
             return prev;
@@ -29298,6 +29480,9 @@ export const QueryEditor: React.FC = () => {
                 ) : (
                   <span className="status-text status-invalid">
                     <span className="status-indicator status-indicator-invalid"></span>
+                    {sqlValidationStatus.errorLine && (
+                      <span className="status-error-line">Line {sqlValidationStatus.errorLine}: </span>
+                    )}
                     <span className="status-error-message">{sqlValidationStatus.errorMessage || 'SQL syntax error'}</span>
                   </span>
                 )}
