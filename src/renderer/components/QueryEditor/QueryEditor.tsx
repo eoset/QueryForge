@@ -947,6 +947,35 @@ export const QueryEditor: React.FC = () => {
         // Additional validation: Check for JOINs without ON/USING clause
         // node-sql-parser allows JOINs without ON, but BigQuery requires them
         const validateJoins = (ast: any): { valid: boolean; error?: string; line?: number; column?: number } => {
+          // Helper to check if an ON clause contains a valid join condition
+          const isValidOnCondition = (onClause: any): boolean => {
+            if (!onClause) return false;
+            
+            // ON TRUE or ON FALSE - technically valid (cartesian with always true/false)
+            if (onClause.type === 'bool') return true;
+            
+            // ON 1=1 or similar comparison - valid
+            if (onClause.type === 'binary_expr') {
+              const comparisonOperators = ['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'IN', 'IS', 'AND', 'OR'];
+              if (comparisonOperators.includes(onClause.operator?.toUpperCase?.())) {
+                return true;
+              }
+              // Could be nested AND/OR with valid conditions
+              if (['AND', 'OR'].includes(onClause.operator?.toUpperCase?.())) {
+                return isValidOnCondition(onClause.left) || isValidOnCondition(onClause.right);
+              }
+            }
+            
+            // ON column_ref alone (e.g., ON t1.id) - NOT valid, needs comparison
+            if (onClause.type === 'column_ref') return false;
+            
+            // Function calls might be valid (e.g., ON some_function())
+            if (onClause.type === 'function') return true;
+            
+            // For other types, be lenient - let BigQuery decide
+            return true;
+          };
+          
           const checkFromClause = (fromItems: any[]): { valid: boolean; error?: string; tableName?: string } | null => {
             if (!Array.isArray(fromItems)) return null;
             
@@ -960,6 +989,12 @@ export const QueryEditor: React.FC = () => {
                   if (!item.on && !item.using) {
                     const tableName = item.table || item.expr?.table || 'table';
                     return { valid: false, error: `${joinType} is missing ON or USING clause`, tableName };
+                  }
+                  
+                  // Check if ON clause has a valid condition (not just a column reference)
+                  if (item.on && !isValidOnCondition(item.on)) {
+                    const tableName = item.table || item.expr?.table || 'table';
+                    return { valid: false, error: `${joinType} ON clause requires a valid condition (e.g., t1.col = t2.col)`, tableName };
                   }
                 }
               }
@@ -1102,12 +1137,56 @@ export const QueryEditor: React.FC = () => {
           return;
         }
         // Parse error occurred, create marker
-        const errorMessage = error.message || 'SQL syntax error';
+        let errorMessage = error.message || 'SQL syntax error';
         
         // First, check if there's an obvious syntax error on line 1
         // This helps catch errors that the parser might report as being on later lines
         const lines = textToValidate.split('\n');
         let firstLineError: { line: number; column: number } | null = null;
+        
+        // Check for incomplete JOIN ON clause pattern
+        // This happens when user writes "JOIN table ON" without a condition
+        let incompleteJoinError: { line: number; column: number; message: string } | null = null;
+        for (let i = 0; i < lines.length; i++) {
+          const lineText = lines[i];
+          const lineUpper = lineText.toUpperCase();
+          
+          // Check if this line has a JOIN with ON but the ON is at the end or followed by WHERE/ORDER/GROUP/etc.
+          const joinOnMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b.*\bON\s*$/i);
+          if (joinOnMatch) {
+            // ON is at the end of the line - check if next non-empty line starts with WHERE, ORDER, GROUP, etc.
+            let nextLineIndex = i + 1;
+            while (nextLineIndex < lines.length && !lines[nextLineIndex].trim()) {
+              nextLineIndex++;
+            }
+            if (nextLineIndex < lines.length) {
+              const nextLine = lines[nextLineIndex].trim().toUpperCase();
+              if (nextLine.startsWith('WHERE') || nextLine.startsWith('ORDER') || 
+                  nextLine.startsWith('GROUP') || nextLine.startsWith('HAVING') || 
+                  nextLine.startsWith('LIMIT') || nextLine.startsWith('UNION')) {
+                const joinMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b/i);
+                incompleteJoinError = {
+                  line: i + 1,
+                  column: joinMatch?.index ? joinMatch.index + 1 : 1,
+                  message: 'JOIN ON clause is incomplete. Expected a condition (e.g., t1.col = t2.col)'
+                };
+                break;
+              }
+            }
+          }
+          
+          // Also check for "JOIN table ON WHERE" on the same line
+          const joinOnWhereMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b.*\bON\s+(?:WHERE|ORDER|GROUP|HAVING|LIMIT)\b/i);
+          if (joinOnWhereMatch) {
+            const joinMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b/i);
+            incompleteJoinError = {
+              line: i + 1,
+              column: joinMatch?.index ? joinMatch.index + 1 : 1,
+              message: 'JOIN ON clause is incomplete. Expected a condition (e.g., t1.col = t2.col)'
+            };
+            break;
+          }
+        }
         
         if (lines.length > 0 && lines[0].trim()) {
           const firstLine = lines[0].trim();
@@ -1294,6 +1373,13 @@ export const QueryEditor: React.FC = () => {
                 column = 1;
               }
             }
+        }
+
+        // If we detected an incomplete JOIN ON clause, use that error instead
+        if (incompleteJoinError) {
+          lineNumber = incompleteJoinError.line;
+          column = incompleteJoinError.column;
+          errorMessage = incompleteJoinError.message;
         }
 
         // Adjust line number if we're validating a selection
