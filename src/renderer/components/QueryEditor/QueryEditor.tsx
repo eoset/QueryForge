@@ -27,6 +27,7 @@ interface TableAliasInfo {
   alias: string;
   datasetId?: string;
   tableId?: string;
+  cteColumns?: string[];
 }
 
 interface ColumnValidationIssue {
@@ -255,6 +256,56 @@ const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): C
   return refs;
 };
 
+/**
+ * Extracts output column names from a CTE's SELECT clause.
+ * Returns the column aliases (AS names) or the column names if no alias is specified.
+ */
+const extractCteColumnNames = (cteAst: any): string[] => {
+  const columns: string[] = [];
+  
+  if (!cteAst || !Array.isArray(cteAst.columns)) {
+    return columns;
+  }
+  
+  for (const col of cteAst.columns) {
+    // Skip SELECT * - we can't determine column names without schema
+    if (col === '*' || (col?.expr?.type === 'star')) {
+      continue;
+    }
+    
+    // Check for explicit alias (AS clause)
+    const alias = col?.as || col?.alias;
+    if (alias) {
+      const aliasName = typeof alias === 'string' ? alias : alias?.value;
+      if (aliasName) {
+        columns.push(stripIdentifierQuotes(aliasName));
+        continue;
+      }
+    }
+    
+    // No alias - try to get column name from expression
+    const expr = col?.expr ?? col;
+    
+    // Column reference: { type: 'column_ref', column: 'name' } or { type: 'column_ref', column: { expr: { value: 'name' } } }
+    if (expr?.type === 'column_ref') {
+      let columnName: string | undefined;
+      if (typeof expr.column === 'string') {
+        columnName = expr.column;
+      } else if (expr.column?.expr?.value) {
+        columnName = expr.column.expr.value;
+      } else if (expr.column?.column) {
+        columnName = expr.column.column;
+      }
+      if (columnName) {
+        columns.push(stripIdentifierQuotes(columnName));
+      }
+    }
+    // Function call without alias - skip (BigQuery would use the function expression as the column name)
+  }
+  
+  return columns;
+};
+
 const buildTableAliasMapFromSelect = (
   selectAst: any
 ): {
@@ -264,7 +315,7 @@ const buildTableAliasMapFromSelect = (
   const aliasMap = new Map<string, TableAliasInfo>();
   const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
 
-  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string }) => {
+  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string; cteColumns?: string[] }) => {
     const cleanAlias = stripIdentifierQuotes(aliasName);
     if (!cleanAlias) return;
     const key = cleanAlias.toLowerCase();
@@ -274,6 +325,8 @@ const buildTableAliasMapFromSelect = (
         alias: cleanAlias,
         datasetId: info.datasetId,
         tableId: info.tableId,
+        // Preserve cteColumns from existing entry if not provided in new info
+        cteColumns: info.cteColumns ?? existing?.cteColumns,
       });
     }
   };
@@ -392,7 +445,10 @@ const buildTableAliasMapFromSelect = (
       // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
       const cteName = cte?.name?.value || cte?.name;
       if (cteName) {
-        registerAlias(cteName, {});
+        // Extract the column names from the CTE's SELECT clause
+        const cteAst = cte?.stmt?.ast;
+        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
+        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
       }
     }
   }
@@ -415,7 +471,8 @@ export const QueryEditor: React.FC = () => {
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
     errorMessage: string | null;
-  }>({ isValid: null, errorMessage: null });
+    errorLine: number | null;
+  }>({ isValid: null, errorMessage: null, errorLine: null });
   const [expectedQuerySize, setExpectedQuerySize] = useState<number | null>(null);
   const [isLoadingQuerySize, setIsLoadingQuerySize] = useState(false);
   const [selectedText, setSelectedText] = useState<string>('');
@@ -551,9 +608,23 @@ export const QueryEditor: React.FC = () => {
         }
 
         // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
-        // We can't validate columns against CTEs since we don't know their output schema.
-        // Skip validation for these cases.
+        // Check if we have CTE column information to validate against.
         if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
+          // If we have CTE columns, validate against them
+          if (aliasInfo.cteColumns && aliasInfo.cteColumns.length > 0) {
+            const hasColumn = aliasInfo.cteColumns.some(
+              (col) => col.toLowerCase() === lowerColumnName
+            );
+            if (!hasColumn) {
+              issues.push({
+                message: `Column "${columnRef.column}" not found in ${aliasInfo.alias}`,
+                line: location.line,
+                column: location.column,
+                length: location.length,
+              });
+            }
+          }
+          // If no CTE columns available (e.g., SELECT * in CTE), skip validation
           continue;
         }
 
@@ -578,15 +649,37 @@ export const QueryEditor: React.FC = () => {
         }
 
         if (!aliasInfo) {
-          // Check if any table in scope is a CTE/subquery (no schema).
-          // If so, we can't reliably validate unqualified columns since they might come from the CTE.
-          const hasCteOrSubquery = Array.from(scopeAliasMap.values()).some(
+          // Check if any table in scope is a CTE/subquery (no schema from database).
+          const cteOrSubqueryInfos = Array.from(scopeAliasMap.values()).filter(
             info => !info.datasetId || !info.tableId
           );
           
-          if (hasCteOrSubquery) {
-            // Skip validation for unqualified columns when CTEs/subqueries are present
-            // since we can't determine which table the column belongs to
+          // First, check if the column exists in any CTE that has column info
+          let foundInCte = false;
+          for (const cteInfo of cteOrSubqueryInfos) {
+            if (cteInfo.cteColumns && cteInfo.cteColumns.length > 0) {
+              const hasColumn = cteInfo.cteColumns.some(
+                (col) => col.toLowerCase() === lowerColumnName
+              );
+              if (hasColumn) {
+                foundInCte = true;
+                break;
+              }
+            }
+          }
+          
+          if (foundInCte) {
+            continue;
+          }
+          
+          // Check if there are CTEs without column info (e.g., SELECT * in CTE)
+          // In this case, we can't validate since we don't know the CTE's columns
+          const hasUnknownCteColumns = cteOrSubqueryInfos.some(
+            info => !info.cteColumns || info.cteColumns.length === 0
+          );
+          
+          if (hasUnknownCteColumns) {
+            // Skip validation for unqualified columns when CTEs with unknown columns are present
             continue;
           }
 
@@ -609,7 +702,27 @@ export const QueryEditor: React.FC = () => {
             }
           }
 
-          if (!columnFound && uniqueTableList.length > 0) {
+          // If column wasn't found in database tables, also check all CTE columns
+          if (!columnFound) {
+            for (const cteInfo of cteOrSubqueryInfos) {
+              if (cteInfo.cteColumns && cteInfo.cteColumns.length > 0) {
+                const hasColumn = cteInfo.cteColumns.some(
+                  (col) => col.toLowerCase() === lowerColumnName
+                );
+                if (hasColumn) {
+                  columnFound = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          // Report error if column not found in any table or CTE
+          const hasAnySource = uniqueTableList.length > 0 || cteOrSubqueryInfos.some(
+            info => info.cteColumns && info.cteColumns.length > 0
+          );
+          
+          if (!columnFound && hasAnySource) {
             issues.push({
               message: `Column "${columnRef.column}" not found in referenced tables`,
               line: location.line,
@@ -954,7 +1067,7 @@ export const QueryEditor: React.FC = () => {
           if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
             return prev;
           }
-          return { isValid: null, errorMessage: null };
+          return { isValid: null, errorMessage: null, errorLine: null };
         });
         return;
       }
@@ -1029,7 +1142,8 @@ export const QueryEditor: React.FC = () => {
         
         setSqlValidationStatus({ 
           isValid: false, 
-          errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.' 
+          errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.',
+          errorLine: null
         });
         return;
       }
@@ -1206,7 +1320,7 @@ export const QueryEditor: React.FC = () => {
             );
           }
           
-          setSqlValidationStatus({ isValid: false, errorMessage });
+          setSqlValidationStatus({ isValid: false, errorMessage, errorLine: lineNumber });
           return;
         }
         
@@ -1217,7 +1331,7 @@ export const QueryEditor: React.FC = () => {
           if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
             return prev;
           }
-          return { isValid: true, errorMessage: null };
+          return { isValid: true, errorMessage: null, errorLine: null };
         });
         
         // Clear markers
@@ -1546,7 +1660,7 @@ export const QueryEditor: React.FC = () => {
         }
         
         // Update status bar - invalid SQL syntax (this takes precedence over table not found)
-        setSqlValidationStatus({ isValid: false, errorMessage });
+        setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
         return;
       }
 
@@ -1627,6 +1741,7 @@ export const QueryEditor: React.FC = () => {
         setSqlValidationStatus({
           isValid: false,
           errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
+          errorLine: columnIssues[0]?.line ?? null,
         });
         return;
       }
@@ -1636,7 +1751,7 @@ export const QueryEditor: React.FC = () => {
         if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
           return prev;
         }
-        return { isValid: true, errorMessage: null };
+        return { isValid: true, errorMessage: null, errorLine: null };
       });
     };
 
@@ -2586,6 +2701,7 @@ export const QueryEditor: React.FC = () => {
               return {
                 isValid: false,
                 errorMessage: tableNotFoundError.message,
+                errorLine: null,
               };
             }
             // Keep syntax error if it exists
@@ -2598,7 +2714,7 @@ export const QueryEditor: React.FC = () => {
             // Only clear if the current error is a table not found error
             if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
               // Clear table not found error, restore to valid if syntax was valid
-              return { isValid: true, errorMessage: null };
+              return { isValid: true, errorMessage: null, errorLine: null };
             }
             // Keep other errors (syntax errors)
             return prev;
@@ -2849,6 +2965,9 @@ export const QueryEditor: React.FC = () => {
                 ) : (
                   <span className="status-text status-invalid">
                     <span className="status-indicator status-indicator-invalid"></span>
+                    {sqlValidationStatus.errorLine && (
+                      <span className="status-error-line">Line {sqlValidationStatus.errorLine}: </span>
+                    )}
                     <span className="status-error-message">{sqlValidationStatus.errorMessage || 'SQL syntax error'}</span>
                   </span>
                 )}

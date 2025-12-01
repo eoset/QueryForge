@@ -241,6 +241,12 @@
   line-height: 1.4;
 }
 
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
 .no-tab-message {
   display: flex;
   align-items: center;
