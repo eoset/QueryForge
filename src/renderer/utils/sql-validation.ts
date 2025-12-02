@@ -11,6 +11,9 @@
  * - Window functions cannot be used in WHERE or HAVING (use QUALIFY)
  * - Non-aggregated columns in SELECT must appear in GROUP BY
  * - OFFSET can only be used with LIMIT
+ * 
+ * This module works directly with CST (Concrete Syntax Tree) from sql-parser-cst,
+ * providing better BigQuery syntax handling and more accurate parsing.
  */
 
 export interface SqlNodeLocation {
@@ -73,6 +76,443 @@ export const BIGQUERY_WINDOW_FUNCTIONS = new Set([
 ]);
 
 /**
+ * Helper functions for working with CST (Concrete Syntax Tree) nodes
+ */
+
+// Get node type from CST (handles both 'type' and 'kind' properties)
+const getNodeType = (node: any): string | undefined => {
+  if (!node || typeof node !== 'object') return undefined;
+  return node.type || node.kind;
+};
+
+// Check if node is a SELECT statement (CST or converted AST)
+const isSelectStmt = (node: any): boolean => {
+  const type = getNodeType(node);
+  return type === 'select_stmt' || type === 'SelectStatement' || type === 'select';
+};
+
+// Check if node is a column reference
+const isColumnRef = (node: any): boolean => {
+  const type = getNodeType(node);
+  return type === 'column_ref' || type === 'ColumnRef';
+};
+
+// Check if node is a binary expression
+const isBinaryExpr = (node: any): boolean => {
+  const type = getNodeType(node);
+  return type === 'binary_expr' || type === 'BinaryExpr';
+};
+
+// Check if node is a function call
+const isFunctionCall = (node: any): boolean => {
+  if (!node) return false;
+  const type = getNodeType(node);
+  return type === 'function' || 
+         type === 'FunctionCall' || 
+         type === 'function_call' ||
+         type === 'func_call' ||
+         type === 'aggr_func' ||
+         type === 'call_expr' ||
+         (type === 'identifier' && node.args !== undefined); // CST: function calls might be identifier with args
+};
+
+// Extract location from CST node (uses 'range' property)
+const getLocationFromCst = (node: any): SqlNodeLocation | undefined => {
+  if (!node) return undefined;
+  
+  // CST uses 'range' property
+  if (node.range) {
+    return {
+      start: node.range.start ? { line: node.range.start.line, column: node.range.start.column } : undefined,
+      end: node.range.end ? { line: node.range.end.line, column: node.range.end.column } : undefined,
+    };
+  }
+  
+  // Fallback to AST-style location
+  if (node.location) {
+    return node.location;
+  }
+  
+  if (node.loc) {
+    return {
+      start: node.loc.start,
+      end: node.loc.end,
+    };
+  }
+  
+  return undefined;
+};
+
+// Extract function name from CST node
+const extractFunctionName = (node: any): string => {
+  if (!node) return '';
+  
+  const nodeType = getNodeType(node);
+  
+  // CST: func_call has name.identifier.name or name.identifier.text
+  if (nodeType === 'func_call' || nodeType === 'call_expr' || nodeType === 'CallExpr') {
+    if (node.name) {
+      // name is an identifier object
+      if (node.name.name) {
+        return typeof node.name.name === 'string' ? node.name.name.toLowerCase() : '';
+      }
+      if (node.name.text) {
+        return node.name.text.toLowerCase();
+      }
+      if (typeof node.name === 'string') {
+        return node.name.toLowerCase();
+      }
+    }
+  }
+  
+  // CST: function_call or identifier with args
+  if (nodeType === 'function_call' || nodeType === 'FunctionCall' || 
+      (nodeType === 'identifier' && node.args !== undefined)) {
+    if (typeof node.name === 'string') {
+      return node.name.toLowerCase();
+    }
+    if (node.name?.name) {
+      return typeof node.name.name === 'string' ? node.name.name.toLowerCase() : '';
+    }
+    if (node.text) {
+      return node.text.toLowerCase();
+    }
+  }
+  
+  // Handle string name
+  if (typeof node.name === 'string') {
+    return node.name.toLowerCase();
+  }
+  
+  // Handle CST structure: name might be an object with 'name' property
+  if (node.name && typeof node.name === 'object') {
+    // CST: name.name or name.value or name.text
+    if (typeof node.name.name === 'string') {
+      return node.name.name.toLowerCase();
+    }
+    if (typeof node.name.value === 'string') {
+      return node.name.value.toLowerCase();
+    }
+    if (node.name.text) {
+      return node.name.text.toLowerCase();
+    }
+    // Nested structure
+    if (node.name.name && typeof node.name.name.value === 'string') {
+      return node.name.name.value.toLowerCase();
+    }
+  }
+  
+  return '';
+};
+
+// Get columns from SELECT statement (CST structure)
+const getSelectColumns = (stmt: any): any[] => {
+  if (!stmt) return [];
+  
+  // CST structure: clauses array with select_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const selectClause = stmt.clauses.find((c: any) => c.type === 'select_clause');
+    if (selectClause) {
+      // Columns are in selectClause.columns.items (list_expr)
+      if (selectClause.columns?.items) {
+        return selectClause.columns.items;
+      }
+      if (Array.isArray(selectClause.columns)) {
+        return selectClause.columns;
+      }
+      if (selectClause.columns) {
+        return [selectClause.columns];
+      }
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const selectClause = stmt.selectClause || stmt.select;
+  if (selectClause) {
+    if (selectClause.columns?.items) {
+      return selectClause.columns.items;
+    }
+    if (Array.isArray(selectClause.columns)) {
+      return selectClause.columns;
+    }
+    if (selectClause.columns) {
+      return [selectClause.columns];
+    }
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.columns)) {
+    return stmt.columns;
+  }
+  
+  return [];
+};
+
+// Extract tables from join_expr recursively (CST structure)
+const extractTablesFromJoinExpr = (joinExpr: any, tables: any[]): void => {
+  if (!joinExpr) return;
+  
+  const exprType = getNodeType(joinExpr);
+  
+  // Handle join_expr: has left, right, and specification
+  if (exprType === 'join_expr' || exprType === 'JoinExpr') {
+    // Add left side
+    if (joinExpr.left) {
+      extractTablesFromJoinExpr(joinExpr.left, tables);
+    }
+    // Add right side
+    if (joinExpr.right) {
+      extractTablesFromJoinExpr(joinExpr.right, tables);
+    }
+    return;
+  }
+  
+  // Handle alias (table with alias)
+  if (exprType === 'alias' || exprType === 'Alias') {
+    tables.push(joinExpr);
+    return;
+  }
+  
+  // Handle simple identifier (table name)
+  if (exprType === 'identifier' || exprType === 'Identifier') {
+    tables.push(joinExpr);
+    return;
+  }
+  
+  // Fallback: add as-is
+  tables.push(joinExpr);
+};
+
+// Get FROM clause tables (CST structure)
+const getFromTables = (stmt: any): any[] => {
+  if (!stmt) return [];
+  
+  const tables: any[] = [];
+  
+  // CST structure: clauses array with from_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const fromClause = stmt.clauses.find((c: any) => c.type === 'from_clause');
+    if (fromClause) {
+      // FROM clause has expr (single table or join_expr) or tables (array)
+      if (fromClause.tables) {
+        return Array.isArray(fromClause.tables) ? fromClause.tables : [fromClause.tables];
+      }
+      if (fromClause.expr) {
+        extractTablesFromJoinExpr(fromClause.expr, tables);
+        if (tables.length > 0) {
+          return tables;
+        }
+        return [fromClause];
+      }
+      return [fromClause];
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const fromClause = stmt.fromClause || stmt.from;
+  if (fromClause) {
+    if (fromClause.tables) {
+      return Array.isArray(fromClause.tables) ? fromClause.tables : [fromClause.tables];
+    }
+    if (Array.isArray(fromClause)) {
+      return fromClause;
+    }
+    if (fromClause.expr) {
+      extractTablesFromJoinExpr(fromClause.expr, tables);
+      if (tables.length > 0) {
+        return tables;
+      }
+      return [fromClause];
+    }
+    return [fromClause];
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.from)) {
+    return stmt.from;
+  }
+  
+  return [];
+};
+
+// Get WHERE clause condition (CST structure)
+const getWhereCondition = (stmt: any): any => {
+  if (!stmt) return undefined;
+  
+  // CST structure: clauses array with where_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const whereClause = stmt.clauses.find((c: any) => c.type === 'where_clause');
+    if (whereClause) {
+      return whereClause.condition || whereClause.expr || whereClause;
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const whereClause = stmt.whereClause || stmt.where;
+  if (whereClause) {
+    return whereClause.condition || whereClause.expr || whereClause;
+  }
+  
+  return stmt.where;
+};
+
+// Get HAVING clause condition (CST structure)
+const getHavingCondition = (stmt: any): any => {
+  if (!stmt) return undefined;
+  
+  // CST structure: clauses array with having_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const havingClause = stmt.clauses.find((c: any) => c.type === 'having_clause');
+    if (havingClause) {
+      return havingClause.condition || havingClause.expr || havingClause;
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const havingClause = stmt.havingClause || stmt.having;
+  if (havingClause) {
+    return havingClause.condition || havingClause.expr || havingClause;
+  }
+  
+  return stmt.having;
+};
+
+// Get GROUP BY expressions (CST structure)
+const getGroupByExpressions = (stmt: any): any[] => {
+  if (!stmt) return [];
+  
+  // CST structure: clauses array with group_by_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const groupByClause = stmt.clauses.find((c: any) => c.type === 'group_by_clause');
+    if (groupByClause) {
+      if (groupByClause.expressions?.items) {
+        return groupByClause.expressions.items;
+      }
+      if (groupByClause.expressions) {
+        return Array.isArray(groupByClause.expressions) ? groupByClause.expressions : [groupByClause.expressions];
+      }
+      if (Array.isArray(groupByClause)) {
+        return groupByClause;
+      }
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const groupByClause = stmt.groupByClause || stmt.groupBy;
+  if (groupByClause) {
+    if (groupByClause.expressions?.items) {
+      return groupByClause.expressions.items;
+    }
+    if (groupByClause.expressions) {
+      return Array.isArray(groupByClause.expressions) ? groupByClause.expressions : [groupByClause.expressions];
+    }
+    if (Array.isArray(groupByClause)) {
+      return groupByClause;
+    }
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.groupby)) {
+    return stmt.groupby;
+  }
+  if (stmt.groupby?.value && Array.isArray(stmt.groupby.value)) {
+    return stmt.groupby.value;
+  }
+  
+  return [];
+};
+
+// Get ORDER BY items (CST structure)
+const getOrderByItems = (stmt: any): any[] => {
+  if (!stmt) return [];
+  
+  // CST structure: clauses array with order_by_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const orderByClause = stmt.clauses.find((c: any) => c.type === 'order_by_clause');
+    if (orderByClause) {
+      if (orderByClause.items) {
+        return Array.isArray(orderByClause.items) ? orderByClause.items : [orderByClause.items];
+      }
+      if (Array.isArray(orderByClause)) {
+        return orderByClause;
+      }
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const orderByClause = stmt.orderByClause || stmt.orderBy;
+  if (orderByClause) {
+    if (orderByClause.items) {
+      return Array.isArray(orderByClause.items) ? orderByClause.items : [orderByClause.items];
+    }
+    if (Array.isArray(orderByClause)) {
+      return orderByClause;
+    }
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.orderby)) {
+    return stmt.orderby;
+  }
+  
+  return [];
+};
+
+// Get WITH clause CTEs (CST structure)
+const getWithCtes = (stmt: any): any[] => {
+  if (!stmt) return [];
+  
+  // CST structure: clauses array with with_clause
+  if (stmt.clauses && Array.isArray(stmt.clauses)) {
+    const withClause = stmt.clauses.find((c: any) => c.type === 'with_clause');
+    if (withClause) {
+      // CST: with_clause has tables property (list_expr) with items containing common_table_expression nodes
+      if (withClause.tables?.items) {
+        return withClause.tables.items;
+      }
+      // Or tables might be directly an array
+      if (withClause.tables) {
+        return Array.isArray(withClause.tables) ? withClause.tables : [withClause.tables];
+      }
+      // Fallback: ctes property (older CST or AST)
+      if (withClause.ctes?.items) {
+        return withClause.ctes.items;
+      }
+      if (withClause.ctes) {
+        return Array.isArray(withClause.ctes) ? withClause.ctes : [withClause.ctes];
+      }
+    }
+  }
+  
+  // Fallback: direct properties (AST or older CST)
+  const withClause = stmt.withClause || stmt.with;
+  if (withClause) {
+    if (withClause.tables?.items) {
+      return withClause.tables.items;
+    }
+    if (withClause.tables) {
+      return Array.isArray(withClause.tables) ? withClause.tables : [withClause.tables];
+    }
+    if (withClause.ctes?.items) {
+      return withClause.ctes.items;
+    }
+    if (withClause.ctes) {
+      return Array.isArray(withClause.ctes) ? withClause.ctes : [withClause.ctes];
+    }
+    if (Array.isArray(withClause)) {
+      return withClause;
+    }
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.with)) {
+    return stmt.with;
+  }
+  
+  return [];
+};
+
+/**
  * Checks if an expression contains an aggregate function call
  */
 export const containsAggregateFunction = (node: any): { found: boolean; functionName?: string; location?: SqlNodeLocation } => {
@@ -89,38 +529,31 @@ export const containsAggregateFunction = (node: any): { found: boolean; function
   if (typeof node !== 'object') return { found: false };
 
   // Skip subqueries - aggregate functions in subqueries are valid
-  if (node.type === 'select') {
+  if (isSelectStmt(node)) {
     return { found: false };
   }
 
-  // Check for aggregate function
-  if (node.type === 'aggr_func' || node.type === 'function') {
-    let funcName = '';
-    if (typeof node.name === 'string') {
-      funcName = node.name.toLowerCase();
-    } else if (node.name && typeof node.name === 'object') {
-      // Handle different AST structures for function names
-      if (typeof node.name.name === 'string') {
-        funcName = node.name.name.toLowerCase();
-      } else if (node.name.name && typeof node.name.name.value === 'string') {
-        funcName = node.name.name.value.toLowerCase();
-      } else if (typeof node.name.value === 'string') {
-        funcName = node.name.value.toLowerCase();
-      }
-    }
+  // Check for aggregate function (CST or AST)
+  // CST uses func_call, AST uses function/aggr_func
+  const nodeType = getNodeType(node);
+  const isFunc = isFunctionCall(node) || nodeType === 'func_call';
+  
+  if (isFunc) {
+    const funcName = extractFunctionName(node);
     
+    // Check if it's an aggregate function
     if (funcName && BIGQUERY_AGGREGATE_FUNCTIONS.has(funcName)) {
       return { 
         found: true, 
         functionName: funcName.toUpperCase(),
-        location: node.location || node.loc 
+        location: getLocationFromCst(node)
       };
     }
   }
 
   // Recursively check child properties
   for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') continue;
+    if (key === 'location' || key === 'loc' || key === 'range') continue;
     const result = containsAggregateFunction(node[key]);
     if (result.found) return result;
   }
@@ -145,54 +578,38 @@ export const containsWindowFunction = (node: any): { found: boolean; functionNam
   if (typeof node !== 'object') return { found: false };
 
   // Skip subqueries - window functions in subqueries are valid
-  if (node.type === 'select') {
+  if (isSelectStmt(node)) {
     return { found: false };
   }
 
-  // Helper function to extract function name from various AST structures
-  const extractFuncName = (nameNode: any): string => {
-    if (typeof nameNode === 'string') {
-      return nameNode.toLowerCase();
-    }
-    if (nameNode && typeof nameNode === 'object') {
-      if (typeof nameNode.name === 'string') {
-        return nameNode.name.toLowerCase();
-      } else if (nameNode.name && typeof nameNode.name.value === 'string') {
-        return nameNode.name.value.toLowerCase();
-      } else if (typeof nameNode.value === 'string') {
-        return nameNode.value.toLowerCase();
-      }
-    }
-    return '';
-  };
-
   // Check for window function (any function with OVER clause)
-  if (node.over || node.window) {
-    const funcName = extractFuncName(node.name) || 'window function';
+  // CST uses 'overClause' or 'over', AST uses 'over' or 'window'
+  if (node.overClause || node.over || node.window) {
+    const funcName = extractFunctionName(node) || 'window function';
     
     return { 
       found: true, 
       functionName: funcName.toUpperCase(),
-      location: node.location || node.loc 
+      location: getLocationFromCst(node)
     };
   }
 
   // Also check for known window-only functions
-  if (node.type === 'function' || node.type === 'aggr_func') {
-    const funcName = extractFuncName(node.name);
+  if (isFunctionCall(node)) {
+    const funcName = extractFunctionName(node);
     
-    if (BIGQUERY_WINDOW_FUNCTIONS.has(funcName) && (node.over || node.window)) {
+    if (funcName && BIGQUERY_WINDOW_FUNCTIONS.has(funcName) && (node.overClause || node.over || node.window)) {
       return { 
         found: true, 
         functionName: funcName.toUpperCase(),
-        location: node.location || node.loc 
+        location: getLocationFromCst(node)
       };
     }
   }
 
   // Recursively check child properties
   for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') continue;
+    if (key === 'location' || key === 'loc' || key === 'range') continue;
     const result = containsWindowFunction(node[key]);
     if (result.found) return result;
   }
@@ -201,24 +618,26 @@ export const containsWindowFunction = (node: any): { found: boolean; functionNam
 };
 
 /**
- * Validates BigQuery syntax rules for a SELECT statement.
+ * Validates BigQuery syntax rules for a SELECT statement (CST or AST).
  * Returns an array of validation issues based on GoogleSQL rules.
  */
-export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIssue[] => {
+export const validateBigQuerySyntaxRules = (selectStmt: any): ColumnValidationIssue[] => {
   const issues: ColumnValidationIssue[] = [];
 
-  if (!selectAst || typeof selectAst !== 'object') {
+  if (!selectStmt || typeof selectStmt !== 'object') {
     return issues;
   }
 
   // Rule 1: Aggregate functions cannot be used in WHERE clause (use HAVING instead)
-  if (selectAst.where) {
-    const aggregateCheck = containsAggregateFunction(selectAst.where);
+  const whereCondition = getWhereCondition(selectStmt);
+  if (whereCondition) {
+    const aggregateCheck = containsAggregateFunction(whereCondition);
     if (aggregateCheck.found) {
+      const location = aggregateCheck.location?.start || { line: 1, column: 1 };
       issues.push({
         message: `Aggregate function ${aggregateCheck.functionName || 'unknown'} cannot be used in WHERE clause. Use HAVING to filter aggregated results.`,
-        line: aggregateCheck.location?.start?.line || 1,
-        column: aggregateCheck.location?.start?.column || 1,
+        line: location.line || 1,
+        column: location.column || 1,
         length: aggregateCheck.functionName?.length || 10,
         severity: 'error',
         rule: 'aggregate-in-where',
@@ -227,13 +646,14 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
   }
 
   // Rule 2: Window functions cannot be used in WHERE clause (use QUALIFY instead)
-  if (selectAst.where) {
-    const windowCheck = containsWindowFunction(selectAst.where);
+  if (whereCondition) {
+    const windowCheck = containsWindowFunction(whereCondition);
     if (windowCheck.found) {
+      const location = windowCheck.location?.start || { line: 1, column: 1 };
       issues.push({
         message: `Window function ${windowCheck.functionName || 'unknown'} cannot be used in WHERE clause. Use QUALIFY to filter window function results.`,
-        line: windowCheck.location?.start?.line || 1,
-        column: windowCheck.location?.start?.column || 1,
+        line: location.line || 1,
+        column: location.column || 1,
         length: windowCheck.functionName?.length || 10,
         severity: 'error',
         rule: 'window-in-where',
@@ -242,13 +662,15 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
   }
 
   // Rule 3: Window functions cannot be used in HAVING clause (use QUALIFY instead)
-  if (selectAst.having) {
-    const windowCheck = containsWindowFunction(selectAst.having);
+  const havingCondition = getHavingCondition(selectStmt);
+  if (havingCondition) {
+    const windowCheck = containsWindowFunction(havingCondition);
     if (windowCheck.found) {
+      const location = windowCheck.location?.start || { line: 1, column: 1 };
       issues.push({
         message: `Window function ${windowCheck.functionName || 'unknown'} cannot be used in HAVING clause. Use QUALIFY to filter window function results.`,
-        line: windowCheck.location?.start?.line || 1,
-        column: windowCheck.location?.start?.column || 1,
+        line: location.line || 1,
+        column: location.column || 1,
         length: windowCheck.functionName?.length || 10,
         severity: 'error',
         rule: 'window-in-having',
@@ -257,12 +679,13 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
   }
 
   // Rule 4: OFFSET can only be used with LIMIT
-  // Check if we have an OFFSET without LIMIT
-  if (selectAst.limit) {
-    // node-sql-parser represents LIMIT/OFFSET differently depending on the database
-    // In BigQuery mode, check for offset without limit value
-    const hasLimit = selectAst.limit.value !== undefined && selectAst.limit.value !== null;
-    const hasOffset = selectAst.limit.offset !== undefined && selectAst.limit.offset !== null;
+  const limitClause = selectStmt.limitClause || selectStmt.limit;
+  if (limitClause) {
+    // CST structure: limitClause.count and limitClause.offset
+    // AST structure: limit.value and limit.offset
+    const hasLimit = (limitClause.count?.value !== undefined && limitClause.count?.value !== null) ||
+                     (limitClause.value !== undefined && limitClause.value !== null);
+    const hasOffset = limitClause.offset?.value !== undefined && limitClause.offset?.value !== null;
     
     if (hasOffset && !hasLimit) {
       issues.push({
@@ -277,8 +700,10 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
   }
 
   // Rule 5: When GROUP BY is used, non-aggregated SELECT columns should be in GROUP BY
-  // This is a warning since BigQuery may infer some cases
-  if (selectAst.groupby && Array.isArray(selectAst.columns)) {
+  const groupByExprs = getGroupByExpressions(selectStmt);
+  const columns = getSelectColumns(selectStmt);
+  
+  if (groupByExprs.length > 0 && columns.length > 0) {
     const groupByColumns = new Set<string>();
     
     // Extract GROUP BY column names
@@ -288,41 +713,37 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
         groupExpr.forEach(extractGroupByColumns);
         return;
       }
-      if (groupExpr.value && Array.isArray(groupExpr.value)) {
-        groupExpr.value.forEach(extractGroupByColumns);
-        return;
-      }
       
-      // Handle column reference
-      if (groupExpr.type === 'column_ref') {
-        const colName = typeof groupExpr.column === 'string' 
-          ? groupExpr.column 
-          : groupExpr.column?.expr?.value || groupExpr.column?.column || '';
+      // Handle column reference (CST or AST)
+      if (isColumnRef(groupExpr)) {
+        const colName = extractColumnName(groupExpr);
         if (colName) {
           groupByColumns.add(stripIdentifierQuotes(colName).toLowerCase());
         }
       }
       // Handle positional reference (1, 2, 3)
-      else if (groupExpr.type === 'number' && typeof groupExpr.value === 'number') {
-        // Positional references are valid, add a placeholder
+      else if (getNodeType(groupExpr) === 'number' && typeof groupExpr.value === 'number') {
         groupByColumns.add(`__positional_${groupExpr.value}__`);
       }
     };
     
-    extractGroupByColumns(selectAst.groupby);
+    groupByExprs.forEach(extractGroupByColumns);
     
     // Check SELECT columns that are not aggregated
-    for (let i = 0; i < selectAst.columns.length; i++) {
-      const col = selectAst.columns[i];
-      const expr = col?.expr ?? col;
+    for (let i = 0; i < columns.length; i++) {
+      const col = columns[i];
+      const expr = col?.expr ?? col?.expression ?? col;
       
       // Skip if it's an aggregate function or has OVER clause (window function)
-      if (expr?.type === 'aggr_func' || expr?.over || expr?.window) {
+      if (isFunctionCall(expr) && extractFunctionName(expr) && BIGQUERY_AGGREGATE_FUNCTIONS.has(extractFunctionName(expr))) {
+        continue;
+      }
+      if (expr?.overClause || expr?.over || expr?.window) {
         continue;
       }
       
       // Skip SELECT * 
-      if (expr?.type === 'star' || col === '*') {
+      if (getNodeType(expr) === 'star' || col === '*') {
         continue;
       }
       
@@ -333,38 +754,43 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
       }
       
       // Check for simple column reference
-      if (expr?.type === 'column_ref') {
-        const colName = typeof expr.column === 'string'
-          ? expr.column
-          : expr.column?.expr?.value || expr.column?.column || '';
-        const cleanColName = stripIdentifierQuotes(colName).toLowerCase();
-        
-        // Check if this column is in GROUP BY or if there's a positional reference for this position
-        const isInGroupBy = groupByColumns.has(cleanColName) || 
-                           groupByColumns.has(`__positional_${i + 1}__`);
-        
-        if (!isInGroupBy && cleanColName) {
-          issues.push({
-            message: `Column "${colName}" must appear in GROUP BY clause or be used in an aggregate function.`,
-            line: expr.location?.start?.line || 1,
-            column: expr.location?.start?.column || 1,
-            length: colName.length || 10,
-            severity: 'warning',
-            rule: 'missing-group-by',
-          });
+      if (isColumnRef(expr)) {
+        const colName = extractColumnName(expr);
+        if (colName) {
+          const cleanColName = stripIdentifierQuotes(colName).toLowerCase();
+          
+          // Check if this column is in GROUP BY or if there's a positional reference for this position
+          const isInGroupBy = groupByColumns.has(cleanColName) || 
+                             groupByColumns.has(`__positional_${i + 1}__`);
+          
+          if (!isInGroupBy) {
+            const location = getLocationFromCst(expr)?.start || { line: 1, column: 1 };
+            issues.push({
+              message: `Column "${colName}" must appear in GROUP BY clause or be used in an aggregate function.`,
+              line: location.line || 1,
+              column: location.column || 1,
+              length: colName.length || 10,
+              severity: 'warning',
+              rule: 'missing-group-by',
+            });
+          }
         }
       }
     }
   }
 
   // Recursively validate CTEs
-  if (Array.isArray(selectAst.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        const cteIssues = validateBigQuerySyntaxRules(cteAst);
-        issues.push(...cteIssues);
-      }
+  const ctes = getWithCtes(selectStmt);
+  for (const cte of ctes) {
+    // CST: cte.expr.expr (paren_expr.expr is the select_stmt)
+    // AST: cte.query or cte.stmt.ast
+    let cteQuery = cte.expr?.expr || cte.expr; // CST: unwrap paren_expr if needed
+    if (!cteQuery || !isSelectStmt(cteQuery)) {
+      cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
+    }
+    if (cteQuery) {
+      const cteIssues = validateBigQuerySyntaxRules(cteQuery);
+      issues.push(...cteIssues);
     }
   }
 
@@ -376,8 +802,103 @@ export const stripIdentifierQuotes = (value: string | null | undefined): string 
   return value.replace(/[`"']/g, '');
 };
 
+// Extract column name from column reference (CST or AST)
+const extractColumnName = (node: any): string => {
+  if (!node) return '';
+  
+  const nodeType = getNodeType(node);
+  
+  // CST: member_expr (e.g., t.col1) - property is the column name
+  if (nodeType === 'member_expr' || nodeType === 'MemberExpr') {
+    if (node.property) {
+      if (typeof node.property.name === 'string') {
+        return node.property.name;
+      }
+      if (typeof node.property === 'string') {
+        return node.property;
+      }
+      if (node.property.text) {
+        return node.property.text;
+      }
+    }
+  }
+  
+  // CST: identifier (simple column name)
+  if (nodeType === 'identifier' || nodeType === 'Identifier') {
+    if (typeof node.name === 'string') {
+      return node.name;
+    }
+    if (node.text) {
+      return node.text;
+    }
+  }
+  
+  // CST structure: node.name or node.column
+  if (typeof node.name === 'string') {
+    return node.name;
+  }
+  if (node.name?.name) {
+    return typeof node.name.name === 'string' ? node.name.name : node.name.name.value || '';
+  }
+  if (node.name?.value) {
+    return node.name.value;
+  }
+  
+  // AST structure: node.column
+  if (typeof node.column === 'string') {
+    return node.column;
+  }
+  if (node.column && typeof node.column === 'object') {
+    if (node.column.expr && typeof node.column.expr.value === 'string') {
+      return node.column.expr.value;
+    }
+    if (typeof node.column.column === 'string') {
+      return node.column.column;
+    }
+  }
+  
+  return '';
+};
+
+// Extract table name from column reference (CST or AST)
+const extractTableName = (node: any): string | null => {
+  if (!node) return null;
+  
+  const nodeType = getNodeType(node);
+  
+  // CST: member_expr (e.g., t.col1) - object is the table/alias name
+  if (nodeType === 'member_expr' || nodeType === 'MemberExpr') {
+    if (node.object) {
+      if (typeof node.object.name === 'string') {
+        return node.object.name;
+      }
+      if (typeof node.object === 'string') {
+        return node.object;
+      }
+      if (node.object.text) {
+        return node.object.text;
+      }
+    }
+  }
+  
+  // CST structure: node.table or node.table.name
+  if (typeof node.table === 'string') {
+    return node.table;
+  }
+  if (node.table?.name) {
+    return typeof node.table.name === 'string' ? node.table.name : node.table.name.value || null;
+  }
+  
+  // AST structure: node.table
+  if (typeof node.table === 'string') {
+    return node.table;
+  }
+  
+  return null;
+};
+
 /**
- * Collects column references from an AST expression node.
+ * Collects column references from a CST or AST expression node.
  * Skips subqueries as they have their own scope.
  */
 export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]): void => {
@@ -395,49 +916,47 @@ export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]
   }
 
   // Skip subqueries - they have their own scope and should be validated separately
-  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
-  if (node.type === 'select') {
+  if (isSelectStmt(node)) {
     return;
   }
 
-  if (node.type === 'column_ref') {
-    // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
-    let columnName: string;
-    if (typeof node.column === 'string') {
-      columnName = stripIdentifierQuotes(node.column);
-    } else if (node.column && typeof node.column === 'object') {
-      // Handle nested column structure: { expr: { type: 'default', value: 'ColumnName' }, offset: [] }
-      if (node.column.expr && typeof node.column.expr.value === 'string') {
-        columnName = stripIdentifierQuotes(node.column.expr.value);
-      } else if (typeof node.column.column === 'string') {
-        columnName = stripIdentifierQuotes(node.column.column);
-      } else {
-        columnName = '';
-      }
+  // Check for column references: CST uses member_expr or identifier, AST uses column_ref
+  const nodeType = getNodeType(node);
+  const isColumnReference = isColumnRef(node) || 
+                            nodeType === 'member_expr' || 
+                            nodeType === 'MemberExpr' ||
+                            nodeType === 'identifier' ||
+                            nodeType === 'Identifier';
+  
+  if (isColumnReference) {
+    const columnName = extractColumnName(node);
+    const tableName = extractTableName(node);
+    
+    // Skip if it's just an identifier without a column name (might be a table name)
+    if (!columnName && nodeType === 'identifier') {
+      // Continue recursion - might be part of a larger expression
     } else {
-      columnName = '';
+      // Collect column refs for validation:
+      // - Non-* columns: always collect for column name validation
+      // - * columns with alias (e.g., da.*): collect to validate alias exists
+      // - Bare * without alias: skip (no validation needed)
+      const hasAlias = tableName ? true : false;
+      const shouldCollect = columnName && (columnName !== '*' || hasAlias);
+      
+      if (shouldCollect) {
+        refs.push({
+          alias: tableName ? stripIdentifierQuotes(tableName) : null,
+          column: stripIdentifierQuotes(columnName),
+          location: getLocationFromCst(node),
+        });
+      }
+      return;
     }
-    
-    // Collect column refs for validation:
-    // - Non-* columns: always collect for column name validation
-    // - * columns with alias (e.g., da.*): collect to validate alias exists
-    // - Bare * without alias: skip (no validation needed)
-    const hasAlias = node.table ? true : false;
-    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
-    
-    if (shouldCollect) {
-      refs.push({
-        alias: node.table ? stripIdentifierQuotes(node.table) : null,
-        column: columnName,
-        location: node.location || node.loc,
-      });
-    }
-    return;
   }
 
   // Recursively inspect child properties
   for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') {
+    if (key === 'location' || key === 'loc' || key === 'range') {
       continue;
     }
     collectColumnRefsFromExpression(node[key], refs);
@@ -445,63 +964,99 @@ export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]
 };
 
 /**
- * Collects all column references from a SELECT statement AST.
+ * Collects all column references from a SELECT statement (CST or AST).
  */
-export const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
+export const collectColumnRefsForSelect = (selectStmt: any, includeCteBodies = false): ColumnRefInfo[] => {
   const refs: ColumnRefInfo[] = [];
 
-  if (!selectAst || typeof selectAst !== 'object') {
+  if (!selectStmt || typeof selectStmt !== 'object') {
     return refs;
   }
 
   const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
 
   // Optionally collect from CTE bodies (for full query validation)
-  if (includeCteBodies && Array.isArray(selectAst.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
+  if (includeCteBodies) {
+    const ctes = getWithCtes(selectStmt);
+    for (const cte of ctes) {
+      // CST: cte.expr.expr (paren_expr.expr is the select_stmt)
+      // AST: cte.query or cte.stmt.ast
+      let cteQuery = cte.expr?.expr || cte.expr; // CST: unwrap paren_expr if needed
+      if (!cteQuery || !isSelectStmt(cteQuery)) {
+        cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
+      }
+      if (cteQuery) {
         // Recursively collect from CTE body (but not nested CTEs within CTEs)
-        const cteRefs = collectColumnRefsForSelect(cteAst, false);
+        const cteRefs = collectColumnRefsForSelect(cteQuery, false);
         refs.push(...cteRefs);
       }
     }
   }
 
-  if (Array.isArray(selectAst.columns)) {
-    for (const col of selectAst.columns) {
-      collect(col?.expr ?? col);
+  // Collect from SELECT columns
+  const columns = getSelectColumns(selectStmt);
+  for (const col of columns) {
+    const expr = col?.expr ?? col?.expression ?? col;
+    collect(expr);
+  }
+
+  // Collect from WHERE clause
+  const whereCondition = getWhereCondition(selectStmt);
+  if (whereCondition) {
+    collect(whereCondition);
+  }
+
+  // Collect from GROUP BY
+  const groupByExprs = getGroupByExpressions(selectStmt);
+  for (const groupExpr of groupByExprs) {
+    collect(groupExpr);
+  }
+
+  // Collect from ORDER BY
+  const orderByItems = getOrderByItems(selectStmt);
+  for (const orderItem of orderByItems) {
+    const expr = orderItem?.expr ?? orderItem?.expression ?? orderItem;
+    collect(expr);
+  }
+
+  // Collect from HAVING clause
+  const havingCondition = getHavingCondition(selectStmt);
+  if (havingCondition) {
+    collect(havingCondition);
+  }
+
+  // Collect from JOIN ON clauses
+  // CST: join_expr has specification.join_on_specification.expr
+  // AST: fromItem.on or fromItem.onClause
+  if (selectStmt.clauses && Array.isArray(selectStmt.clauses)) {
+    const fromClause = selectStmt.clauses.find((c: any) => c.type === 'from_clause');
+    if (fromClause?.expr) {
+      const exprType = getNodeType(fromClause.expr);
+      if (exprType === 'join_expr' || exprType === 'JoinExpr') {
+        // Recursively collect from all join specifications
+        const collectFromJoinExpr = (joinExpr: any) => {
+          if (!joinExpr) return;
+          // CST: specification.expr contains the ON condition
+          if (joinExpr.specification?.expr) {
+            collect(joinExpr.specification.expr);
+          } else if (joinExpr.specification?.condition) {
+            collect(joinExpr.specification.condition);
+          }
+          if (joinExpr.left) collectFromJoinExpr(joinExpr.left);
+          if (joinExpr.right) collectFromJoinExpr(joinExpr.right);
+        };
+        collectFromJoinExpr(fromClause.expr);
+      }
     }
   }
-
-  if (selectAst.where) {
-    collect(selectAst.where);
-  }
-
-  if (Array.isArray(selectAst.groupby)) {
-    for (const groupExpr of selectAst.groupby) {
-      collect(groupExpr);
-    }
-  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
-    for (const groupExpr of selectAst.groupby.value) {
-      collect(groupExpr);
-    }
-  }
-
-  if (Array.isArray(selectAst.orderby)) {
-    for (const orderItem of selectAst.orderby) {
-      collect(orderItem?.expr ?? orderItem);
-    }
-  }
-
-  if (selectAst.having) {
-    collect(selectAst.having);
-  }
-
-  if (Array.isArray(selectAst.from)) {
-    for (const fromItem of selectAst.from) {
-      if (fromItem?.on) {
-        collect(fromItem.on);
+  
+  // Fallback: check fromTables (AST structure)
+  const fromTables = getFromTables(selectStmt);
+  for (const fromItem of fromTables) {
+    if (fromItem.on || fromItem.onClause) {
+      const onCondition = fromItem.onClause?.condition || fromItem.on;
+      if (onCondition) {
+        collect(onCondition);
       }
     }
   }
@@ -513,23 +1068,25 @@ export const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = fa
  * Extracts output column names from a CTE's SELECT clause.
  * Returns the column aliases (AS names) or the column names if no alias is specified.
  */
-export const extractCteColumnNames = (cteAst: any): string[] => {
+export const extractCteColumnNames = (cteStmt: any): string[] => {
   const columns: string[] = [];
   
-  if (!cteAst || !Array.isArray(cteAst.columns)) {
+  const selectColumns = getSelectColumns(cteStmt);
+  if (selectColumns.length === 0) {
     return columns;
   }
   
-  for (const col of cteAst.columns) {
+  for (const col of selectColumns) {
     // Skip SELECT * - we can't determine column names without schema
-    if (col === '*' || (col?.expr?.type === 'star')) {
+    const expr = col?.expr ?? col?.expression ?? col;
+    if (getNodeType(expr) === 'star' || col === '*') {
       continue;
     }
     
     // Check for explicit alias (AS clause)
-    const alias = col?.as || col?.alias;
+    const alias = col.as || col.alias;
     if (alias) {
-      const aliasName = typeof alias === 'string' ? alias : alias?.value;
+      const aliasName = typeof alias === 'string' ? alias : (alias.name || alias.value);
       if (aliasName) {
         columns.push(stripIdentifierQuotes(aliasName));
         continue;
@@ -537,37 +1094,23 @@ export const extractCteColumnNames = (cteAst: any): string[] => {
     }
     
     // No alias - try to get column name from expression
-    const expr = col?.expr ?? col;
-    
-    // Column reference: { type: 'column_ref', column: 'name' } or { type: 'column_ref', column: { expr: { value: 'name' } } }
-    if (expr?.type === 'column_ref') {
-      let columnName: string | undefined;
-      if (typeof expr.column === 'string') {
-        columnName = expr.column;
-      } else if (expr.column?.expr?.value) {
-        columnName = expr.column.expr.value;
-      } else if (expr.column?.column) {
-        columnName = expr.column.column;
-      }
+    if (isColumnRef(expr)) {
+      const columnName = extractColumnName(expr);
       if (columnName) {
         columns.push(stripIdentifierQuotes(columnName));
       }
     }
-    // Function call without alias - use function name (common in BigQuery)
-    else if (expr?.type === 'function' || expr?.type === 'aggr_func') {
-      // Function calls without alias are hard to reference, skip them
-      // BigQuery would use the function expression as the column name
-    }
+    // Function call without alias - skip (hard to reference)
   }
   
   return columns;
 };
 
 /**
- * Builds a map of table aliases and unique tables from a SELECT statement AST.
+ * Builds a map of table aliases and unique tables from a SELECT statement (CST or AST).
  */
 export const buildTableAliasMapFromSelect = (
-  selectAst: any
+  selectStmt: any
 ): {
   aliasMap: Map<string, TableAliasInfo>;
   uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
@@ -603,9 +1146,13 @@ export const buildTableAliasMapFromSelect = (
       return;
     }
 
+    const itemType = getNodeType(item);
+    
     // Handle subqueries - register alias name but skip schema mapping
-    if (item.expr && item.expr.type === 'select') {
-      registerAlias(item.as || item.alias, {});
+    if (item.query || (item.expr && isSelectStmt(item.expr))) {
+      const alias = item.as || item.alias;
+      const aliasName = typeof alias === 'string' ? alias : (alias?.name || alias?.text || alias?.value);
+      registerAlias(aliasName, {});
       return;
     }
 
@@ -613,23 +1160,90 @@ export const buildTableAliasMapFromSelect = (
     let tableId: string | undefined;
     let projectId: string | undefined;
 
+    // CST structure: alias node with expr (member_expr for dataset.table or identifier for table)
+    if (itemType === 'alias' || itemType === 'Alias') {
+      const tableExpr = item.expr;
+      const aliasObj = item.alias;
+      const aliasName = typeof aliasObj === 'string' ? aliasObj : (aliasObj?.name || aliasObj?.text || aliasObj?.value);
+      
+      // Extract table info from expr
+      if (tableExpr) {
+        const exprType = getNodeType(tableExpr);
+        
+        // member_expr: dataset.table1
+        if (exprType === 'member_expr' || exprType === 'MemberExpr') {
+          const datasetName = tableExpr.object?.name || tableExpr.object?.text;
+          const tableName = tableExpr.property?.name || tableExpr.property?.text;
+          if (datasetName) datasetId = stripIdentifierQuotes(datasetName);
+          if (tableName) tableId = stripIdentifierQuotes(tableName);
+        }
+        // identifier: table1
+        else if (exprType === 'identifier' || exprType === 'Identifier') {
+          const tableName = tableExpr.name || tableExpr.text;
+          if (tableName) tableId = stripIdentifierQuotes(tableName);
+        }
+      }
+      
+      // Register alias
+      if (aliasName) {
+        registerAlias(aliasName, { datasetId, tableId });
+      }
+      if (datasetId && tableId) {
+        const key = `${datasetId}.${tableId}`.toLowerCase();
+        if (!uniqueTables.has(key)) {
+          uniqueTables.set(key, { datasetId, tableId });
+        }
+        registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
+      }
+      if (tableId) {
+        registerAlias(tableId, { datasetId, tableId });
+      }
+      return;
+    }
+
+    // AST structure: item.table might be an object with name, schema, catalog
+    const tableRef = item.table;
+    
+    if (tableRef) {
+      if (typeof tableRef === 'string') {
+        // Simple table name
+        tableId = stripIdentifierQuotes(tableRef);
+      } else if (typeof tableRef === 'object') {
+        // CST: tableRef.name, tableRef.schema, tableRef.catalog
+        // AST: tableRef.table, tableRef.db, tableRef.catalog
+        if (tableRef.name) {
+          tableId = stripIdentifierQuotes(typeof tableRef.name === 'string' ? tableRef.name : tableRef.name.value);
+        } else if (tableRef.table) {
+          tableId = stripIdentifierQuotes(tableRef.table);
+        }
+        
+        if (tableRef.schema) {
+          datasetId = stripIdentifierQuotes(typeof tableRef.schema === 'string' ? tableRef.schema : tableRef.schema.value);
+        } else if (tableRef.db) {
+          datasetId = stripIdentifierQuotes(tableRef.db);
+        }
+        
+        if (tableRef.catalog) {
+          projectId = stripIdentifierQuotes(typeof tableRef.catalog === 'string' ? tableRef.catalog : tableRef.catalog.value);
+        }
+      }
+    }
+
+    // Handle direct properties (AST style)
     if (typeof item.catalog === 'string') {
       projectId = stripIdentifierQuotes(item.catalog);
     }
-
     if (typeof item.db === 'string') {
       const dbValue = stripIdentifierQuotes(item.db);
-      // node-sql-parser uses db for project in BigQuery dialects
+      // In BigQuery dialects, db field may represent project or dataset
       projectId = projectId ?? dbValue;
       if (!datasetId) {
         datasetId = dbValue;
       }
     }
-
     if (typeof item.schema === 'string') {
       datasetId = stripIdentifierQuotes(item.schema);
     }
-
     if (typeof item.dataset === 'string') {
       datasetId = stripIdentifierQuotes(item.dataset);
     }
@@ -671,22 +1285,14 @@ export const buildTableAliasMapFromSelect = (
       registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
     };
 
-    if (typeof item.table === 'string') {
-      registerTableName(item.table);
-    } else if (item.table && typeof item.table === 'object') {
-      if (typeof item.table.table === 'string') {
-        registerTableName(item.table.table);
-      }
-      if (typeof item.table.name === 'string') {
-        registerTableName(item.table.name);
-      }
-      if (typeof item.table.db === 'string' && !datasetId) {
-        datasetId = stripIdentifierQuotes(item.table.db);
-      }
+    if (tableId) {
+      registerTableName(tableId);
     }
 
     // Register alias variations for lookup
-    registerAlias(item.as || item.alias, { datasetId, tableId });
+    const alias = item.as || item.alias;
+    const aliasName = typeof alias === 'string' ? alias : (alias?.name || alias?.text || alias?.value);
+    registerAlias(aliasName, { datasetId, tableId });
 
     if (tableId) {
       registerAlias(tableId, { datasetId, tableId });
@@ -698,34 +1304,36 @@ export const buildTableAliasMapFromSelect = (
   };
 
   // Process CTEs (WITH clause) - register CTE names as valid aliases
-  // Note: We only register the CTE name here, not the tables inside the CTE.
-  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
-      const cteName = cte?.name?.value || cte?.name;
-      if (cteName) {
-        // Extract the column names from the CTE's SELECT clause
-        const cteAst = cte?.stmt?.ast;
-        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
-        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
+  const ctes = getWithCtes(selectStmt);
+  for (const cte of ctes) {
+    // CST: common_table_expression has table (identifier) and expr (paren_expr with select_stmt)
+    // AST: cte has name and stmt.ast
+    const cteName = cte.table?.name || cte.table?.text || 
+                    (typeof cte.name === 'string' ? cte.name : (cte.name?.name || cte.name?.text || cte.name?.value));
+    if (cteName) {
+      // Extract the column names from the CTE's SELECT clause
+      // CST: cte.expr.expr (paren_expr.expr is the select_stmt)
+      // AST: cte.query or cte.stmt.ast
+      let cteQuery = cte.expr?.expr || cte.expr; // CST: unwrap paren_expr if needed
+      if (!cteQuery || !isSelectStmt(cteQuery)) {
+        cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
       }
+      const cteColumns = cteQuery ? extractCteColumnNames(cteQuery) : [];
+      registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
     }
   }
 
-  if (Array.isArray(selectAst?.from)) {
-    for (const fromItem of selectAst.from) {
-      processFromItem(fromItem);
-    }
-  } else {
-    processFromItem(selectAst?.from);
+  // Process FROM clause
+  const fromTables = getFromTables(selectStmt);
+  for (const fromItem of fromTables) {
+    processFromItem(fromItem);
   }
 
   return { aliasMap, uniqueTables };
 };
 
 /**
- * Collects all subqueries from an AST node.
+ * Collects all subqueries from a CST or AST node.
  */
 export const collectSubqueries = (node: any, subqueries: any[]): void => {
   if (!node) return;
@@ -739,16 +1347,26 @@ export const collectSubqueries = (node: any, subqueries: any[]): void => {
   
   if (typeof node !== 'object') return;
   
+  const nodeType = getNodeType(node);
+  
   // Found a subquery
-  if (node.type === 'select') {
+  if (isSelectStmt(node)) {
     subqueries.push(node);
     // Don't recurse into the subquery here - it will be processed separately
     return;
   }
   
+  // CST: subqueries might be wrapped in paren_expr (e.g., (SELECT ...))
+  if (nodeType === 'paren_expr' || nodeType === 'ParenExpr') {
+    if (node.expr && isSelectStmt(node.expr)) {
+      subqueries.push(node.expr);
+      return;
+    }
+  }
+  
   // Recurse into child properties
   for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') continue;
+    if (key === 'location' || key === 'loc' || key === 'range') continue;
     collectSubqueries(node[key], subqueries);
   }
 };
@@ -757,13 +1375,13 @@ export const collectSubqueries = (node: any, subqueries: any[]): void => {
  * Validates column references in a SELECT statement, including subqueries.
  * Returns an array of validation issues found.
  * 
- * @param selectAst - The parsed SELECT statement AST
+ * @param selectStmt - The parsed SELECT statement (CST or AST)
  * @param getTableFields - Function to fetch table field names (for schema validation)
  * @param textToValidate - The original SQL text (for error position finding)
  * @param canFetchSchemas - Whether schema fetching is available
  */
 export const validateColumnReferences = async (
-  selectAst: any,
+  selectStmt: any,
   getTableFields: (datasetId: string, tableId: string) => Promise<string[] | null>,
   textToValidate: string,
   canFetchSchemas: boolean
@@ -772,17 +1390,18 @@ export const validateColumnReferences = async (
 
   // Helper function to validate columns for a single SELECT scope
   const validateScope = async (
-    scopeAst: any,
+    scopeStmt: any,
     scopeAliasMap: Map<string, TableAliasInfo>,
     scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
   ) => {
-    const columnRefs = collectColumnRefsForSelect(scopeAst, false);
+    const columnRefs = collectColumnRefsForSelect(scopeStmt, false);
     const uniqueTableList = Array.from(scopeUniqueTables.values());
 
     for (const columnRef of columnRefs) {
       const baseColumnName = columnRef.column.split('.')[0];
       const lowerColumnName = baseColumnName.toLowerCase();
-      const location = { line: 1, column: 1, length: Math.max(1, columnRef.column.length) };
+      const location = columnRef.location?.start || { line: 1, column: 1 };
+      const length = Math.max(1, columnRef.column.length);
 
       const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
       const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
@@ -790,9 +1409,9 @@ export const validateColumnReferences = async (
       if (aliasKey && !aliasInfo) {
         issues.push({
           message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
-          line: location.line,
-          column: location.column,
-          length: location.length,
+          line: location.line || 1,
+          column: location.column || 1,
+          length,
         });
         continue;
       }
@@ -827,9 +1446,9 @@ export const validateColumnReferences = async (
           const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
           issues.push({
             message: `Column "${columnRef.column}" not found in ${targetName}`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
+            line: location.line || 1,
+            column: location.column || 1,
+            length,
           });
         }
         continue;
@@ -870,9 +1489,9 @@ export const validateColumnReferences = async (
         if (!columnFound && uniqueTableList.length > 0) {
           issues.push({
             message: `Column "${columnRef.column}" not found in referenced tables`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
+            line: location.line || 1,
+            column: location.column || 1,
+            length,
           });
         }
       }
@@ -880,46 +1499,62 @@ export const validateColumnReferences = async (
   };
 
   // First, validate each CTE body independently against its own FROM tables
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        // Build alias map for just this CTE's scope (its own FROM clause only)
-        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
-          ...cteAst,
-          with: null, // Don't process nested CTEs here, they'd be handled separately
-        });
-        await validateScope(cteAst, cteAliasMap, cteUniqueTables);
-      }
+  const ctes = getWithCtes(selectStmt);
+  for (const cte of ctes) {
+    // CST: cte.expr.expr (paren_expr.expr is the select_stmt)
+    // AST: cte.query or cte.stmt.ast
+    let cteQuery = cte.expr?.expr || cte.expr; // CST: unwrap paren_expr if needed
+    if (!cteQuery || !isSelectStmt(cteQuery)) {
+      cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
+    }
+    if (cteQuery) {
+      // Build alias map for just this CTE's scope (its own FROM clause only)
+      const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+        ...cteQuery,
+        withClause: null,
+        with: null, // Don't process nested CTEs here, they'd be handled separately
+      });
+      await validateScope(cteQuery, cteAliasMap, cteUniqueTables);
     }
   }
 
   // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
-  const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
-  await validateScope(selectAst, aliasMap, uniqueTables);
+  const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectStmt);
+  await validateScope(selectStmt, aliasMap, uniqueTables);
 
-  // Recursively validate subqueries within the AST
+  // Recursively validate subqueries within the statement
   // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
   const validateSubqueries = async (
-    ast: any,
+    stmt: any,
     parentAliasMap: Map<string, TableAliasInfo> = new Map(),
     parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
   ) => {
     const subqueries: any[] = [];
     
     // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
-    collectSubqueries(ast.where, subqueries);
-    collectSubqueries(ast.having, subqueries);
-    if (Array.isArray(ast.columns)) {
-      for (const col of ast.columns) {
-        collectSubqueries(col?.expr ?? col, subqueries);
-      }
+    const whereCondition = getWhereCondition(stmt);
+    if (whereCondition) {
+      collectSubqueries(whereCondition, subqueries);
     }
+    
+    const havingCondition = getHavingCondition(stmt);
+    if (havingCondition) {
+      collectSubqueries(havingCondition, subqueries);
+    }
+    
+    const columns = getSelectColumns(stmt);
+    for (const col of columns) {
+      const expr = col?.expr ?? col?.expression ?? col;
+      collectSubqueries(expr, subqueries);
+    }
+    
     // Also check JOIN ON conditions for subqueries
-    if (Array.isArray(ast.from)) {
-      for (const fromItem of ast.from) {
-        if (fromItem?.on) {
-          collectSubqueries(fromItem.on, subqueries);
+    const fromTables = getFromTables(stmt);
+    for (const fromItem of fromTables) {
+      if (fromItem.on || fromItem.onClause) {
+        const onCondition = fromItem.onClause?.condition || fromItem.on;
+        if (onCondition) {
+          collectSubqueries(onCondition, subqueries);
         }
       }
     }
@@ -947,21 +1582,25 @@ export const validateColumnReferences = async (
   };
 
   // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
-          ...cteAst,
-          with: null,
-        });
-        await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
-      }
+  for (const cte of ctes) {
+    // CST: cte.expr.expr (paren_expr.expr is the select_stmt)
+    // AST: cte.query or cte.stmt.ast
+    let cteQuery = cte.expr?.expr || cte.expr; // CST: unwrap paren_expr if needed
+    if (!cteQuery || !isSelectStmt(cteQuery)) {
+      cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
+    }
+    if (cteQuery) {
+      const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
+        ...cteQuery,
+        withClause: null,
+        with: null,
+      });
+      await validateSubqueries(cteQuery, cteAliasMap, cteUniqueTables);
     }
   }
 
   // Validate subqueries in the main query, passing the main query's aliases as parent scope
-  await validateSubqueries(selectAst, aliasMap, uniqueTables);
+  await validateSubqueries(selectStmt, aliasMap, uniqueTables);
 
   return issues;
 };

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import { format } from 'sql-formatter';
-import { Parser } from 'node-sql-parser';
+import { parse } from 'sql-parser-cst';
 import { useBigQuery } from '../../hooks/useBigQuery';
 import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
@@ -40,6 +40,86 @@ interface ColumnValidationIssue {
 const stripIdentifierQuotes = (value: string | null | undefined): string => {
   if (!value) return '';
   return value.replace(/[`"']/g, '');
+};
+
+/**
+ * Helper functions for working with CST (Concrete Syntax Tree) nodes directly.
+ * This provides better BigQuery syntax handling and more accurate parsing.
+ */
+
+// Get node type from CST (handles both 'type' and 'kind' properties)
+const getCstNodeType = (node: any): string | undefined => {
+  if (!node || typeof node !== 'object') return undefined;
+  return node.type || node.kind;
+};
+
+// Check if node is a SELECT statement (CST or converted AST)
+const isSelectStmt = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'select_stmt' || type === 'SelectStatement' || type === 'select';
+};
+
+// Check if node is a column reference
+const isColumnRef = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'column_ref' || type === 'ColumnRef';
+};
+
+// Check if node is a binary expression
+const isBinaryExpr = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'binary_expr' || type === 'BinaryExpr';
+};
+
+// Check if node is a function call
+const isFunctionCall = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'function' || type === 'FunctionCall' || type === 'aggr_func';
+};
+
+// Get FROM clause tables from CST statement
+const getCstFromTables = (stmt: any): any[] => {
+  if (!stmt) return [];
+  
+  const fromClause = stmt.fromClause || stmt.from;
+  if (!fromClause) return [];
+  
+  // CST structure: fromClause.tables or array
+  if (fromClause.tables) {
+    return Array.isArray(fromClause.tables) ? fromClause.tables : [fromClause.tables];
+  }
+  
+  if (Array.isArray(fromClause)) {
+    return fromClause;
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.from)) {
+    return stmt.from;
+  }
+  
+  return [];
+};
+
+// Get WITH clause CTEs from CST statement
+const getCstWithCtes = (stmt: any): any[] => {
+  const withClause = stmt.withClause || stmt.with;
+  if (!withClause) return [];
+  
+  if (withClause.ctes) {
+    return Array.isArray(withClause.ctes) ? withClause.ctes : [withClause.ctes];
+  }
+  
+  if (Array.isArray(withClause)) {
+    return withClause;
+  }
+  
+  // Fallback to AST structure
+  if (Array.isArray(stmt.with)) {
+    return stmt.with;
+  }
+  
+  return [];
 };
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -359,7 +439,7 @@ const buildTableAliasMapFromSelect = (
 
     if (typeof item.db === 'string') {
       const dbValue = stripIdentifierQuotes(item.db);
-      // node-sql-parser uses db for project in BigQuery dialects
+      // In BigQuery dialects, db field may represent project or dataset
       projectId = projectId ?? dbValue;
       if (!datasetId) {
         datasetId = dbValue;
@@ -881,13 +961,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
-  // SQL parser instance for validation
-  const parserRef = useRef<Parser | null>(null);
-  
-  // Initialize parser
-  useEffect(() => {
-    parserRef.current = new Parser();
-  }, []);
+  // SQL parser function for validation (sql-parser-cst doesn't need instance)
+  // No initialization needed - parse function can be called directly
 
   // Ensure Monaco editor tooltips render above toolbar
   useEffect(() => {
@@ -1031,7 +1106,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
   // Validate SQL syntax and set markers in Monaco Editor
   useEffect(() => {
-    if (!editorRef.current || !parserRef.current) {
+    if (!editorRef.current) {
       return;
     }
 
@@ -1156,102 +1231,108 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       // Validate the text (either selected or full query)
       let parsedAst: any;
       try {
-        // Try to parse the SQL
-        parsedAst = parserRef.current!.astify(trimmedQuery, {
-          database: 'bigquery',
+        // Try to parse the SQL using sql-parser-cst (returns CST directly)
+        const cst = parse(trimmedQuery, {
+          dialect: 'bigquery',
+          includeRange: true,
         });
         
+        // Use CST directly - no conversion needed!
+        // This provides better BigQuery syntax handling and preserves more information
+        parsedAst = cst;
+        
         // Additional validation: Check for JOINs without ON/USING clause
-        // node-sql-parser allows JOINs without ON, but BigQuery requires them
-        const validateJoins = (ast: any): { valid: boolean; error?: string; line?: number; column?: number } => {
+        // BigQuery requires ON or USING clauses for JOINs (except CROSS JOIN)
+        const validateJoins = (stmt: any): { valid: boolean; error?: string; line?: number; column?: number } => {
           // Helper to check if an ON clause contains a valid join condition
           const isValidOnCondition = (onClause: any): boolean => {
             if (!onClause) return false;
             
+            const nodeType = getCstNodeType(onClause);
+            
             // ON TRUE or ON FALSE - technically valid (cartesian with always true/false)
-            if (onClause.type === 'bool') return true;
+            if (nodeType === 'bool' || nodeType === 'BooleanLiteral') return true;
             
             // ON 1=1 or similar comparison - valid
-            if (onClause.type === 'binary_expr') {
+            if (isBinaryExpr(onClause)) {
+              const operator = onClause.operator?.text || onClause.operator;
               const comparisonOperators = ['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'IN', 'IS', 'AND', 'OR'];
-              if (comparisonOperators.includes(onClause.operator?.toUpperCase?.())) {
+              if (comparisonOperators.includes(operator?.toUpperCase?.())) {
                 return true;
               }
               // Could be nested AND/OR with valid conditions
-              if (['AND', 'OR'].includes(onClause.operator?.toUpperCase?.())) {
+              if (['AND', 'OR'].includes(operator?.toUpperCase?.())) {
                 return isValidOnCondition(onClause.left) || isValidOnCondition(onClause.right);
               }
             }
             
             // ON column_ref alone (e.g., ON t1.id) - NOT valid, needs comparison
-            if (onClause.type === 'column_ref') return false;
+            if (isColumnRef(onClause)) return false;
             
             // Function calls might be valid (e.g., ON some_function())
-            if (onClause.type === 'function') return true;
+            if (isFunctionCall(onClause)) return true;
             
             // For other types, be lenient - let BigQuery decide
             return true;
           };
           
-          const checkFromClause = (fromItems: any[]): { valid: boolean; error?: string; tableName?: string } | null => {
-            if (!Array.isArray(fromItems)) return null;
+          const checkFromClause = (fromTables: any[]): { valid: boolean; error?: string; tableName?: string } | null => {
+            if (!Array.isArray(fromTables)) return null;
             
-            for (const item of fromItems) {
+            for (const item of fromTables) {
               // Check if this is a JOIN (not CROSS JOIN)
-              if (item.join && typeof item.join === 'string') {
-                const joinType = item.join.toUpperCase();
+              // CST structure: item.join.type.text or item.join.type or item.join
+              const joinType = item.join?.type?.text || item.join?.type || item.join;
+              if (joinType && typeof joinType === 'string') {
+                const joinTypeUpper = joinType.toUpperCase();
                 // CROSS JOIN doesn't require ON/USING
-                if (!joinType.includes('CROSS')) {
+                if (!joinTypeUpper.includes('CROSS')) {
                   // Regular JOIN, LEFT JOIN, RIGHT JOIN, etc. require ON or USING
-                  if (!item.on && !item.using) {
-                    const tableName = item.table || item.expr?.table || 'table';
-                    return { valid: false, error: `${joinType} is missing ON or USING clause`, tableName };
+                  const onCondition = item.onClause?.condition || item.on;
+                  if (!onCondition && !item.using) {
+                    const tableName = item.table?.name || item.table || item.name || 'table';
+                    return { valid: false, error: `${joinTypeUpper} is missing ON or USING clause`, tableName };
                   }
                   
                   // Check if ON clause has a valid condition (not just a column reference)
-                  if (item.on && !isValidOnCondition(item.on)) {
-                    const tableName = item.table || item.expr?.table || 'table';
-                    return { valid: false, error: `${joinType} ON clause requires a valid condition (e.g., t1.col = t2.col)`, tableName };
+                  if (onCondition && !isValidOnCondition(onCondition)) {
+                    const tableName = item.table?.name || item.table || item.name || 'table';
+                    return { valid: false, error: `${joinTypeUpper} ON clause requires a valid condition (e.g., t1.col = t2.col)`, tableName };
                   }
                 }
               }
               
               // Check nested subqueries in FROM clause
-              if (item.expr && item.expr.ast) {
-                const nestedResult = checkFromClause(item.expr.ast.from);
+              if (item.query) {
+                const nestedFromTables = getCstFromTables(item.query);
+                const nestedResult = checkFromClause(nestedFromTables);
                 if (nestedResult && !nestedResult.valid) return nestedResult;
               }
             }
             return null;
           };
           
-          // Handle both single statement and array of statements
-          const statements = Array.isArray(ast) ? ast : [ast];
+          // Handle CST structure - statements are in a Program node or array
+          const statements = cst.statements || (Array.isArray(cst) ? cst : [cst]);
           
           for (const stmt of statements) {
-            if (stmt.type === 'select' && stmt.from) {
-              const result = checkFromClause(stmt.from);
+            // Check for SELECT statement in CST
+            if (isSelectStmt(stmt)) {
+              const fromTables = getCstFromTables(stmt);
+              const result = checkFromClause(fromTables);
               if (result && !result.valid) {
                 // Try to find the position of the JOIN in the query
-                // Search for JOIN keyword followed by any characters until we find the table name
                 let line = 1;
                 let column = 1;
                 
-                // Build a pattern to find the JOIN with this table
-                // Handle both simple table names and fully qualified names (project.dataset.table)
-                const escapedTableName = result.tableName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') || '';
-                
                 // Look for the JOIN keyword that precedes this table reference
-                // Pattern: optional join type (LEFT, RIGHT, etc.) + JOIN + whitespace + table reference
                 const lines = trimmedQuery.split('\n');
                 for (let i = 0; i < lines.length; i++) {
                   const lineText = lines[i];
-                  // Check if this line contains a JOIN with the problematic table
                   const joinRegex = new RegExp(`\\b(?:LEFT\\s+|RIGHT\\s+|INNER\\s+|OUTER\\s+|FULL\\s+)?JOIN\\b`, 'i');
                   const joinMatch = lineText.match(joinRegex);
                   
                   if (joinMatch) {
-                    // Check if this line also contains the table name (or part of it)
                     const tableNameParts = (result.tableName || '').split('.');
                     const lastPart = tableNameParts[tableNameParts.length - 1] || result.tableName || '';
                     
@@ -1267,13 +1348,13 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
               }
             }
             
-            // Check CTEs (WITH clause)
-            if (stmt.with) {
-              for (const cte of stmt.with) {
-                if (cte.stmt && cte.stmt.ast) {
-                  const cteResult = validateJoins(cte.stmt.ast);
-                  if (!cteResult.valid) return cteResult;
-                }
+            // Check CTEs (WITH clause) - CST structure
+            const ctes = getCstWithCtes(stmt);
+            for (const cte of ctes) {
+              const cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
+              if (cteQuery) {
+                const cteResult = validateJoins(cteQuery);
+                if (!cteResult.valid) return cteResult;
               }
             }
           }
@@ -1281,7 +1362,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           return { valid: true };
         };
         
-        const joinValidation = validateJoins(parsedAst);
+        const joinValidation = validateJoins(cst);
         if (!joinValidation.valid) {
           const errorMessage = joinValidation.error || 'JOIN is missing ON or USING clause';
           const lineNumber = joinValidation.line || 1;
@@ -1429,7 +1510,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         let lineNumber = 1;
         let column = 1;
         
-        // Check error object for position properties (node-sql-parser may provide these)
+        // Check error object for position properties (sql-parser-cst may provide these)
         if (error.loc) {
           lineNumber = error.loc.line || error.loc.start?.line || 1;
           column = error.loc.column || error.loc.start?.column || error.loc.start?.character || 1;
@@ -1453,7 +1534,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           }
         } else {
           // Try to extract line and column from error message string
-          // Common error message patterns from node-sql-parser
+          // Common error message patterns from sql-parser-cst
           const lineMatch = errorMessage.match(/line (\d+)/i) || 
                            errorMessage.match(/at line (\d+)/i) ||
                            errorMessage.match(/line: (\d+)/i) ||
@@ -1673,8 +1754,13 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      const statements = Array.isArray(parsedAst) ? parsedAst : [parsedAst];
-      const selectStatements = statements.filter((stmt) => stmt?.type === 'select');
+      // Extract statements from CST (program.statements) or use directly if it's already a statement
+      const statements = parsedAst?.statements || (Array.isArray(parsedAst) ? parsedAst : [parsedAst]);
+      // Filter for SELECT statements - CST uses 'select_stmt', AST uses 'select'
+      const selectStatements = statements.filter((stmt: any) => {
+        const stmtType = stmt?.type || stmt?.kind;
+        return stmtType === 'select' || stmtType === 'select_stmt' || stmtType === 'SelectStatement';
+      });
 
       let columnIssues: ColumnValidationIssue[] = [];
 
