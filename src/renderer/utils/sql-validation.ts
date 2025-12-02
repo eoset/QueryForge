@@ -466,6 +466,14 @@ const getGroupByExpressions = (stmt: any): any[] => {
   if (stmt.clauses && Array.isArray(stmt.clauses)) {
     const groupByClause = stmt.clauses.find((c: any) => c.type === 'group_by_clause');
     if (groupByClause) {
+      // sql-parser-cst uses 'columns' property for GROUP BY items
+      if (groupByClause.columns?.items) {
+        return groupByClause.columns.items;
+      }
+      if (groupByClause.columns) {
+        return Array.isArray(groupByClause.columns) ? groupByClause.columns : [groupByClause.columns];
+      }
+      // Fallback: try expressions (other parsers)
       if (groupByClause.expressions?.items) {
         return groupByClause.expressions.items;
       }
@@ -481,6 +489,14 @@ const getGroupByExpressions = (stmt: any): any[] => {
   // Fallback: direct properties (AST or older CST)
   const groupByClause = stmt.groupByClause || stmt.groupBy;
   if (groupByClause) {
+    // Try columns first (sql-parser-cst)
+    if (groupByClause.columns?.items) {
+      return groupByClause.columns.items;
+    }
+    if (groupByClause.columns) {
+      return Array.isArray(groupByClause.columns) ? groupByClause.columns : [groupByClause.columns];
+    }
+    // Then try expressions
     if (groupByClause.expressions?.items) {
       return groupByClause.expressions.items;
     }
@@ -1991,8 +2007,9 @@ export const validateGroupByColumns = async (
     
     // Collect positional references (numbers like 1, 2, 3, etc.)
     // These can appear as various CST node types depending on the parser
+    // sql-parser-cst uses 'number_literal' for integer literals
     if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer' ||
-        nodeType === 'bigint' || nodeType === 'BigIntLiteral') {
+        nodeType === 'bigint' || nodeType === 'BigIntLiteral' || nodeType === 'number_literal') {
       let colNum: number | null = null;
       if (typeof groupExpr.value === 'number') {
         colNum = groupExpr.value;
@@ -2082,7 +2099,9 @@ export const validateGroupByColumns = async (
     const nodeType = getNodeType(groupExpr);
     
     // Check if it's a positional reference (column number like 1, 2, 3)
-    if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer') {
+    // sql-parser-cst uses 'number_literal' for integer literals
+    if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer' ||
+        nodeType === 'number_literal') {
       let colNum: number | null = null;
       
       // Try different CST structures for number literals

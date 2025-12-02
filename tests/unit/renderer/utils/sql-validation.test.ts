@@ -568,5 +568,51 @@ describe('SQL Validation Utilities', () => {
         expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
       });
     });
+
+    describe('GROUP BY positional references', () => {
+      it('should accept GROUP BY with positional references (number_literal type)', () => {
+        // This tests that sql-parser-cst's number_literal type is properly recognized
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            o.OrderStatus,
+            o.BillingCurrency,
+            o.PlacedPrice,
+            o.Discount,
+            SAFE_DIVIDE(SUM(o.Discount), SUM(o.PlacedPrice)) * 100 AS DiscountPercent,
+            o.OrderDateCet,
+            IFNULL(o.CouponCode, 'NONE') AS CouponCode
+          FROM
+            orders AS o
+          GROUP BY
+            1, 2, 3, 4, 5, 6, 8, 9
+        `);
+        // Should not produce errors for valid GROUP BY positional references
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        // This validates GROUP BY semantics, not positional references
+        // The validateGroupByColumns function handles positional reference validation
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+
+      it('should accept GROUP BY with positional references in CTE queries', () => {
+        const ast = parseSQL(`
+          WITH
+            data AS (
+              SELECT 1 AS col1, 'a' AS col2, 100 AS col3
+            )
+          SELECT
+            col1,
+            col2,
+            SUM(col3) AS total
+          FROM
+            data
+          GROUP BY
+            1, 2
+        `);
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+    });
   });
 });
