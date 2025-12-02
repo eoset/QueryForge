@@ -161,6 +161,42 @@ const isLiteral = (node: any): boolean => {
   return false;
 };
 
+// Check if node is a CASE expression
+// CASE expressions don't need to be in GROUP BY as they're complex expressions evaluated per row
+const isCaseExpression = (node: any): boolean => {
+  if (!node || typeof node !== 'object') return false;
+  
+  const type = getNodeType(node);
+  
+  // CASE expression types in CST
+  if (type === 'case_expr' || type === 'CaseExpr' || type === 'case' || type === 'Case' || 
+      type === 'case_expression' || type === 'CaseExpression') {
+    return true;
+  }
+  
+  // Check for CASE keyword in CST structure
+  if (node.keyword === 'CASE' || node.keyword?.text === 'CASE' || 
+      node.keyword?.name === 'CASE' || node.type === 'case') {
+    return true;
+  }
+  
+  // Check if it has CASE-like structure (when/then/else clauses)
+  // CST structure: case_expr has branches (array of when/then pairs) and else
+  if (node.branches || node.when || node.cases || node.then || node.else || node.elseExpr) {
+    return true;
+  }
+  
+  // Check for when_branch structure (CST)
+  if (Array.isArray(node.branches) && node.branches.length > 0) {
+    const firstBranch = node.branches[0];
+    if (firstBranch && (firstBranch.when || firstBranch.condition || firstBranch.then || firstBranch.result)) {
+      return true;
+    }
+  }
+  
+  return false;
+};
+
 // Extract location from CST node (uses 'range' property)
 const getLocationFromCst = (node: any): SqlNodeLocation | undefined => {
   if (!node) return undefined;
@@ -1779,12 +1815,15 @@ const parseGroupByExpressionsFromText = (
       }
       
       // Regular character - collect column references
-      if (!inExpr && /\w/.test(char)) {
+      // Match word characters (letters, digits, underscore) or dots for qualified names
+      // Also match digits at the start for positional references (1, 2, 3, etc.)
+      if (!inExpr && (/\w/.test(char) || /\d/.test(char))) {
         inExpr = true;
         exprStartCol = i;
         currentExpr = char;
       } else if (inExpr) {
-        if (/[\w.]/.test(char)) {
+        // Continue collecting: word chars, dots, or digits (for multi-digit positional refs like 10)
+        if (/[\w.]/.test(char) || /\d/.test(char)) {
           currentExpr += char;
         } else if (/[\s,]/.test(char)) {
           // End of expression
@@ -1950,8 +1989,10 @@ export const validateGroupByColumns = async (
     
     const nodeType = getNodeType(groupExpr);
     
-    // Collect positional references
-    if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer') {
+    // Collect positional references (numbers like 1, 2, 3, etc.)
+    // These can appear as various CST node types depending on the parser
+    if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer' ||
+        nodeType === 'bigint' || nodeType === 'BigIntLiteral') {
       let colNum: number | null = null;
       if (typeof groupExpr.value === 'number') {
         colNum = groupExpr.value;
@@ -1959,11 +2000,15 @@ export const validateGroupByColumns = async (
         colNum = groupExpr.value.value;
       } else if (typeof groupExpr.text === 'string') {
         const parsed = parseInt(groupExpr.text, 10);
-        if (!isNaN(parsed)) {
+        if (!isNaN(parsed) && parsed > 0) {
           colNum = parsed;
         }
       }
-      if (colNum !== null && typeof colNum === 'number') {
+      // Also check if the expression itself is a number (for some CST formats)
+      if (colNum === null && typeof groupExpr === 'number') {
+        colNum = groupExpr;
+      }
+      if (colNum !== null && typeof colNum === 'number' && colNum > 0) {
         groupByPositions.add(colNum);
       }
     }
@@ -1982,17 +2027,22 @@ export const validateGroupByColumns = async (
           const cleanTableName = stripIdentifierQuotes(tableName).toLowerCase();
           const qualifiedName = `${cleanTableName}.${cleanColumnName}`;
           groupByColumnNames.add(qualifiedName);
-          // Also add without table qualifier for matching
+          // Also add without table qualifier for matching (but prefer qualified)
           groupByColumnNames.add(cleanColumnName);
         } else {
           groupByColumnNames.add(cleanColumnName);
         }
       }
       
-      // Also check if this matches a SELECT alias
+      // Also check if this matches a SELECT alias (for cases like GROUP BY Discount when SELECT has Discount AS ...)
       const cleanColumnName = columnName ? stripIdentifierQuotes(columnName).toLowerCase() : null;
       if (cleanColumnName && selectAliasToPosition.has(cleanColumnName)) {
         groupByColumnNames.add(cleanColumnName);
+        // Also add qualified version if table is present
+        if (tableName) {
+          const cleanTableName = stripIdentifierQuotes(tableName).toLowerCase();
+          groupByColumnNames.add(`${cleanTableName}.${cleanColumnName}`);
+        }
       }
     }
   }
@@ -2002,21 +2052,23 @@ export const validateGroupByColumns = async (
   for (const expr of allGroupByExpressions) {
     if (!expr.isCommented) {
       const text = expr.text.trim();
-      // Try to parse as positional reference
+      // Try to parse as positional reference (must be pure digits)
       const posMatch = /^\d+$/.test(text);
       if (posMatch) {
         const pos = parseInt(text, 10);
-        if (!isNaN(pos)) {
+        if (!isNaN(pos) && pos > 0) {
           groupByPositions.add(pos);
         }
       } else {
         // Column reference - normalize and add
-        const normalized = text.toLowerCase().replace(/[`"']/g, '');
-        groupByColumnNames.add(normalized);
-        // Also add parts if it's qualified (table.column)
-        const parts = normalized.split('.');
-        if (parts.length === 2) {
-          groupByColumnNames.add(parts[1]); // Add unqualified name too
+        const normalized = text.toLowerCase().replace(/[`"']/g, '').trim();
+        if (normalized) {
+          groupByColumnNames.add(normalized);
+          // Also add parts if it's qualified (table.column)
+          const parts = normalized.split('.');
+          if (parts.length === 2) {
+            groupByColumnNames.add(parts[1]); // Add unqualified name too
+          }
         }
       }
     }
@@ -2229,6 +2281,12 @@ export const validateGroupByColumns = async (
       continue;
     }
     
+    // Skip CASE expressions - they're complex expressions that don't need to be in GROUP BY
+    // (though columns referenced within CASE expressions should still be validated separately)
+    if (isCaseExpression(expr)) {
+      continue;
+    }
+    
     // Skip if it's an aggregate function or has OVER clause (window function)
     if (isFunctionCall(expr)) {
       const funcName = extractFunctionName(expr);
@@ -2276,9 +2334,20 @@ export const validateGroupByColumns = async (
         }
       }
       
-      // Check if alias is in GROUP BY
-      if (aliasName && groupByColumnNames.has(aliasName)) {
-        isCovered = true;
+      // Check if alias is in GROUP BY (both qualified and unqualified)
+      if (aliasName && !isCovered) {
+        const aliasLower = aliasName.toLowerCase();
+        if (groupByColumnNames.has(aliasLower)) {
+          isCovered = true;
+        }
+        // Also check if alias matches a qualified name in GROUP BY (e.g., "o.discount" matches alias "discount")
+        for (const groupByName of groupByColumnNames) {
+          const parts = groupByName.split('.');
+          if (parts.length === 2 && parts[1] === aliasLower) {
+            isCovered = true;
+            break;
+          }
+        }
       }
       
       // Check column name - try multiple matching strategies
@@ -2301,24 +2370,72 @@ export const validateGroupByColumns = async (
             qualifiedName = `${cleanTableName}.${cleanColumnName}`;
           }
           
-          // Check qualified name first (most specific) - e.g., "gl.custno"
+          // Check qualified name first (most specific) - e.g., "o.discount"
           if (qualifiedName && groupByColumnNames.has(qualifiedName)) {
             isCovered = true;
           }
           
-          // Check unqualified name - e.g., "custno"
+          // Check unqualified name - e.g., "discount"
+          // This handles cases where GROUP BY uses unqualified name but SELECT uses qualified
           if (!isCovered && groupByColumnNames.has(cleanColumnName)) {
-            isCovered = true;
+            // If SELECT has a table qualifier, we prefer qualified match
+            // But if GROUP BY only has unqualified, that's also valid
+            // Check if there's a qualified version in GROUP BY that matches
+            let hasMatchingQualified = false;
+            if (qualifiedName) {
+              // Check if any GROUP BY name starts with table.column
+              for (const groupByName of groupByColumnNames) {
+                if (groupByName === qualifiedName || 
+                    (groupByName.startsWith(`${tableName?.toLowerCase()}.`) && 
+                     groupByName.endsWith(`.${cleanColumnName}`))) {
+                  hasMatchingQualified = true;
+                  break;
+                }
+              }
+            }
+            
+            // If we have a qualified name and GROUP BY has matching qualified, use that
+            // Otherwise, unqualified match is valid
+            if (!qualifiedName || !hasMatchingQualified) {
+              isCovered = true;
+            }
           }
           
           // Also check text-based parsing results for exact matches
+          // This is important because CST parsing might miss some edge cases
           if (!isCovered) {
             for (const textExpr of allGroupByExpressions) {
               if (!textExpr.isCommented) {
                 const textLower = textExpr.text.toLowerCase().replace(/[`"']/g, '').trim();
+                
+                // Exact match (qualified or unqualified)
                 if (textLower === cleanColumnName || textLower === qualifiedName) {
                   isCovered = true;
                   break;
+                }
+                
+                // Check if text is qualified and matches our column name
+                const textParts = textLower.split('.');
+                if (qualifiedName && textParts.length === 2) {
+                  const textTable = textParts[0];
+                  const textColumn = textParts[1];
+                  const cleanTableName = tableName ? stripIdentifierQuotes(tableName).toLowerCase() : null;
+                  
+                  // Match if table and column both match
+                  if (textColumn === cleanColumnName && 
+                      (cleanTableName === null || textTable === cleanTableName)) {
+                    isCovered = true;
+                    break;
+                  }
+                }
+                
+                // Also check reverse: if our qualified name matches text's qualified name
+                if (qualifiedName && textParts.length === 2) {
+                  const textQualified = textLower;
+                  if (textQualified === qualifiedName) {
+                    isCovered = true;
+                    break;
+                  }
                 }
               }
             }
@@ -2329,19 +2446,73 @@ export const validateGroupByColumns = async (
           if (!isCovered) {
             for (const [pos, selectColName] of selectColumnNames.entries()) {
               // Match both qualified and unqualified names
-              // selectColName might be qualified (gl.custno) or unqualified (custno)
+              // selectColName might be qualified (o.discount) or unqualified (discount)
               const matchesQualified = qualifiedName && selectColName === qualifiedName;
               const matchesUnqualified = selectColName === cleanColumnName;
               // Also check if selectColName is qualified and matches our unqualified name
               const selectColParts = selectColName.split('.');
               const matchesQualifiedUnqualified = qualifiedName && selectColParts.length === 2 && 
-                                                  selectColParts[1] === cleanColumnName;
+                                                  selectColParts[1] === cleanColumnName &&
+                                                  selectColParts[0] === tableName?.toLowerCase();
               
               if ((matchesQualified || matchesUnqualified || matchesQualifiedUnqualified) && 
                   groupByPositions.has(pos)) {
                 isCovered = true;
                 break;
               }
+            }
+          }
+          
+          // Final fallback: check all GROUP BY column names for any match
+          // This handles edge cases where CST parsing might miss exact matches
+          if (!isCovered) {
+            for (const groupByName of groupByColumnNames) {
+              // Exact match
+              if (groupByName === qualifiedName || groupByName === cleanColumnName) {
+                isCovered = true;
+                break;
+              }
+              
+              // Check if GROUP BY name is qualified and matches our column
+              const groupByParts = groupByName.split('.');
+              if (qualifiedName && groupByParts.length === 2) {
+                const groupByTable = groupByParts[0];
+                const groupByColumn = groupByParts[1];
+                const cleanTableName = tableName ? stripIdentifierQuotes(tableName).toLowerCase() : null;
+                
+                // Match if both table and column match
+                if (groupByColumn === cleanColumnName && 
+                    (cleanTableName === null || groupByTable === cleanTableName)) {
+                  isCovered = true;
+                  break;
+                }
+              }
+              
+              // Check if our qualified name matches GROUP BY's qualified name
+              if (qualifiedName && groupByParts.length === 2 && groupByName === qualifiedName) {
+                isCovered = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      
+      // Also check if the SELECT column's alias matches any GROUP BY column
+      // This handles cases where SELECT has an alias that matches GROUP BY
+      if (!isCovered && aliasName) {
+        const aliasLower = aliasName.toLowerCase();
+        // Check if alias matches GROUP BY (could be qualified or unqualified)
+        if (groupByColumnNames.has(aliasLower)) {
+          isCovered = true;
+        }
+        // Check if GROUP BY has a qualified name ending with this alias
+        if (!isCovered) {
+          for (const groupByName of groupByColumnNames) {
+            const parts = groupByName.split('.');
+            if (parts.length === 2 && parts[1] === aliasLower) {
+              isCovered = true;
+              break;
             }
           }
         }
