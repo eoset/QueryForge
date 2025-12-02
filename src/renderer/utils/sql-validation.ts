@@ -2,7 +2,15 @@
  * SQL Validation Utilities
  * 
  * This module contains utility functions for validating SQL queries,
- * including column reference validation and subquery scope handling.
+ * including column reference validation, subquery scope handling,
+ * and BigQuery syntax rule enforcement.
+ * 
+ * Based on BigQuery GoogleSQL query syntax rules:
+ * - Query execution order: FROM -> WHERE -> GROUP BY -> HAVING -> WINDOW -> QUALIFY -> SELECT -> DISTINCT -> ORDER BY -> LIMIT/OFFSET
+ * - Aggregate functions cannot be used in WHERE (use HAVING)
+ * - Window functions cannot be used in WHERE or HAVING (use QUALIFY)
+ * - Non-aggregated columns in SELECT must appear in GROUP BY
+ * - OFFSET can only be used with LIMIT
  */
 
 export interface SqlNodeLocation {
@@ -30,7 +38,338 @@ export interface ColumnValidationIssue {
   line: number;
   column: number;
   length: number;
+  severity?: 'error' | 'warning' | 'info';
+  rule?: string;
 }
+
+/**
+ * BigQuery aggregate functions that cannot be used in WHERE clause
+ * Based on BigQuery GoogleSQL syntax documentation
+ */
+export const BIGQUERY_AGGREGATE_FUNCTIONS = new Set([
+  'count', 'sum', 'avg', 'min', 'max',
+  'array_agg', 'array_concat_agg',
+  'bit_and', 'bit_or', 'bit_xor',
+  'countif',
+  'logical_and', 'logical_or',
+  'string_agg',
+  'stddev', 'stddev_pop', 'stddev_samp',
+  'variance', 'var_pop', 'var_samp',
+  'corr', 'covar_pop', 'covar_samp',
+  'approx_count_distinct', 'approx_quantiles', 'approx_top_count', 'approx_top_sum',
+  'hll_count.init', 'hll_count.merge', 'hll_count.merge_partial', 'hll_count.extract',
+  'any_value',
+  'grouping',
+]);
+
+/**
+ * BigQuery window/analytic functions that can only be used in SELECT, ORDER BY, or with QUALIFY
+ * Based on BigQuery GoogleSQL syntax documentation
+ */
+export const BIGQUERY_WINDOW_FUNCTIONS = new Set([
+  'row_number', 'rank', 'dense_rank', 'percent_rank', 'cume_dist', 'ntile',
+  'lag', 'lead', 'first_value', 'last_value', 'nth_value',
+  'percentile_cont', 'percentile_disc',
+]);
+
+/**
+ * Checks if an expression contains an aggregate function call
+ */
+export const containsAggregateFunction = (node: any): { found: boolean; functionName?: string; location?: SqlNodeLocation } => {
+  if (!node) return { found: false };
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const result = containsAggregateFunction(child);
+      if (result.found) return result;
+    }
+    return { found: false };
+  }
+
+  if (typeof node !== 'object') return { found: false };
+
+  // Skip subqueries - aggregate functions in subqueries are valid
+  if (node.type === 'select') {
+    return { found: false };
+  }
+
+  // Check for aggregate function
+  if (node.type === 'aggr_func' || node.type === 'function') {
+    let funcName = '';
+    if (typeof node.name === 'string') {
+      funcName = node.name.toLowerCase();
+    } else if (node.name && typeof node.name === 'object') {
+      // Handle different AST structures for function names
+      if (typeof node.name.name === 'string') {
+        funcName = node.name.name.toLowerCase();
+      } else if (node.name.name && typeof node.name.name.value === 'string') {
+        funcName = node.name.name.value.toLowerCase();
+      } else if (typeof node.name.value === 'string') {
+        funcName = node.name.value.toLowerCase();
+      }
+    }
+    
+    if (funcName && BIGQUERY_AGGREGATE_FUNCTIONS.has(funcName)) {
+      return { 
+        found: true, 
+        functionName: funcName.toUpperCase(),
+        location: node.location || node.loc 
+      };
+    }
+  }
+
+  // Recursively check child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') continue;
+    const result = containsAggregateFunction(node[key]);
+    if (result.found) return result;
+  }
+
+  return { found: false };
+};
+
+/**
+ * Checks if an expression contains a window function call (function with OVER clause)
+ */
+export const containsWindowFunction = (node: any): { found: boolean; functionName?: string; location?: SqlNodeLocation } => {
+  if (!node) return { found: false };
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const result = containsWindowFunction(child);
+      if (result.found) return result;
+    }
+    return { found: false };
+  }
+
+  if (typeof node !== 'object') return { found: false };
+
+  // Skip subqueries - window functions in subqueries are valid
+  if (node.type === 'select') {
+    return { found: false };
+  }
+
+  // Helper function to extract function name from various AST structures
+  const extractFuncName = (nameNode: any): string => {
+    if (typeof nameNode === 'string') {
+      return nameNode.toLowerCase();
+    }
+    if (nameNode && typeof nameNode === 'object') {
+      if (typeof nameNode.name === 'string') {
+        return nameNode.name.toLowerCase();
+      } else if (nameNode.name && typeof nameNode.name.value === 'string') {
+        return nameNode.name.value.toLowerCase();
+      } else if (typeof nameNode.value === 'string') {
+        return nameNode.value.toLowerCase();
+      }
+    }
+    return '';
+  };
+
+  // Check for window function (any function with OVER clause)
+  if (node.over || node.window) {
+    const funcName = extractFuncName(node.name) || 'window function';
+    
+    return { 
+      found: true, 
+      functionName: funcName.toUpperCase(),
+      location: node.location || node.loc 
+    };
+  }
+
+  // Also check for known window-only functions
+  if (node.type === 'function' || node.type === 'aggr_func') {
+    const funcName = extractFuncName(node.name);
+    
+    if (BIGQUERY_WINDOW_FUNCTIONS.has(funcName) && (node.over || node.window)) {
+      return { 
+        found: true, 
+        functionName: funcName.toUpperCase(),
+        location: node.location || node.loc 
+      };
+    }
+  }
+
+  // Recursively check child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') continue;
+    const result = containsWindowFunction(node[key]);
+    if (result.found) return result;
+  }
+
+  return { found: false };
+};
+
+/**
+ * Validates BigQuery syntax rules for a SELECT statement.
+ * Returns an array of validation issues based on GoogleSQL rules.
+ */
+export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIssue[] => {
+  const issues: ColumnValidationIssue[] = [];
+
+  if (!selectAst || typeof selectAst !== 'object') {
+    return issues;
+  }
+
+  // Rule 1: Aggregate functions cannot be used in WHERE clause (use HAVING instead)
+  if (selectAst.where) {
+    const aggregateCheck = containsAggregateFunction(selectAst.where);
+    if (aggregateCheck.found) {
+      issues.push({
+        message: `Aggregate function ${aggregateCheck.functionName || 'unknown'} cannot be used in WHERE clause. Use HAVING to filter aggregated results.`,
+        line: aggregateCheck.location?.start?.line || 1,
+        column: aggregateCheck.location?.start?.column || 1,
+        length: aggregateCheck.functionName?.length || 10,
+        severity: 'error',
+        rule: 'aggregate-in-where',
+      });
+    }
+  }
+
+  // Rule 2: Window functions cannot be used in WHERE clause (use QUALIFY instead)
+  if (selectAst.where) {
+    const windowCheck = containsWindowFunction(selectAst.where);
+    if (windowCheck.found) {
+      issues.push({
+        message: `Window function ${windowCheck.functionName || 'unknown'} cannot be used in WHERE clause. Use QUALIFY to filter window function results.`,
+        line: windowCheck.location?.start?.line || 1,
+        column: windowCheck.location?.start?.column || 1,
+        length: windowCheck.functionName?.length || 10,
+        severity: 'error',
+        rule: 'window-in-where',
+      });
+    }
+  }
+
+  // Rule 3: Window functions cannot be used in HAVING clause (use QUALIFY instead)
+  if (selectAst.having) {
+    const windowCheck = containsWindowFunction(selectAst.having);
+    if (windowCheck.found) {
+      issues.push({
+        message: `Window function ${windowCheck.functionName || 'unknown'} cannot be used in HAVING clause. Use QUALIFY to filter window function results.`,
+        line: windowCheck.location?.start?.line || 1,
+        column: windowCheck.location?.start?.column || 1,
+        length: windowCheck.functionName?.length || 10,
+        severity: 'error',
+        rule: 'window-in-having',
+      });
+    }
+  }
+
+  // Rule 4: OFFSET can only be used with LIMIT
+  // Check if we have an OFFSET without LIMIT
+  if (selectAst.limit) {
+    // node-sql-parser represents LIMIT/OFFSET differently depending on the database
+    // In BigQuery mode, check for offset without limit value
+    const hasLimit = selectAst.limit.value !== undefined && selectAst.limit.value !== null;
+    const hasOffset = selectAst.limit.offset !== undefined && selectAst.limit.offset !== null;
+    
+    if (hasOffset && !hasLimit) {
+      issues.push({
+        message: 'OFFSET can only be used with LIMIT clause.',
+        line: 1,
+        column: 1,
+        length: 6,
+        severity: 'error',
+        rule: 'offset-without-limit',
+      });
+    }
+  }
+
+  // Rule 5: When GROUP BY is used, non-aggregated SELECT columns should be in GROUP BY
+  // This is a warning since BigQuery may infer some cases
+  if (selectAst.groupby && Array.isArray(selectAst.columns)) {
+    const groupByColumns = new Set<string>();
+    
+    // Extract GROUP BY column names
+    const extractGroupByColumns = (groupExpr: any) => {
+      if (!groupExpr) return;
+      if (Array.isArray(groupExpr)) {
+        groupExpr.forEach(extractGroupByColumns);
+        return;
+      }
+      if (groupExpr.value && Array.isArray(groupExpr.value)) {
+        groupExpr.value.forEach(extractGroupByColumns);
+        return;
+      }
+      
+      // Handle column reference
+      if (groupExpr.type === 'column_ref') {
+        const colName = typeof groupExpr.column === 'string' 
+          ? groupExpr.column 
+          : groupExpr.column?.expr?.value || groupExpr.column?.column || '';
+        if (colName) {
+          groupByColumns.add(stripIdentifierQuotes(colName).toLowerCase());
+        }
+      }
+      // Handle positional reference (1, 2, 3)
+      else if (groupExpr.type === 'number' && typeof groupExpr.value === 'number') {
+        // Positional references are valid, add a placeholder
+        groupByColumns.add(`__positional_${groupExpr.value}__`);
+      }
+    };
+    
+    extractGroupByColumns(selectAst.groupby);
+    
+    // Check SELECT columns that are not aggregated
+    for (let i = 0; i < selectAst.columns.length; i++) {
+      const col = selectAst.columns[i];
+      const expr = col?.expr ?? col;
+      
+      // Skip if it's an aggregate function or has OVER clause (window function)
+      if (expr?.type === 'aggr_func' || expr?.over || expr?.window) {
+        continue;
+      }
+      
+      // Skip SELECT * 
+      if (expr?.type === 'star' || col === '*') {
+        continue;
+      }
+      
+      // Check if column has an aggregate function anywhere in its expression
+      const hasAggregate = containsAggregateFunction(expr);
+      if (hasAggregate.found) {
+        continue;
+      }
+      
+      // Check for simple column reference
+      if (expr?.type === 'column_ref') {
+        const colName = typeof expr.column === 'string'
+          ? expr.column
+          : expr.column?.expr?.value || expr.column?.column || '';
+        const cleanColName = stripIdentifierQuotes(colName).toLowerCase();
+        
+        // Check if this column is in GROUP BY or if there's a positional reference for this position
+        const isInGroupBy = groupByColumns.has(cleanColName) || 
+                           groupByColumns.has(`__positional_${i + 1}__`);
+        
+        if (!isInGroupBy && cleanColName) {
+          issues.push({
+            message: `Column "${colName}" must appear in GROUP BY clause or be used in an aggregate function.`,
+            line: expr.location?.start?.line || 1,
+            column: expr.location?.start?.column || 1,
+            length: colName.length || 10,
+            severity: 'warning',
+            rule: 'missing-group-by',
+          });
+        }
+      }
+    }
+  }
+
+  // Recursively validate CTEs
+  if (Array.isArray(selectAst.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        const cteIssues = validateBigQuerySyntaxRules(cteAst);
+        issues.push(...cteIssues);
+      }
+    }
+  }
+
+  return issues;
+};
 
 export const stripIdentifierQuotes = (value: string | null | undefined): string => {
   if (!value) return '';

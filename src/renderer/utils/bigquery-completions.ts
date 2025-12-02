@@ -70,6 +70,8 @@ const BIGQUERY_KEYWORDS = [
   'DATETIME', 'TIME', 'TIMESTAMP', 'STRING', 'INT64', 'FLOAT64', 'BOOL',
   'BYTES', 'ARRAY', 'STRUCT', 'GEOGRAPHY', 'JSON', 'NUMERIC', 'BIGNUMERIC',
   'DECIMAL', 'TRUE', 'FALSE', 'IF', 'COALESCE', 'NULLIF', 'GREATEST', 'LEAST',
+  'QUALIFY', 'EXCEPT', 'REPLACE', 'UNNEST', 'PIVOT', 'UNPIVOT', 'TABLESAMPLE',
+  'FOR', 'SYSTEM_TIME', 'ASC', 'DESC', 'NULLS', 'FIRST', 'LAST',
 ];
 
 // BigQuery Date/Time Functions
@@ -1324,6 +1326,238 @@ function detectWhereContext(
 }
 
 /**
+ * Detects if we're in a GROUP BY clause and returns all available table references with aliases.
+ * GROUP BY can reference columns from FROM tables and SELECT aliases.
+ */
+function detectGroupByContext(
+  model: any,
+  position: any,
+  statementContext?: StatementContext | null
+): Array<{ tableRef: string; alias: string | null }> | null {
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
+  
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
+    return null;
+  }
+  
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
+  
+  // Check if we're in a GROUP BY clause
+  const groupByMatch = selectScopedTextUpToCursor.match(/\bGROUP\s+BY\s+/i);
+  if (!groupByMatch) {
+    return null;
+  }
+  
+  const groupByIndex = groupByMatch.index || 0;
+  const textAfterGroupBy = selectScopedTextUpToCursor.substring(groupByIndex);
+  
+  // Check if we've moved past the GROUP BY clause into HAVING, ORDER BY, etc.
+  const endOfGroupByMatch = textAfterGroupBy.match(/\b(HAVING|ORDER\s+BY|LIMIT|QUALIFY|WINDOW|UNION|EXCEPT|INTERSECT)\b/i);
+  if (endOfGroupByMatch) {
+    const endOfGroupByIndex = groupByIndex + (endOfGroupByMatch.index || 0);
+    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    if (cursorPositionInScoped > endOfGroupByIndex) {
+      return null;
+    }
+  }
+  
+  // Extract tables from the current SELECT scope
+  const fromClause = parseFromClause(selectScopedStatementText);
+  const joins = parseJoinStatements(selectScopedStatementText);
+  
+  const tables: Array<{ tableRef: string; alias: string | null }> = [];
+  if (fromClause) {
+    tables.push(fromClause);
+  }
+  for (const join of joins) {
+    tables.push({ tableRef: join.tableRef, alias: join.alias });
+  }
+  
+  return tables.length > 0 ? tables : null;
+}
+
+/**
+ * Detects if we're in a HAVING clause and returns all available table references with aliases.
+ * HAVING can reference aggregate functions and GROUP BY columns.
+ */
+function detectHavingContext(
+  model: any,
+  position: any,
+  statementContext?: StatementContext | null
+): Array<{ tableRef: string; alias: string | null }> | null {
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
+  
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
+    return null;
+  }
+  
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
+  
+  // Check if we're in a HAVING clause
+  const havingMatch = selectScopedTextUpToCursor.match(/\bHAVING\s+/i);
+  if (!havingMatch) {
+    return null;
+  }
+  
+  const havingIndex = havingMatch.index || 0;
+  const textAfterHaving = selectScopedTextUpToCursor.substring(havingIndex);
+  
+  // Check if we've moved past the HAVING clause into ORDER BY, LIMIT, etc.
+  const endOfHavingMatch = textAfterHaving.match(/\b(ORDER\s+BY|LIMIT|QUALIFY|WINDOW|UNION|EXCEPT|INTERSECT)\b/i);
+  if (endOfHavingMatch) {
+    const endOfHavingIndex = havingIndex + (endOfHavingMatch.index || 0);
+    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    if (cursorPositionInScoped > endOfHavingIndex) {
+      return null;
+    }
+  }
+  
+  // Extract tables from the current SELECT scope
+  const fromClause = parseFromClause(selectScopedStatementText);
+  const joins = parseJoinStatements(selectScopedStatementText);
+  
+  const tables: Array<{ tableRef: string; alias: string | null }> = [];
+  if (fromClause) {
+    tables.push(fromClause);
+  }
+  for (const join of joins) {
+    tables.push({ tableRef: join.tableRef, alias: join.alias });
+  }
+  
+  return tables.length > 0 ? tables : null;
+}
+
+/**
+ * Detects if we're in an ORDER BY clause and returns all available table references with aliases.
+ * ORDER BY can reference columns, aliases, and positional references.
+ */
+function detectOrderByContext(
+  model: any,
+  position: any,
+  statementContext?: StatementContext | null
+): Array<{ tableRef: string; alias: string | null }> | null {
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
+  
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
+    return null;
+  }
+  
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
+  
+  // Check if we're in an ORDER BY clause
+  const orderByMatch = selectScopedTextUpToCursor.match(/\bORDER\s+BY\s+/i);
+  if (!orderByMatch) {
+    return null;
+  }
+  
+  const orderByIndex = orderByMatch.index || 0;
+  const textAfterOrderBy = selectScopedTextUpToCursor.substring(orderByIndex);
+  
+  // Check if we've moved past the ORDER BY clause into LIMIT, etc.
+  const endOfOrderByMatch = textAfterOrderBy.match(/\b(LIMIT|UNION|EXCEPT|INTERSECT)\b/i);
+  if (endOfOrderByMatch) {
+    const endOfOrderByIndex = orderByIndex + (endOfOrderByMatch.index || 0);
+    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    if (cursorPositionInScoped > endOfOrderByIndex) {
+      return null;
+    }
+  }
+  
+  // Extract tables from the current SELECT scope
+  const fromClause = parseFromClause(selectScopedStatementText);
+  const joins = parseJoinStatements(selectScopedStatementText);
+  
+  const tables: Array<{ tableRef: string; alias: string | null }> = [];
+  if (fromClause) {
+    tables.push(fromClause);
+  }
+  for (const join of joins) {
+    tables.push({ tableRef: join.tableRef, alias: join.alias });
+  }
+  
+  return tables.length > 0 ? tables : null;
+}
+
+/**
+ * Detects if we're in a QUALIFY clause and returns all available table references with aliases.
+ * QUALIFY is used to filter window function results.
+ */
+function detectQualifyContext(
+  model: any,
+  position: any,
+  statementContext?: StatementContext | null
+): Array<{ tableRef: string; alias: string | null }> | null {
+  const fallbackText = model.getValue();
+  const cursorOffset = statementContext ? statementContext.cursorOffsetInStatement : model.getOffsetAt(position);
+  const textUpToCursor = statementContext ? statementContext.textBeforeCursor : fallbackText.substring(0, cursorOffset);
+  const statementSql = statementContext ? statementContext.statementText : fallbackText;
+  
+  const selectMatches = Array.from(textUpToCursor.matchAll(/\bSELECT\s+/gi)) as RegExpMatchArray[];
+  if (selectMatches.length === 0) {
+    return null;
+  }
+  
+  const lastSelectMatch = selectMatches[selectMatches.length - 1];
+  const selectIndex = lastSelectMatch.index || 0;
+  const selectScopedTextUpToCursor = textUpToCursor.substring(selectIndex);
+  const selectScopedStatementText = statementSql.substring(selectIndex);
+  
+  // Check if we're in a QUALIFY clause
+  const qualifyMatch = selectScopedTextUpToCursor.match(/\bQUALIFY\s+/i);
+  if (!qualifyMatch) {
+    return null;
+  }
+  
+  const qualifyIndex = qualifyMatch.index || 0;
+  const textAfterQualify = selectScopedTextUpToCursor.substring(qualifyIndex);
+  
+  // Check if we've moved past the QUALIFY clause into ORDER BY, LIMIT, etc.
+  const endOfQualifyMatch = textAfterQualify.match(/\b(ORDER\s+BY|LIMIT|UNION|EXCEPT|INTERSECT)\b/i);
+  if (endOfQualifyMatch) {
+    const endOfQualifyIndex = qualifyIndex + (endOfQualifyMatch.index || 0);
+    const cursorPositionInScoped = selectScopedTextUpToCursor.length;
+    if (cursorPositionInScoped > endOfQualifyIndex) {
+      return null;
+    }
+  }
+  
+  // Extract tables from the current SELECT scope
+  const fromClause = parseFromClause(selectScopedStatementText);
+  const joins = parseJoinStatements(selectScopedStatementText);
+  
+  const tables: Array<{ tableRef: string; alias: string | null }> = [];
+  if (fromClause) {
+    tables.push(fromClause);
+  }
+  for (const join of joins) {
+    tables.push({ tableRef: join.tableRef, alias: join.alias });
+  }
+  
+  return tables.length > 0 ? tables : null;
+}
+
+/**
  * Gets column suggestions for JOIN ON clause
  */
 async function getJoinColumnSuggestions(
@@ -2041,6 +2275,171 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
                 } catch (error) {
                   // Silently handle errors
                 }
+              }
+            }
+          }
+        }
+
+        // Check if we're in GROUP BY, HAVING, ORDER BY, or QUALIFY clauses
+        // These all need column suggestions similar to WHERE
+        if (!isSelectContext && !isJoinOnContext) {
+          // Try each clause context in order of specificity
+          const clauseContexts = [
+            { name: 'GROUP BY', detect: detectGroupByContext },
+            { name: 'HAVING', detect: detectHavingContext },
+            { name: 'ORDER BY', detect: detectOrderByContext },
+            { name: 'QUALIFY', detect: detectQualifyContext },
+          ];
+
+          for (const { detect } of clauseContexts) {
+            const clauseTables = detect(model, position, statementContext);
+            if (clauseTables && clauseTables.length > 0) {
+              // Check if we're typing after a table alias dot (e.g., "t." or "t.col")
+              const aliasDotMatch = textBeforeCursor.match(/([\w\-]+)\.([\w\-]*)$/);
+              
+              if (aliasDotMatch) {
+                const typedAlias = aliasDotMatch[1];
+                const partialColumn = aliasDotMatch[2] || '';
+                
+                // Find matching table by alias
+                const getTableAlias = (table: { tableRef: string; alias: string | null }): string => {
+                  if (table.alias) {
+                    return table.alias;
+                  }
+                  const cleanRef = table.tableRef.replace(/[`"']/g, '');
+                  const parts = cleanRef.split('.').filter(p => p.length > 0);
+                  return parts[parts.length - 1] || '';
+                };
+                
+                for (const table of clauseTables) {
+                  const tableAlias = getTableAlias(table);
+                  if (typedAlias.toLowerCase() === tableAlias.toLowerCase()) {
+                    isSelectContext = true;
+                    
+                    const resolvedRef = resolveDatasetTableFromRef(table.tableRef);
+                    
+                    if (resolvedRef) {
+                      const { datasetId, tableId } = resolvedRef;
+                      try {
+                        const schema = await getTableSchema(projectId, datasetId, tableId);
+                        const prefixLower = partialColumn.toLowerCase();
+                        
+                        // Calculate proper range
+                        const dotPosition = textBeforeCursor.lastIndexOf('.');
+                        const rangeStartColumn = partialColumn 
+                          ? (dotPosition + 2)
+                          : position.column;
+                        const rangeEndColumn = position.column;
+                        
+                        for (const field of schema) {
+                          if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                            selectColumnSuggestions.push({
+                              label: field.name,
+                              kind: CompletionItemKind.Property,
+                              insertText: field.name,
+                              detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                              documentation: `Column from ${table.tableRef}`,
+                              range: {
+                                startLineNumber: position.lineNumber,
+                                endLineNumber: position.lineNumber,
+                                startColumn: rangeStartColumn,
+                                endColumn: rangeEndColumn,
+                              },
+                            });
+                          }
+                        }
+                      } catch (error) {
+                        // Silently handle errors
+                      }
+                    }
+                    break;
+                  }
+                }
+              }
+
+              if (!isSelectContext) {
+                // Not after a dot, show columns from all tables with aliases/prefixes
+                const dedupedTables: Array<{
+                  alias: string | null;
+                  tableRef: string;
+                  datasetId: string;
+                  tableId: string;
+                }> = [];
+                const seenTables = new Set<string>();
+
+                for (const table of clauseTables) {
+                  const resolvedRef = resolveDatasetTableFromRef(table.tableRef);
+                  if (!resolvedRef) {
+                    continue;
+                  }
+
+                  const key = table.alias
+                    ? `alias:${table.alias.toLowerCase()}`
+                    : `table:${resolvedRef.datasetId.toLowerCase()}.${resolvedRef.tableId.toLowerCase()}`;
+
+                  if (seenTables.has(key)) {
+                    continue;
+                  }
+
+                  seenTables.add(key);
+                  dedupedTables.push({
+                    alias: table.alias,
+                    tableRef: table.tableRef,
+                    datasetId: resolvedRef.datasetId,
+                    tableId: resolvedRef.tableId,
+                  });
+                }
+
+                if (dedupedTables.length > 0) {
+                  try {
+                    const schemaResults = await Promise.all(
+                      dedupedTables.map(async (tableInfo) => ({
+                        tableInfo,
+                        schema: await getTableSchema(projectId, tableInfo.datasetId, tableInfo.tableId),
+                      }))
+                    );
+
+                    const partialColumn = word.word || '';
+                    const prefixLower = partialColumn.toLowerCase();
+                    const baseRange = {
+                      startLineNumber: position.lineNumber,
+                      endLineNumber: position.lineNumber,
+                      startColumn: word.startColumn,
+                      endColumn: word.endColumn,
+                    };
+                    const shouldInsertBareColumns = dedupedTables.length === 1 && !dedupedTables[0].alias;
+
+                    for (const { tableInfo, schema } of schemaResults) {
+                      const displayPrefix = tableInfo.alias || tableInfo.tableId;
+                      for (const field of schema) {
+                        if (!prefixLower || field.name.toLowerCase().startsWith(prefixLower)) {
+                          const label = shouldInsertBareColumns && !tableInfo.alias
+                            ? field.name
+                            : `${displayPrefix}.${field.name}`;
+                          selectColumnSuggestions.push({
+                            label,
+                            kind: CompletionItemKind.Property,
+                            insertText: label,
+                            detail: `Column: ${field.name} (${field.type || 'unknown'})`,
+                            documentation: `Column from ${tableInfo.tableRef}`,
+                            range: baseRange,
+                          });
+                        }
+                      }
+                    }
+
+                    if (selectColumnSuggestions.length > 0) {
+                      isSelectContext = true;
+                    }
+                  } catch (error) {
+                    // Silently handle errors
+                  }
+                }
+              }
+
+              // If we found a context, stop checking other clause types
+              if (isSelectContext) {
+                break;
               }
             }
           }

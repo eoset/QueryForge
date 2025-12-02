@@ -5,7 +5,11 @@ import {
   buildTableAliasMapFromSelect,
   collectSubqueries,
   validateColumnReferences,
+  validateBigQuerySyntaxRules,
+  containsAggregateFunction,
+  containsWindowFunction,
   ColumnRefInfo,
+  ColumnValidationIssue,
 } from '../../../../src/renderer/utils/sql-validation';
 
 describe('SQL Validation Utilities', () => {
@@ -348,6 +352,7 @@ describe('SQL Validation Utilities', () => {
       
       const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
       
+      
       // s should be valid within the CTE body
       const sError = issues.find(i => i.message.includes('"s"'));
       expect(sError).toBeUndefined();
@@ -385,6 +390,111 @@ describe('SQL Validation Utilities', () => {
       // actr should be valid in the correlated subquery (parent scope)
       const actrError = issues.find(i => i.message.includes('"actr"'));
       expect(actrError).toBeUndefined();
+    });
+  });
+
+  describe('validateBigQuerySyntaxRules', () => {
+    describe('containsAggregateFunction', () => {
+      it('should detect COUNT aggregate function', () => {
+        const ast = parseSQL('SELECT COUNT(*) FROM table1');
+        const selectExpr = ast.columns[0].expr;
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(true);
+        expect(result.functionName).toBe('COUNT');
+      });
+
+      it('should detect SUM aggregate function', () => {
+        const ast = parseSQL('SELECT SUM(amount) FROM table1');
+        const selectExpr = ast.columns[0].expr;
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(true);
+        expect(result.functionName).toBe('SUM');
+      });
+
+      it('should not detect non-aggregate functions', () => {
+        const ast = parseSQL('SELECT UPPER(name) FROM table1');
+        const selectExpr = ast.columns[0].expr;
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(false);
+      });
+
+      it('should not detect aggregate in subquery', () => {
+        const ast = parseSQL('SELECT * FROM table1 WHERE id IN (SELECT MAX(id) FROM table2)');
+        // The WHERE clause contains the subquery
+        const result = containsAggregateFunction(ast.where);
+        expect(result.found).toBe(false); // Subqueries are skipped
+      });
+    });
+
+    describe('aggregate in WHERE validation', () => {
+      it('should report error when COUNT is used in WHERE', () => {
+        // Note: This query won't parse correctly since it's invalid SQL,
+        // but we test the validation logic with a mock AST
+        const mockAst = {
+          type: 'select',
+          columns: [{ expr: { type: 'column_ref', column: 'id' } }],
+          from: [{ table: 'orders' }],
+          where: {
+            type: 'binary_expr',
+            operator: '>',
+            left: {
+              type: 'aggr_func',
+              name: 'count',
+              args: { expr: '*' },
+            },
+            right: { type: 'number', value: 5 },
+          },
+        };
+        
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
+        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
+        expect(issues.some((i: ColumnValidationIssue) => i.message.includes('COUNT'))).toBe(true);
+      });
+
+      it('should not report error for valid WHERE without aggregates', () => {
+        const ast = parseSQL('SELECT * FROM orders WHERE amount > 100');
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toHaveLength(0);
+      });
+    });
+
+    describe('window function validation', () => {
+      it('should allow window functions in SELECT', () => {
+        const ast = parseSQL('SELECT ROW_NUMBER() OVER (ORDER BY id) as rn FROM table1');
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        // No errors about window functions in SELECT
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'window-in-where')).toHaveLength(0);
+      });
+    });
+
+    describe('CTE validation', () => {
+      it('should validate syntax rules within CTEs', () => {
+        // Create a mock CTE with an aggregate in WHERE
+        const mockAst = {
+          type: 'select',
+          with: [{
+            name: { value: 'cte_data' },
+            stmt: {
+              ast: {
+                type: 'select',
+                columns: [{ expr: { type: 'column_ref', column: 'id' } }],
+                from: [{ table: 'source' }],
+                where: {
+                  type: 'aggr_func',
+                  name: 'sum',
+                  args: { expr: { type: 'column_ref', column: 'amount' } },
+                },
+              }
+            }
+          }],
+          columns: [{ expr: { type: 'star' } }],
+          from: [{ table: 'cte_data' }],
+        };
+        
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
+        // Should detect aggregate in WHERE within the CTE
+        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
+      });
     });
   });
 });
