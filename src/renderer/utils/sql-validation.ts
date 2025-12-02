@@ -116,6 +116,51 @@ const isFunctionCall = (node: any): boolean => {
          (type === 'identifier' && node.args !== undefined); // CST: function calls might be identifier with args
 };
 
+// Check if node is a literal value (NULL, number, string, boolean)
+// Literals don't need to be in GROUP BY as they're constants
+const isLiteral = (node: any): boolean => {
+  if (!node || typeof node !== 'object') return false;
+  
+  const type = getNodeType(node);
+  
+  // NULL literal
+  if (type === 'null' || type === 'NullLiteral' || type === 'NULL') {
+    return true;
+  }
+  
+  // Number literal
+  if (type === 'number' || type === 'NumberLiteral' || type === 'int' || type === 'integer' || 
+      type === 'float' || type === 'FloatLiteral' || type === 'bigint') {
+    return true;
+  }
+  
+  // String literal
+  if (type === 'string' || type === 'StringLiteral' || type === 'single_quote_string' || 
+      type === 'double_quote_string' || type === 'backtick_string') {
+    return true;
+  }
+  
+  // Boolean literal
+  if (type === 'bool' || type === 'BooleanLiteral' || type === 'boolean') {
+    return true;
+  }
+  
+  // Check for literal values in CST structure
+  if (node.value !== undefined) {
+    const valueType = typeof node.value;
+    if (valueType === 'string' || valueType === 'number' || valueType === 'boolean' || node.value === null) {
+      return true;
+    }
+  }
+  
+  // Check for NULL keyword
+  if (node.keyword === 'NULL' || node.text === 'NULL' || node.name === 'NULL') {
+    return true;
+  }
+  
+  return false;
+};
+
 // Extract location from CST node (uses 'range' property)
 const getLocationFromCst = (node: any): SqlNodeLocation | undefined => {
   if (!node) return undefined;
@@ -1602,5 +1647,755 @@ export const validateColumnReferences = async (
   // Validate subqueries in the main query, passing the main query's aliases as parent scope
   await validateSubqueries(selectStmt, aliasMap, uniqueTables);
 
+  return issues;
+};
+
+/**
+ * Extracts GROUP BY clause from raw SQL text, preserving comments.
+ * This is needed because sql-parser-cst removes comments during parsing.
+ */
+const extractGroupByClauseFromText = (sql: string): { clause: string; startIndex: number } | null => {
+  // Normalize whitespace for easier matching
+  const normalizedSql = sql.replace(/\r\n/g, '\n');
+  
+  // Find GROUP BY clause (case-insensitive)
+  const groupByMatch = normalizedSql.match(/\bGROUP\s+BY\b/i);
+  if (!groupByMatch || groupByMatch.index === undefined) {
+    return null;
+  }
+  
+  const startIndex = groupByMatch.index + groupByMatch[0].length;
+  
+  // Find the end of GROUP BY clause (next clause or end of statement)
+  const remainingText = normalizedSql.substring(startIndex);
+  const endMatch = remainingText.match(/\b(HAVING|ORDER\s+BY|LIMIT|QUALIFY|WINDOW|UNION|EXCEPT|INTERSECT|$)/i);
+  
+  let endIndex = normalizedSql.length;
+  if (endMatch && endMatch.index !== undefined) {
+    endIndex = startIndex + endMatch.index;
+  }
+  
+  const clause = normalizedSql.substring(startIndex, endIndex).trim();
+  return { clause, startIndex };
+};
+
+/**
+ * Parses GROUP BY expressions from raw SQL text, detecting commented columns.
+ * This is a simple text-based parser that handles comments.
+ */
+const parseGroupByExpressionsFromText = (
+  groupByClause: string,
+  groupByStartLine: number
+): Array<{ text: string; isCommented: boolean; line: number; column: number }> => {
+  const expressions: Array<{ text: string; isCommented: boolean; line: number; column: number }> = [];
+  
+  if (!groupByClause) {
+    return expressions;
+  }
+  
+  // Remove string literals to avoid false matches
+  let processedClause = groupByClause;
+  const stringPattern = /(['"`])(?:(?=(\\?))\2.)*?\1/g;
+  processedClause = processedClause.replace(stringPattern, (match) => ' '.repeat(match.length));
+  
+  const lines = processedClause.split('\n');
+  let inMultiLineComment = false;
+  let multiLineCommentStart = { line: 0, col: 0 };
+  
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    const actualLine = groupByStartLine + lineIdx;
+    let i = 0;
+    let currentExpr = '';
+    let exprStartCol = 0;
+    let inExpr = false;
+    
+    while (i < line.length) {
+      const char = line[i];
+      const nextChar = i + 1 < line.length ? line[i + 1] : '';
+      
+      // Handle multi-line comments
+      if (inMultiLineComment) {
+        if (char === '*' && nextChar === '/') {
+          inMultiLineComment = false;
+          i += 2;
+          // Extract expression from comment if any
+          const commentedText = line.substring(multiLineCommentStart.col, i - 2).trim();
+          if (commentedText) {
+            // Try to extract column reference
+            const columnMatch = commentedText.match(/(\w+\.\w+|\w+|\d+)/);
+            if (columnMatch) {
+              expressions.push({
+                text: columnMatch[1],
+                isCommented: true,
+                line: multiLineCommentStart.line,
+                column: multiLineCommentStart.col + 1,
+              });
+            }
+          }
+          continue;
+        }
+        i++;
+        continue;
+      }
+      
+      // Check for start of multi-line comment
+      if (char === '/' && nextChar === '*') {
+        inMultiLineComment = true;
+        multiLineCommentStart = { line: actualLine, col: i };
+        i += 2;
+        continue;
+      }
+      
+      // Check for single-line comment
+      if (char === '-' && nextChar === '-') {
+        // If we were building an expression, save it
+        if (inExpr && currentExpr.trim()) {
+          expressions.push({
+            text: currentExpr.trim(),
+            isCommented: false,
+            line: actualLine,
+            column: exprStartCol + 1,
+          });
+          currentExpr = '';
+          inExpr = false;
+        }
+        
+        // Extract commented text
+        const commentedText = line.substring(i + 2).trim();
+        if (commentedText) {
+          // Try to extract column reference from commented text
+          const columnMatch = commentedText.match(/(\w+\.\w+|\w+|\d+)/);
+          if (columnMatch) {
+            expressions.push({
+              text: columnMatch[1],
+              isCommented: true,
+              line: actualLine,
+              column: i + 1,
+            });
+          }
+        }
+        break; // Rest of line is comment
+      }
+      
+      // Regular character - collect column references
+      if (!inExpr && /\w/.test(char)) {
+        inExpr = true;
+        exprStartCol = i;
+        currentExpr = char;
+      } else if (inExpr) {
+        if (/[\w.]/.test(char)) {
+          currentExpr += char;
+        } else if (/[\s,]/.test(char)) {
+          // End of expression
+          if (currentExpr.trim()) {
+            expressions.push({
+              text: currentExpr.trim(),
+              isCommented: false,
+              line: actualLine,
+              column: exprStartCol + 1,
+            });
+            currentExpr = '';
+            inExpr = false;
+          }
+          // Skip whitespace and commas
+          while (i < line.length && /[\s,]/.test(line[i])) {
+            i++;
+          }
+          continue;
+        }
+      }
+      
+      i++;
+    }
+    
+    // Handle expression at end of line
+    if (inExpr && currentExpr.trim()) {
+      expressions.push({
+        text: currentExpr.trim(),
+        isCommented: false,
+        line: actualLine,
+        column: exprStartCol + 1,
+      });
+    }
+  }
+  
+  return expressions;
+};
+
+/**
+ * Validates GROUP BY expressions in a SELECT statement.
+ * Validates GROUP BY columns against:
+ * - Column names from tables (via schema lookup)
+ * - Column names with alias from JOINS
+ * - Column names/aliases from SELECT
+ * - Column numbers (positional references like 1, 2, 3)
+ * 
+ * Also detects commented columns in GROUP BY and validates that all
+ * non-aggregated SELECT columns are properly grouped.
+ * 
+ * @param selectStmt - The parsed SELECT statement (CST or AST)
+ * @param aliasMap - Map of table aliases and their information
+ * @param uniqueTables - Map of unique tables with dataset/table IDs
+ * @param getTableFields - Function to fetch table field names (for schema validation)
+ * @param textToValidate - The original SQL text (for error position finding)
+ * @param canFetchSchemas - Whether schema fetching is available
+ */
+export const validateGroupByColumns = async (
+  selectStmt: any,
+  aliasMap: Map<string, TableAliasInfo>,
+  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>,
+  getTableFields: (datasetId: string, tableId: string) => Promise<string[] | null>,
+  textToValidate: string,
+  canFetchSchemas: boolean
+): Promise<ColumnValidationIssue[]> => {
+  const issues: ColumnValidationIssue[] = [];
+  
+  const groupByExprs = getGroupByExpressions(selectStmt);
+  
+  // Extract GROUP BY clause from raw SQL to detect commented columns
+  const groupByClauseInfo = extractGroupByClauseFromText(textToValidate);
+  let groupByStartLine = 1;
+  
+  if (groupByClauseInfo) {
+    // Calculate line number where GROUP BY starts
+    const textBeforeGroupBy = textToValidate.substring(0, groupByClauseInfo.startIndex);
+    groupByStartLine = (textBeforeGroupBy.match(/\n/g) || []).length + 1;
+  }
+  
+  const allGroupByExpressions: Array<{ text: string; isCommented: boolean; line: number; column: number }> = [];
+  
+  if (groupByClauseInfo) {
+    const parsed = parseGroupByExpressionsFromText(groupByClauseInfo.clause, groupByStartLine);
+    allGroupByExpressions.push(...parsed);
+  }
+  
+  if (groupByExprs.length === 0 && allGroupByExpressions.length === 0) {
+    return issues; // No GROUP BY clause at all
+  }
+  
+  // Get SELECT columns to validate positional references and aliases
+  const selectColumns = getSelectColumns(selectStmt);
+  
+  // Build a map of SELECT column aliases (by position and by alias name)
+  const selectColumnAliases = new Map<number, string>(); // position -> alias
+  const selectColumnNames = new Map<number, string>(); // position -> column name
+  const selectAliasToPosition = new Map<string, number>(); // alias -> position
+  
+  for (let i = 0; i < selectColumns.length; i++) {
+    const col = selectColumns[i];
+    const expr = col?.expr ?? col?.expression ?? col;
+    
+    // Get column alias (AS clause)
+    const alias = col?.as || col?.alias;
+    let aliasName: string | null = null;
+    if (alias) {
+      if (typeof alias === 'string') {
+        aliasName = stripIdentifierQuotes(alias);
+      } else if (alias.name) {
+        aliasName = stripIdentifierQuotes(typeof alias.name === 'string' ? alias.name : alias.name.value);
+      } else if (alias.text) {
+        aliasName = stripIdentifierQuotes(alias.text);
+      } else if (alias.value) {
+        aliasName = stripIdentifierQuotes(alias.value);
+      }
+    }
+    
+    // Get column name from expression - handle both column_ref and member_expr
+    let columnName: string | null = null;
+    let tableName: string | null = null;
+    const nodeType = getNodeType(expr);
+    
+    // Check for column reference (member_expr for table.column, identifier for column, column_ref for AST)
+    if (isColumnRef(expr) || nodeType === 'member_expr' || nodeType === 'MemberExpr' || 
+        nodeType === 'identifier' || nodeType === 'Identifier') {
+      columnName = extractColumnName(expr);
+      tableName = extractTableName(expr);
+      if (columnName) {
+        columnName = stripIdentifierQuotes(columnName);
+      }
+      if (tableName) {
+        tableName = stripIdentifierQuotes(tableName);
+      }
+    }
+    
+    // Store alias if present
+    if (aliasName) {
+      selectColumnAliases.set(i + 1, aliasName.toLowerCase());
+      selectAliasToPosition.set(aliasName.toLowerCase(), i + 1);
+    }
+    
+    // Store column name if present - prefer qualified name if table is present
+    if (columnName) {
+      const cleanColumnName = columnName.toLowerCase();
+      if (tableName) {
+        const qualifiedName = `${tableName.toLowerCase()}.${cleanColumnName}`;
+        selectColumnNames.set(i + 1, qualifiedName); // Store qualified name
+      } else {
+        selectColumnNames.set(i + 1, cleanColumnName); // Store unqualified name
+      }
+    }
+  }
+  
+  const uniqueTableList = Array.from(uniqueTables.values());
+  
+  // Build sets of what's actually in GROUP BY for reverse validation
+  // Use both CST parsing (for accurate structure) and text parsing (for commented columns)
+  const groupByColumnNames = new Set<string>(); // Column names/aliases in GROUP BY
+  const groupByPositions = new Set<number>(); // Positional references in GROUP BY
+  
+  // First pass: collect all GROUP BY expressions from CST (for reverse validation)
+  for (const groupExpr of groupByExprs) {
+    if (!groupExpr) continue;
+    
+    const nodeType = getNodeType(groupExpr);
+    
+    // Collect positional references
+    if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer') {
+      let colNum: number | null = null;
+      if (typeof groupExpr.value === 'number') {
+        colNum = groupExpr.value;
+      } else if (groupExpr.value?.value !== undefined && typeof groupExpr.value.value === 'number') {
+        colNum = groupExpr.value.value;
+      } else if (typeof groupExpr.text === 'string') {
+        const parsed = parseInt(groupExpr.text, 10);
+        if (!isNaN(parsed)) {
+          colNum = parsed;
+        }
+      }
+      if (colNum !== null && typeof colNum === 'number') {
+        groupByPositions.add(colNum);
+      }
+    }
+    
+    // Collect column references - handle both column_ref and member_expr
+    const isColumnReference = isColumnRef(groupExpr) || nodeType === 'member_expr' || nodeType === 'MemberExpr' || 
+                              nodeType === 'identifier' || nodeType === 'Identifier';
+    
+    if (isColumnReference) {
+      const columnName = extractColumnName(groupExpr);
+      const tableName = extractTableName(groupExpr);
+      
+      if (columnName) {
+        const cleanColumnName = stripIdentifierQuotes(columnName).toLowerCase();
+        if (tableName) {
+          const cleanTableName = stripIdentifierQuotes(tableName).toLowerCase();
+          const qualifiedName = `${cleanTableName}.${cleanColumnName}`;
+          groupByColumnNames.add(qualifiedName);
+          // Also add without table qualifier for matching
+          groupByColumnNames.add(cleanColumnName);
+        } else {
+          groupByColumnNames.add(cleanColumnName);
+        }
+      }
+      
+      // Also check if this matches a SELECT alias
+      const cleanColumnName = columnName ? stripIdentifierQuotes(columnName).toLowerCase() : null;
+      if (cleanColumnName && selectAliasToPosition.has(cleanColumnName)) {
+        groupByColumnNames.add(cleanColumnName);
+      }
+    }
+  }
+  
+  // Also parse from text to get commented columns - these won't be in CST
+  // Only add NON-commented expressions from text parsing (commented ones are excluded from GROUP BY)
+  for (const expr of allGroupByExpressions) {
+    if (!expr.isCommented) {
+      const text = expr.text.trim();
+      // Try to parse as positional reference
+      const posMatch = /^\d+$/.test(text);
+      if (posMatch) {
+        const pos = parseInt(text, 10);
+        if (!isNaN(pos)) {
+          groupByPositions.add(pos);
+        }
+      } else {
+        // Column reference - normalize and add
+        const normalized = text.toLowerCase().replace(/[`"']/g, '');
+        groupByColumnNames.add(normalized);
+        // Also add parts if it's qualified (table.column)
+        const parts = normalized.split('.');
+        if (parts.length === 2) {
+          groupByColumnNames.add(parts[1]); // Add unqualified name too
+        }
+      }
+    }
+  }
+  
+  // Validate each GROUP BY expression
+  for (const groupExpr of groupByExprs) {
+    if (!groupExpr) continue;
+    
+    const location = getLocationFromCst(groupExpr)?.start || { line: 1, column: 1 };
+    const nodeType = getNodeType(groupExpr);
+    
+    // Check if it's a positional reference (column number like 1, 2, 3)
+    if (nodeType === 'number' || nodeType === 'NumberLiteral' || nodeType === 'int' || nodeType === 'integer') {
+      let colNum: number | null = null;
+      
+      // Try different CST structures for number literals
+      if (typeof groupExpr.value === 'number') {
+        colNum = groupExpr.value;
+      } else if (groupExpr.value?.value !== undefined && typeof groupExpr.value.value === 'number') {
+        colNum = groupExpr.value.value;
+      } else if (typeof groupExpr.text === 'string') {
+        // Try parsing text representation
+        const parsed = parseInt(groupExpr.text, 10);
+        if (!isNaN(parsed)) {
+          colNum = parsed;
+        }
+      }
+      
+      if (colNum !== null && typeof colNum === 'number') {
+        // Validate column number is within SELECT column range
+        if (colNum < 1 || colNum > selectColumns.length) {
+          issues.push({
+            message: `GROUP BY column number ${colNum} is out of range. SELECT has ${selectColumns.length} column${selectColumns.length !== 1 ? 's' : ''}.`,
+            line: location.line || 1,
+            column: location.column || 1,
+            length: String(colNum).length,
+            severity: 'error',
+            rule: 'group-by-positional-out-of-range',
+          });
+        }
+        // Positional reference is valid if it's within range
+        continue;
+      }
+    }
+    
+    // Check if it's a column reference
+    if (isColumnRef(groupExpr) || nodeType === 'member_expr' || nodeType === 'MemberExpr' || 
+        nodeType === 'identifier' || nodeType === 'Identifier') {
+      const columnName = extractColumnName(groupExpr);
+      const tableName = extractTableName(groupExpr);
+      
+      if (!columnName) {
+        // Could be a complex expression - skip validation for now
+        continue;
+      }
+      
+      const cleanColumnName = stripIdentifierQuotes(columnName).toLowerCase();
+      const cleanTableName = tableName ? stripIdentifierQuotes(tableName).toLowerCase() : null;
+      
+      // First, check if it matches a SELECT column alias
+      if (selectAliasToPosition.has(cleanColumnName)) {
+        // Valid - it's a SELECT alias
+        continue;
+      }
+      
+      // Check if it matches a SELECT column name (without alias)
+      let foundInSelect = false;
+      for (const [pos, selectColName] of selectColumnNames.entries()) {
+        if (selectColName === cleanColumnName) {
+          foundInSelect = true;
+          break;
+        }
+      }
+      
+      if (foundInSelect && !cleanTableName) {
+        // Valid - it's a SELECT column name without table qualifier
+        continue;
+      }
+      
+      // If table alias is specified, validate against that table
+      if (cleanTableName) {
+        const aliasInfo = aliasMap.get(cleanTableName);
+        
+        if (!aliasInfo) {
+          issues.push({
+            message: `Unknown table or alias "${tableName}" used in GROUP BY clause`,
+            line: location.line || 1,
+            column: location.column || 1,
+            length: Math.max(columnName.length, tableName?.length || 0),
+            severity: 'error',
+            rule: 'group-by-unknown-alias',
+          });
+          continue;
+        }
+        
+        // If it's a CTE or subquery, check against CTE columns
+        if (aliasInfo.cteColumns && aliasInfo.cteColumns.length > 0) {
+          const hasColumn = aliasInfo.cteColumns.some(
+            (col) => col.toLowerCase() === cleanColumnName
+          );
+          if (!hasColumn) {
+            issues.push({
+              message: `Column "${columnName}" not found in ${aliasInfo.alias || tableName}`,
+              line: location.line || 1,
+              column: location.column || 1,
+              length: columnName.length,
+              severity: 'error',
+              rule: 'group-by-column-not-found',
+            });
+          }
+          continue;
+        }
+        
+        // If it's a real table, validate against schema
+        if (aliasInfo.datasetId && aliasInfo.tableId) {
+          if (!canFetchSchemas) {
+            // Can't validate without schema access
+            continue;
+          }
+          
+          const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
+          if (fields === null) {
+            // Schema lookup failed - skip validation
+            continue;
+          }
+          
+          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === cleanColumnName);
+          if (!hasColumn) {
+            const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
+            issues.push({
+              message: `Column "${columnName}" not found in ${targetName}`,
+              line: location.line || 1,
+              column: location.column || 1,
+              length: columnName.length,
+              severity: 'error',
+              rule: 'group-by-column-not-found',
+            });
+          }
+          continue;
+        }
+      }
+      
+      // No table alias - check against all tables and SELECT columns
+      if (!cleanTableName) {
+        // Already checked SELECT columns above, now check tables
+        if (!canFetchSchemas) {
+          // Can't validate without schema access
+          continue;
+        }
+        
+        // Check if column exists in any table
+        let columnFound = false;
+        
+        for (const tableInfo of uniqueTableList) {
+          if (!tableInfo.datasetId || !tableInfo.tableId) {
+            continue;
+          }
+          
+          const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
+          if (fields === null) {
+            continue;
+          }
+          
+          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === cleanColumnName);
+          if (hasColumn) {
+            columnFound = true;
+            break;
+          }
+        }
+        
+        // Also check SELECT column names/aliases again
+        if (!columnFound) {
+          // Check if column name matches any SELECT column name
+          for (const selectColName of selectColumnNames.values()) {
+            if (selectColName === cleanColumnName) {
+              columnFound = true;
+              break;
+            }
+          }
+          // Check if it matches a SELECT alias
+          if (!columnFound && selectAliasToPosition.has(cleanColumnName)) {
+            columnFound = true;
+          }
+        }
+        
+        if (!columnFound && uniqueTableList.length > 0) {
+          issues.push({
+            message: `Column "${columnName}" in GROUP BY clause not found in referenced tables or SELECT columns`,
+            line: location.line || 1,
+            column: location.column || 1,
+            length: columnName.length,
+            severity: 'error',
+            rule: 'group-by-column-not-found',
+          });
+        }
+      }
+    }
+  }
+  
+  // Reverse validation: Check that all non-aggregated SELECT columns are in GROUP BY
+  // This catches cases where columns are commented out or missing from GROUP BY
+  for (let i = 0; i < selectColumns.length; i++) {
+    const col = selectColumns[i];
+    const expr = col?.expr ?? col?.expression ?? col;
+    const position = i + 1;
+    
+    // Skip literals (NULL, numbers, strings, booleans) - they don't need to be in GROUP BY
+    if (isLiteral(expr)) {
+      continue;
+    }
+    
+    // Skip if it's an aggregate function or has OVER clause (window function)
+    if (isFunctionCall(expr)) {
+      const funcName = extractFunctionName(expr);
+      if (funcName && BIGQUERY_AGGREGATE_FUNCTIONS.has(funcName)) {
+        continue;
+      }
+    }
+    if (expr?.overClause || expr?.over || expr?.window) {
+      continue;
+    }
+    
+    // Skip SELECT * 
+    if (getNodeType(expr) === 'star' || col === '*') {
+      continue;
+    }
+    
+    // Check if column has an aggregate function anywhere in its expression
+    const hasAggregate = containsAggregateFunction(expr);
+    if (hasAggregate.found) {
+      continue;
+    }
+    
+    // Check if this SELECT column is covered by GROUP BY
+    let isCovered = false;
+    
+    // Check positional reference
+    if (groupByPositions.has(position)) {
+      isCovered = true;
+    }
+    
+    // Check column name/alias
+    if (!isCovered) {
+      // Get column alias
+      const alias = col?.as || col?.alias;
+      let aliasName: string | null = null;
+      if (alias) {
+        if (typeof alias === 'string') {
+          aliasName = stripIdentifierQuotes(alias).toLowerCase();
+        } else if (alias.name) {
+          aliasName = stripIdentifierQuotes(typeof alias.name === 'string' ? alias.name : alias.name.value).toLowerCase();
+        } else if (alias.text) {
+          aliasName = stripIdentifierQuotes(alias.text).toLowerCase();
+        } else if (alias.value) {
+          aliasName = stripIdentifierQuotes(alias.value).toLowerCase();
+        }
+      }
+      
+      // Check if alias is in GROUP BY
+      if (aliasName && groupByColumnNames.has(aliasName)) {
+        isCovered = true;
+      }
+      
+      // Check column name - try multiple matching strategies
+      // Handle both column_ref and member_expr (table.column)
+      const nodeType = getNodeType(expr);
+      const isColumnReference = isColumnRef(expr) || nodeType === 'member_expr' || nodeType === 'MemberExpr' || 
+                                nodeType === 'identifier' || nodeType === 'Identifier';
+      
+      if (!isCovered && isColumnReference) {
+        const columnName = extractColumnName(expr);
+        const tableName = extractTableName(expr);
+        
+        if (columnName) {
+          const cleanColumnName = stripIdentifierQuotes(columnName).toLowerCase();
+          
+          // Build qualified name if table is specified
+          let qualifiedName: string | null = null;
+          if (tableName) {
+            const cleanTableName = stripIdentifierQuotes(tableName).toLowerCase();
+            qualifiedName = `${cleanTableName}.${cleanColumnName}`;
+          }
+          
+          // Check qualified name first (most specific) - e.g., "gl.custno"
+          if (qualifiedName && groupByColumnNames.has(qualifiedName)) {
+            isCovered = true;
+          }
+          
+          // Check unqualified name - e.g., "custno"
+          if (!isCovered && groupByColumnNames.has(cleanColumnName)) {
+            isCovered = true;
+          }
+          
+          // Also check text-based parsing results for exact matches
+          if (!isCovered) {
+            for (const textExpr of allGroupByExpressions) {
+              if (!textExpr.isCommented) {
+                const textLower = textExpr.text.toLowerCase().replace(/[`"']/g, '').trim();
+                if (textLower === cleanColumnName || textLower === qualifiedName) {
+                  isCovered = true;
+                  break;
+                }
+              }
+            }
+          }
+          
+          // Check if this column name appears in SELECT column names map
+          // (in case it's referenced by position in GROUP BY)
+          if (!isCovered) {
+            for (const [pos, selectColName] of selectColumnNames.entries()) {
+              // Match both qualified and unqualified names
+              // selectColName might be qualified (gl.custno) or unqualified (custno)
+              const matchesQualified = qualifiedName && selectColName === qualifiedName;
+              const matchesUnqualified = selectColName === cleanColumnName;
+              // Also check if selectColName is qualified and matches our unqualified name
+              const selectColParts = selectColName.split('.');
+              const matchesQualifiedUnqualified = qualifiedName && selectColParts.length === 2 && 
+                                                  selectColParts[1] === cleanColumnName;
+              
+              if ((matchesQualified || matchesUnqualified || matchesQualifiedUnqualified) && 
+                  groupByPositions.has(pos)) {
+                isCovered = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // If not covered, report error
+    if (!isCovered) {
+      const location = getLocationFromCst(expr)?.start || getLocationFromCst(col)?.start || { line: 1, column: 1 };
+      const alias = col?.as || col?.alias;
+      let aliasName: string | null = null;
+      if (alias) {
+        if (typeof alias === 'string') {
+          aliasName = stripIdentifierQuotes(alias);
+        } else if (alias.name) {
+          aliasName = stripIdentifierQuotes(typeof alias.name === 'string' ? alias.name : alias.name.value);
+        } else if (alias.text) {
+          aliasName = stripIdentifierQuotes(alias.text);
+        } else if (alias.value) {
+          aliasName = stripIdentifierQuotes(alias.value);
+        }
+      }
+      
+      // Extract column name - handle both column_ref and member_expr
+      const exprNodeType = getNodeType(expr);
+      const isColRef = isColumnRef(expr) || exprNodeType === 'member_expr' || exprNodeType === 'MemberExpr' || 
+                       exprNodeType === 'identifier' || exprNodeType === 'Identifier';
+      const columnName = isColRef ? extractColumnName(expr) : null;
+      const tableNameForDisplay = isColRef ? extractTableName(expr) : null;
+      
+      // Build display name - prefer qualified name if available
+      let displayName: string;
+      if (aliasName) {
+        displayName = aliasName;
+      } else if (columnName) {
+        if (tableNameForDisplay) {
+          displayName = `${tableNameForDisplay}.${columnName}`;
+        } else {
+          displayName = columnName;
+        }
+      } else {
+        displayName = `column ${position}`;
+      }
+      
+      issues.push({
+        message: `SELECT list expression references ${displayName} which is neither grouped nor aggregated`,
+        line: location.line || 1,
+        column: location.column || 1,
+        length: displayName.length || 10,
+        severity: 'error',
+        rule: 'select-not-in-group-by',
+      });
+    }
+  }
+  
   return issues;
 };

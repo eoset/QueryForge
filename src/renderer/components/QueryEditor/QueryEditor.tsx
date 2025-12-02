@@ -8,6 +8,7 @@ import { useQueriesStore } from '../../stores/queries-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { validateGroupByColumns, buildTableAliasMapFromSelect as buildTableAliasMapFromSelectCST } from '../../utils/sql-validation';
 import './QueryEditor.css';
 
 interface SqlNodeLocation {
@@ -1770,6 +1771,25 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           const issues = await validateColumnsForSelect(statement, textToValidate, canFetchSchemas);
           if (issues.length > 0) {
             columnIssues = columnIssues.concat(issues);
+          }
+          
+          // Validate GROUP BY columns
+          try {
+            const { aliasMap, uniqueTables } = buildTableAliasMapFromSelectCST(statement);
+            const groupByIssues = await validateGroupByColumns(
+              statement,
+              aliasMap,
+              uniqueTables,
+              getTableFields,
+              textToValidate,
+              canFetchSchemas
+            );
+            if (groupByIssues.length > 0) {
+              columnIssues = columnIssues.concat(groupByIssues);
+            }
+          } catch (error) {
+            // If GROUP BY validation fails, continue with other validations
+            console.warn('GROUP BY validation error:', error);
           }
         }
       }
