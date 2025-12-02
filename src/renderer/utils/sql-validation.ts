@@ -1908,9 +1908,13 @@ export const validateGroupByColumns = async (
   
   const groupByExprs = getGroupByExpressions(selectStmt);
   
+  // DEBUG: Log GROUP BY expressions found
+  
   // Extract GROUP BY clause from raw SQL to detect commented columns
   const groupByClauseInfo = extractGroupByClauseFromText(textToValidate);
   let groupByStartLine = 1;
+  
+  // DEBUG: Log extracted GROUP BY clause
   
   if (groupByClauseInfo) {
     // Calculate line number where GROUP BY starts
@@ -2030,6 +2034,8 @@ export const validateGroupByColumns = async (
       }
     }
     
+    // DEBUG: Log what we found
+    
     // Collect column references - handle both column_ref and member_expr
     const isColumnReference = isColumnRef(groupExpr) || nodeType === 'member_expr' || nodeType === 'MemberExpr' || 
                               nodeType === 'identifier' || nodeType === 'Identifier';
@@ -2064,8 +2070,17 @@ export const validateGroupByColumns = async (
     }
   }
   
+  // Check if CST found any column names in GROUP BY
+  // If GROUP BY only has positional references (no column names from CST), 
+  // skip the potentially error-prone text-based parsing for column names
+  const cstFoundColumnNames = groupByColumnNames.size > 0;
+  const cstFoundPositions = groupByPositions.size > 0;
+  
+  
   // Also parse from text to get commented columns - these won't be in CST
   // Only add NON-commented expressions from text parsing (commented ones are excluded from GROUP BY)
+  // IMPORTANT: Only parse for column names if CST didn't already find all positional references
+  // This prevents false positives from incorrectly parsing SELECT columns as GROUP BY columns
   for (const expr of allGroupByExpressions) {
     if (!expr.isCommented) {
       const text = expr.text.trim();
@@ -2076,8 +2091,12 @@ export const validateGroupByColumns = async (
         if (!isNaN(pos) && pos > 0) {
           groupByPositions.add(pos);
         }
-      } else {
-        // Column reference - normalize and add
+      } else if (!cstFoundPositions || cstFoundColumnNames) {
+        // Only parse column names from text if:
+        // 1. CST didn't find any positions (might be a non-positional GROUP BY), OR
+        // 2. CST already found some column names (mixed positional/named GROUP BY)
+        // This prevents false positives when GROUP BY is purely positional (1, 2, 3...)
+        // and text parsing might incorrectly pick up SELECT columns
         const normalized = text.toLowerCase().replace(/[`"']/g, '').trim();
         if (normalized) {
           groupByColumnNames.add(normalized);
@@ -2090,6 +2109,8 @@ export const validateGroupByColumns = async (
       }
     }
   }
+  
+  // DEBUG: Log final groupByColumnNames
   
   // Validate each GROUP BY expression
   for (const groupExpr of groupByExprs) {
@@ -2290,6 +2311,9 @@ export const validateGroupByColumns = async (
   
   // Reverse validation: Check that all non-aggregated SELECT columns are in GROUP BY
   // This catches cases where columns are commented out or missing from GROUP BY
+  
+  // DEBUG: Log SELECT columns count
+  
   for (let i = 0; i < selectColumns.length; i++) {
     const col = selectColumns[i];
     const expr = col?.expr ?? col?.expression ?? col;
@@ -2336,6 +2360,9 @@ export const validateGroupByColumns = async (
       isCovered = true;
     }
     
+    // DEBUG: Log each column check
+    const nodeType = getNodeType(expr);
+    
     // Check column name/alias
     if (!isCovered) {
       // Get column alias
@@ -2379,6 +2406,7 @@ export const validateGroupByColumns = async (
         const columnName = extractColumnName(expr);
         const tableName = extractTableName(expr);
         
+        
         if (columnName) {
           const cleanColumnName = stripIdentifierQuotes(columnName).toLowerCase();
           
@@ -2388,6 +2416,7 @@ export const validateGroupByColumns = async (
             const cleanTableName = stripIdentifierQuotes(tableName).toLowerCase();
             qualifiedName = `${cleanTableName}.${cleanColumnName}`;
           }
+          
           
           // Check qualified name first (most specific) - e.g., "o.discount"
           if (qualifiedName && groupByColumnNames.has(qualifiedName)) {
@@ -2422,7 +2451,9 @@ export const validateGroupByColumns = async (
           
           // Also check text-based parsing results for exact matches
           // This is important because CST parsing might miss some edge cases
-          if (!isCovered) {
+          // SKIP this check when GROUP BY is purely positional (CST found positions but no column names)
+          // because text-based parsing can incorrectly extract wrong GROUP BY clause in CTEs
+          if (!isCovered && (!cstFoundPositions || cstFoundColumnNames)) {
             for (const textExpr of allGroupByExpressions) {
               if (!textExpr.isCommented) {
                 const textLower = textExpr.text.toLowerCase().replace(/[`"']/g, '').trim();
@@ -2474,8 +2505,11 @@ export const validateGroupByColumns = async (
                                                   selectColParts[1] === cleanColumnName &&
                                                   selectColParts[0] === tableName?.toLowerCase();
               
-              if ((matchesQualified || matchesUnqualified || matchesQualifiedUnqualified) && 
-                  groupByPositions.has(pos)) {
+              const anyMatch = matchesQualified || matchesUnqualified || matchesQualifiedUnqualified;
+              const posInGroupBy = groupByPositions.has(pos);
+              
+              
+              if (anyMatch && posInGroupBy) {
                 isCovered = true;
                 break;
               }
@@ -2538,6 +2572,8 @@ export const validateGroupByColumns = async (
       }
     }
     
+    // DEBUG: Log final coverage status before reporting
+    
     // If not covered, report error
     if (!isCovered) {
       const location = getLocationFromCst(expr)?.start || getLocationFromCst(col)?.start || { line: 1, column: 1 };
@@ -2584,8 +2620,11 @@ export const validateGroupByColumns = async (
         severity: 'error',
         rule: 'select-not-in-group-by',
       });
+      // DEBUG: Log the issue being added
     }
   }
+  
+  // DEBUG: Log total issues
   
   return issues;
 };

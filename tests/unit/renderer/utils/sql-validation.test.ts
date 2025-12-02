@@ -6,6 +6,7 @@ import {
   collectSubqueries,
   validateColumnReferences,
   validateBigQuerySyntaxRules,
+  validateGroupByColumns,
   containsAggregateFunction,
   containsWindowFunction,
   ColumnRefInfo,
@@ -612,6 +613,62 @@ describe('SQL Validation Utilities', () => {
         `);
         const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
         expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+
+      it('should report error when SELECT column is missing from GROUP BY positional references', async () => {
+        // Query with position 1 missing from GROUP BY
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            o.OrderStatus,
+            SUM(o.Amount) AS TotalAmount
+          FROM
+            orders AS o
+          GROUP BY
+            2, 3
+        `);
+        // Position 1 (o.OrderNumber) is not in GROUP BY and not an aggregate
+        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+        const mockGetTableFields = async () => null;
+        const issues = await validateGroupByColumns(
+          ast,
+          aliasMap,
+          uniqueTables,
+          mockGetTableFields,
+          '',
+          false
+        );
+        // Should have an error about o.OrderNumber not being grouped
+        expect(issues.some((i: ColumnValidationIssue) => 
+          i.rule === 'select-not-in-group-by' && 
+          i.message.includes('OrderNumber')
+        )).toBe(true);
+      });
+
+      it('should not report error when all non-aggregate SELECT columns are in GROUP BY', async () => {
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            SUM(o.Amount) AS TotalAmount
+          FROM
+            orders AS o
+          GROUP BY
+            1, 2
+        `);
+        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+        const mockGetTableFields = async () => null;
+        const issues = await validateGroupByColumns(
+          ast,
+          aliasMap,
+          uniqueTables,
+          mockGetTableFields,
+          '',
+          false
+        );
+        // Should have no errors - all non-aggregate columns are grouped
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'select-not-in-group-by')).toHaveLength(0);
       });
     });
   });
