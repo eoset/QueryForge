@@ -622,13 +622,36 @@ export function registerBigQueryHandlers(): void {
         location,
       });
 
-      // Wait for job to complete and get all results
-      // Use a large maxResults to get all rows (BigQuery API limit is 10MB per response)
+      console.log(`[BigQuery] Job created with ID: ${job.id}, location: ${location}`);
+
+      // Wait for the job to complete first
+      console.log(`[BigQuery] Waiting for job to complete...`);
+      const [jobResult] = await job.getMetadata();
+      
+      // Poll until job is done (getQueryResults should do this, but let's be explicit)
+      if (jobResult.status?.state !== 'DONE') {
+        console.log(`[BigQuery] Job not done yet, waiting...`);
+        await job.promise(); // This waits for the job to complete
+        console.log(`[BigQuery] Job completed after waiting`);
+      }
+
+      // Now get the results - the job should be complete
+      // Use a large maxResults to get as many rows as possible per request
       // For very large result sets, we'd need pagination, but for now get as many as possible
+      console.log(`[BigQuery] Fetching query results...`);
       const [rows] = await job.getQueryResults({ maxResults: 100000 });
       
-      // Get job metadata
+      // DEBUG: Log row count to help diagnose issues with large queries
+      console.log(`[BigQuery] Query returned ${rows?.length ?? 0} rows from getQueryResults`);
+      console.log(`[BigQuery] rows is array: ${Array.isArray(rows)}, rows type: ${typeof rows}`);
+      
+      // Get job metadata (now that job is complete)
       const [jobMetadata] = await job.getMetadata();
+      
+      // DEBUG: Log metadata stats
+      console.log(`[BigQuery] Job metadata - totalRowsReturned: ${jobMetadata.statistics?.query?.totalRowsReturned}, numDmlAffectedRows: ${jobMetadata.statistics?.query?.numDmlAffectedRows}`);
+      console.log(`[BigQuery] Job status: ${jobMetadata.status?.state}, errors: ${JSON.stringify(jobMetadata.status?.errors || [])}`);
+      console.log(`[BigQuery] Query stats - cacheHit: ${jobMetadata.statistics?.query?.cacheHit}, totalBytesProcessed: ${jobMetadata.statistics?.totalBytesProcessed}`);
 
       const executionTimeMs = Date.now() - startTime;
 
@@ -771,6 +794,8 @@ export function registerBigQueryHandlers(): void {
       // BigQuery returns rows as objects with field names as keys
       // Serialize all values to ensure they can be cloned and sent through IPC
       
+      console.log(`[BigQuery] Starting row transformation for ${rows?.length ?? 0} rows with ${columns?.length ?? 0} columns`);
+      
       const transformedRows: Row[] = rows.map((row: any) => ({
         values: columns.map((col) => {
           const value = row[col.name];
@@ -847,8 +872,12 @@ export function registerBigQueryHandlers(): void {
         hasMore: transformedRows.length < totalRowsReturned, // Indicate if there are more rows available
       };
 
+      console.log(`[BigQuery] Final result: ${result.rowsReturned} rows returned, ${result.totalRows} total rows, hasMore: ${result.hasMore}`);
+
       return result;
     } catch (error: any) {
+      console.error(`[BigQuery] Query execution error:`, error);
+      
       if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
         const err = new Error('Network error: Unable to connect to BigQuery');
         (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
