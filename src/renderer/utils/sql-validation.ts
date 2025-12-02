@@ -13,6 +13,8 @@
  * - OFFSET can only be used with LIMIT
  */
 
+import { getRecommendation } from './sql-recommendations';
+
 export interface SqlNodeLocation {
   start?: { line: number; column: number };
   end?: { line: number; column: number };
@@ -40,6 +42,9 @@ export interface ColumnValidationIssue {
   length: number;
   severity?: 'error' | 'warning' | 'info';
   rule?: string;
+  recommendation?: string;
+  documentation?: string;
+  example?: string;
 }
 
 /**
@@ -201,10 +206,101 @@ export const containsWindowFunction = (node: any): { found: boolean; functionNam
 };
 
 /**
+ * Checks if GROUP BY ALL is used with complex expressions that may fail.
+ * Based on BigQuery limitations: GROUP BY ALL may fail when:
+ * - Using aggregate functions AND complex expressions (especially CASE statements)
+ * - Joining multiple tables and referencing columns from different tables in expressions
+ * - Expressions reference columns through aliases or complex paths from joined tables
+ */
+const detectGroupByAllIssues = (selectAst: any): ColumnValidationIssue | null => {
+  if (!selectAst || typeof selectAst !== 'object') {
+    return null;
+  }
+
+  // Check if GROUP BY ALL is used
+  const isGroupByAll = selectAst.groupby && 
+    (selectAst.groupby === 'all' || 
+     selectAst.groupby === 'ALL' ||
+     (typeof selectAst.groupby === 'object' && selectAst.groupby.value === 'all') ||
+     (typeof selectAst.groupby === 'object' && selectAst.groupby.value === 'ALL'));
+
+  if (!isGroupByAll || !Array.isArray(selectAst.columns)) {
+    return null;
+  }
+
+  // Check if there are aggregate functions
+  let hasAggregate = false;
+  for (const col of selectAst.columns) {
+    const expr = col?.expr ?? col;
+    if (expr?.type === 'aggr_func' || containsAggregateFunction(expr).found) {
+      hasAggregate = true;
+      break;
+    }
+  }
+
+  if (!hasAggregate) {
+    return null; // GROUP BY ALL without aggregates is fine
+  }
+
+  // Check for complex expressions (CASE, CONCAT, etc.) that reference joined tables
+  let hasComplexExpression = false;
+  let hasJoins = false;
+  
+  // Check for joins
+  if (selectAst.from && Array.isArray(selectAst.from)) {
+    hasJoins = selectAst.from.length > 1;
+  }
+
+  // Check SELECT columns for complex expressions
+  for (const col of selectAst.columns) {
+    const expr = col?.expr ?? col;
+    
+    // Skip aggregates
+    if (expr?.type === 'aggr_func' || containsAggregateFunction(expr).found) {
+      continue;
+    }
+
+    // Check for CASE expressions
+    if (expr?.type === 'case') {
+      hasComplexExpression = true;
+      break;
+    }
+
+    // Check for function calls (like CONCAT, IFNULL, etc.)
+    if (expr?.type === 'function' && expr.name && 
+        ['concat', 'CONCAT', 'ifnull', 'IFNULL', 'coalesce', 'COALESCE'].includes(expr.name)) {
+      hasComplexExpression = true;
+      break;
+    }
+  }
+
+  // If we have aggregates AND (complex expressions OR joins), warn about GROUP BY ALL
+  if (hasAggregate && (hasComplexExpression || hasJoins)) {
+    const groupByLocation = selectAst.groupby?.location || selectAst.groupby?.loc;
+    return {
+      message: 'GROUP BY ALL may fail with aggregate functions and complex expressions or joins. Consider using explicit GROUP BY.',
+      line: groupByLocation?.start?.line || 1,
+      column: groupByLocation?.start?.column || 1,
+      length: 12, // "GROUP BY ALL"
+      severity: 'warning',
+      rule: 'group-by-all-limitations',
+    };
+  }
+
+  return null;
+};
+
+/**
  * Validates BigQuery syntax rules for a SELECT statement.
  * Returns an array of validation issues based on GoogleSQL rules.
+ * 
+ * @param selectAst The parsed AST of the SELECT statement
+ * @param preprocessingMetadata Optional preprocessing metadata (from sql-preprocessor) to detect transformed syntax
  */
-export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIssue[] => {
+export const validateBigQuerySyntaxRules = (
+  selectAst: any,
+  preprocessingMetadata?: { transformations?: Array<{ type: string; startLine: number; startColumn: number }> }
+): ColumnValidationIssue[] => {
   const issues: ColumnValidationIssue[] = [];
 
   if (!selectAst || typeof selectAst !== 'object') {
@@ -280,6 +376,7 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
   // This is a warning since BigQuery may infer some cases
   if (selectAst.groupby && Array.isArray(selectAst.columns)) {
     const groupByColumns = new Set<string>();
+    const groupByFullRefs = new Set<string>(); // Store full references (table.column)
     
     // Extract GROUP BY column names
     const extractGroupByColumns = (groupExpr: any) => {
@@ -295,11 +392,60 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
       
       // Handle column reference
       if (groupExpr.type === 'column_ref') {
-        const colName = typeof groupExpr.column === 'string' 
-          ? groupExpr.column 
-          : groupExpr.column?.expr?.value || groupExpr.column?.column || '';
+        // Extract table name (handle various formats)
+        let tableName: string | null = null;
+        if (groupExpr.table) {
+          if (typeof groupExpr.table === 'string') {
+            tableName = groupExpr.table;
+          } else if (Array.isArray(groupExpr.table)) {
+            tableName = groupExpr.table.join('.');
+          } else if (typeof groupExpr.table === 'object') {
+            // Handle object format (e.g., { value: 'C' } or { expr: { value: 'C' } })
+            if (typeof groupExpr.table.value === 'string') {
+              tableName = groupExpr.table.value;
+            } else if (groupExpr.table.expr && typeof groupExpr.table.expr.value === 'string') {
+              tableName = groupExpr.table.expr.value;
+            } else if (typeof groupExpr.table.table === 'string') {
+              tableName = groupExpr.table.table;
+            } else if (groupExpr.table.type === 'column_ref' && typeof groupExpr.table.column === 'string') {
+              // Handle nested column_ref structure
+              tableName = groupExpr.table.column;
+            }
+          }
+        }
+        
+        // Extract column name (handle various AST structures)
+        let colName = '';
+        if (typeof groupExpr.column === 'string') {
+          colName = groupExpr.column;
+        } else if (groupExpr.column && typeof groupExpr.column === 'object') {
+          // Handle nested column structure
+          if (groupExpr.column.expr && typeof groupExpr.column.expr.value === 'string') {
+            colName = groupExpr.column.expr.value;
+          } else if (typeof groupExpr.column.column === 'string') {
+            colName = groupExpr.column.column;
+          } else if (groupExpr.column.type === 'column_ref' && typeof groupExpr.column.column === 'string') {
+            // Handle nested column_ref structure
+            colName = groupExpr.column.column;
+          } else if (groupExpr.column.value && typeof groupExpr.column.value === 'string') {
+            // Handle { value: 'ColumnName' } structure
+            colName = groupExpr.column.value;
+          } else if (groupExpr.column.expr && groupExpr.column.expr.type === 'default' && typeof groupExpr.column.expr.value === 'string') {
+            // Handle { expr: { type: 'default', value: 'ColumnName' } } structure
+            colName = groupExpr.column.expr.value;
+          }
+        }
+        
         if (colName) {
-          groupByColumns.add(stripIdentifierQuotes(colName).toLowerCase());
+          const cleanColName = stripIdentifierQuotes(colName).toLowerCase();
+          // Always add column name (without table alias) for matching
+          groupByColumns.add(cleanColName);
+          
+          // Also store full reference if table alias is present
+          if (tableName) {
+            const cleanTableName = stripIdentifierQuotes(tableName).toLowerCase();
+            groupByFullRefs.add(`${cleanTableName}.${cleanColName}`);
+          }
         }
       }
       // Handle positional reference (1, 2, 3)
@@ -307,9 +453,26 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
         // Positional references are valid, add a placeholder
         groupByColumns.add(`__positional_${groupExpr.value}__`);
       }
+      // Handle case where groupExpr might be wrapped in an expr property
+      else if (groupExpr.expr) {
+        extractGroupByColumns(groupExpr.expr);
+      }
     };
     
-    extractGroupByColumns(selectAst.groupby);
+    // Extract GROUP BY columns - handle various AST structures
+    if (Array.isArray(selectAst.groupby)) {
+      extractGroupByColumns(selectAst.groupby);
+    } else if (selectAst.groupby) {
+      // Handle object format (e.g., { value: [...] } or direct object)
+      if (selectAst.groupby.value && Array.isArray(selectAst.groupby.value)) {
+        extractGroupByColumns(selectAst.groupby.value);
+      } else if (selectAst.groupby.columns && Array.isArray(selectAst.groupby.columns)) {
+        extractGroupByColumns(selectAst.groupby.columns);
+      } else {
+        // Try to extract directly
+        extractGroupByColumns(selectAst.groupby);
+      }
+    }
     
     // Check SELECT columns that are not aggregated
     for (let i = 0; i < selectAst.columns.length; i++) {
@@ -334,21 +497,95 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
       
       // Check for simple column reference
       if (expr?.type === 'column_ref') {
-        const colName = typeof expr.column === 'string'
-          ? expr.column
-          : expr.column?.expr?.value || expr.column?.column || '';
-        const cleanColName = stripIdentifierQuotes(colName).toLowerCase();
+        // Extract table name (handle various formats)
+        let tableName: string | null = null;
+        if (expr.table) {
+          if (typeof expr.table === 'string') {
+            tableName = expr.table;
+          } else if (Array.isArray(expr.table)) {
+            tableName = expr.table.join('.');
+          } else if (typeof expr.table === 'object') {
+            // Handle object format (e.g., { value: 'C' } or { expr: { value: 'C' } })
+            if (typeof expr.table.value === 'string') {
+              tableName = expr.table.value;
+            } else if (expr.table.expr && typeof expr.table.expr.value === 'string') {
+              tableName = expr.table.expr.value;
+            } else if (typeof expr.table.table === 'string') {
+              tableName = expr.table.table;
+            } else if (expr.table.type === 'column_ref' && typeof expr.table.column === 'string') {
+              // Handle nested column_ref structure
+              tableName = expr.table.column;
+            }
+          }
+        }
         
-        // Check if this column is in GROUP BY or if there's a positional reference for this position
-        const isInGroupBy = groupByColumns.has(cleanColName) || 
-                           groupByColumns.has(`__positional_${i + 1}__`);
+        // Extract column name (handle various AST structures)
+        let colName = '';
+        if (typeof expr.column === 'string') {
+          colName = expr.column;
+        } else if (expr.column && typeof expr.column === 'object') {
+          // Handle nested column structure
+          if (expr.column.expr && typeof expr.column.expr.value === 'string') {
+            colName = expr.column.expr.value;
+          } else if (typeof expr.column.column === 'string') {
+            colName = expr.column.column;
+          } else if (expr.column.type === 'column_ref' && typeof expr.column.column === 'string') {
+            // Handle nested column_ref structure
+            colName = expr.column.column;
+          } else if (expr.column.value && typeof expr.column.value === 'string') {
+            // Handle { value: 'ColumnName' } structure
+            colName = expr.column.value;
+          } else if (expr.column.expr && expr.column.expr.type === 'default' && typeof expr.column.expr.value === 'string') {
+            // Handle { expr: { type: 'default', value: 'ColumnName' } } structure
+            colName = expr.column.expr.value;
+          }
+        }
+        
+        if (!colName) {
+          continue; // Skip if we can't extract column name
+        }
+        
+        const cleanColName = stripIdentifierQuotes(colName).toLowerCase();
+        const cleanTableName = tableName ? stripIdentifierQuotes(tableName).toLowerCase() : null;
+        
+        // Build full reference if table alias is present
+        const fullRef = cleanTableName ? `${cleanTableName}.${cleanColName}` : null;
+        
+        // Check if this column is in GROUP BY
+        // Match if:
+        // 1. Column name matches (GROUP BY can use just the column name even if SELECT has table alias)
+        // 2. Full reference matches (if both SELECT and GROUP BY use table alias)
+        // 3. Positional reference matches
+        // 4. If SELECT has table alias but GROUP BY doesn't, check if column name matches
+        // Note: In SQL, if SELECT has C.ObjectId, GROUP BY can use either C.ObjectId or ObjectId
+        let isInGroupBy = groupByColumns.has(cleanColName) || 
+                          groupByColumns.has(`__positional_${i + 1}__`);
+        
+        // If SELECT has a table alias, also check full reference match
+        if (fullRef) {
+          isInGroupBy = isInGroupBy || groupByFullRefs.has(fullRef);
+        }
+        
+        // Also check if any GROUP BY full reference matches this column name
+        // (handles case where GROUP BY has C.ObjectId but we're checking ObjectId)
+        if (!isInGroupBy && cleanColName) {
+          // Check if any GROUP BY full reference ends with this column name
+          for (const groupByFullRef of groupByFullRefs) {
+            if (groupByFullRef.endsWith(`.${cleanColName}`)) {
+              isInGroupBy = true;
+              break;
+            }
+          }
+        }
         
         if (!isInGroupBy && cleanColName) {
+          // Format the column name for the error message (use original case if available)
+          const displayName = fullRef || colName;
           issues.push({
-            message: `Column "${colName}" must appear in GROUP BY clause or be used in an aggregate function.`,
+            message: `Column "${displayName}" must appear in GROUP BY clause or be used in an aggregate function.`,
             line: expr.location?.start?.line || 1,
             column: expr.location?.start?.column || 1,
-            length: colName.length || 10,
+            length: displayName.length || 10,
             severity: 'warning',
             rule: 'missing-group-by',
           });
@@ -357,18 +594,79 @@ export const validateBigQuerySyntaxRules = (selectAst: any): ColumnValidationIss
     }
   }
 
+  // Rule 6: Check for GROUP BY ALL limitations and other BigQuery-specific syntax
+  // First check preprocessing metadata (since GROUP BY ALL gets transformed to GROUP BY ())
+  if (preprocessingMetadata?.transformations) {
+    for (const transformation of preprocessingMetadata.transformations) {
+      // Handle GROUP BY ALL transformations
+      if (transformation.type === 'group-by-all') {
+        // Check if this SELECT statement has aggregates and complex expressions
+        // We need to analyze the AST to determine if GROUP BY ALL might fail
+        const hasAggregates = Array.isArray(selectAst.columns) && 
+          selectAst.columns.some((col: any) => {
+            const expr = col?.expr ?? col;
+            return expr?.type === 'aggr_func' || containsAggregateFunction(expr).found;
+          });
+        
+        const hasJoins = selectAst.from && Array.isArray(selectAst.from) && selectAst.from.length > 1;
+        
+        const hasComplexExpressions = Array.isArray(selectAst.columns) &&
+          selectAst.columns.some((col: any) => {
+            const expr = col?.expr ?? col;
+            if (expr?.type === 'aggr_func' || containsAggregateFunction(expr).found) {
+              return false; // Skip aggregates
+            }
+            return expr?.type === 'case' || 
+                   (expr?.type === 'function' && ['concat', 'CONCAT', 'ifnull', 'IFNULL', 'coalesce', 'COALESCE'].includes(expr.name));
+          });
+        
+        // Warn if GROUP BY ALL is used with aggregates AND (complex expressions OR joins)
+        if (hasAggregates && (hasComplexExpressions || hasJoins)) {
+          issues.push({
+            message: 'GROUP BY ALL may fail with aggregate functions and complex expressions or joins. Consider using explicit GROUP BY.',
+            line: transformation.startLine,
+            column: transformation.startColumn,
+            length: 12, // "GROUP BY ALL"
+            severity: 'warning',
+            rule: 'group-by-all-limitations',
+          });
+        }
+      }
+    }
+  } else {
+    // Fallback: check AST directly (for cases where preprocessing wasn't used)
+    const groupByAllIssue = detectGroupByAllIssues(selectAst);
+    if (groupByAllIssue) {
+      issues.push(groupByAllIssue);
+    }
+  }
+
   // Recursively validate CTEs
   if (Array.isArray(selectAst.with)) {
     for (const cte of selectAst.with) {
       const cteAst = cte?.stmt?.ast;
       if (cteAst) {
-        const cteIssues = validateBigQuerySyntaxRules(cteAst);
+        const cteIssues = validateBigQuerySyntaxRules(cteAst, preprocessingMetadata);
         issues.push(...cteIssues);
       }
     }
   }
 
-  return issues;
+  // Enrich issues with recommendations from sql-recommendations.ts
+  return issues.map(issue => {
+    if (issue.rule) {
+      const recommendation = getRecommendation(issue.rule);
+      if (recommendation) {
+        return {
+          ...issue,
+          recommendation: recommendation.recommendation,
+          documentation: recommendation.documentation,
+          example: recommendation.example,
+        };
+      }
+    }
+    return issue;
+  });
 };
 
 export const stripIdentifierQuotes = (value: string | null | undefined): string => {

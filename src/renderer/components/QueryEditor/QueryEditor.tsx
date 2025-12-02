@@ -8,6 +8,9 @@ import { useQueriesStore } from '../../stores/queries-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { formatRecommendationAsMarkdown } from '../../utils/sql-recommendations';
+import { preprocessAndParse } from '../../utils/sql-preprocessor';
+import { validateBigQuerySyntaxRules } from '../../utils/sql-validation';
 import './QueryEditor.css';
 
 interface SqlNodeLocation {
@@ -35,6 +38,11 @@ interface ColumnValidationIssue {
   line: number;
   column: number;
   length: number;
+  severity?: 'error' | 'warning' | 'info';
+  rule?: string;
+  recommendation?: string;
+  documentation?: string;
+  example?: string;
 }
 
 const stripIdentifierQuotes = (value: string | null | undefined): string => {
@@ -564,7 +572,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const validateColumnsForSelect = useCallback(async (
     selectAst: any,
     textToValidate: string,
-    canFetchSchemas: boolean
+    canFetchSchemas: boolean,
+    preprocessingMetadata?: { transformations?: Array<{ type: string; startLine: number; startColumn: number }> }
   ): Promise<ColumnValidationIssue[]> => {
     const issues: ColumnValidationIssue[] = [];
 
@@ -849,6 +858,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
     // Validate subqueries in the main query, passing the main query's aliases as parent scope
     await validateSubqueries(selectAst, aliasMap, uniqueTables);
+
+    // Validate BigQuery syntax rules (GROUP BY ALL, aggregate/window function placement, etc.)
+    const syntaxIssues = validateBigQuerySyntaxRules(selectAst, preprocessingMetadata);
+    issues.push(...syntaxIssues);
 
     return issues;
   }, [getTableFields]);
@@ -1155,11 +1168,15 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
       // Validate the text (either selected or full query)
       let parsedAst: any;
+      let preprocessingResult: any = null;
       try {
-        // Try to parse the SQL
-        parsedAst = parserRef.current!.astify(trimmedQuery, {
+        // Preprocess BigQuery-specific syntax and parse the SQL
+        // This handles syntax like GROUP BY ALL that node-sql-parser doesn't support
+        const result = preprocessAndParse(trimmedQuery, parserRef.current!, {
           database: 'bigquery',
         });
+        parsedAst = result.ast;
+        preprocessingResult = result.preprocessing;
         
         // Additional validation: Check for JOINs without ON/USING clause
         // node-sql-parser allows JOINs without ON, but BigQuery requires them
@@ -1681,7 +1698,12 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       if (selectStatements.length > 0) {
         const canFetchSchemas = Boolean(isConnected && window.electronAPI?.bigquery?.getTableSchema);
         for (const statement of selectStatements) {
-          const issues = await validateColumnsForSelect(statement, textToValidate, canFetchSchemas);
+          const issues = await validateColumnsForSelect(
+            statement, 
+            textToValidate, 
+            canFetchSchemas,
+            preprocessingResult ? { transformations: preprocessingResult.transformations } : undefined
+          );
           if (issues.length > 0) {
             columnIssues = columnIssues.concat(issues);
           }
@@ -1709,8 +1731,15 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           const startColumn = Math.max(1, Math.min(column, lineLength + 1));
           const endColumn = Math.max(startColumn, Math.min(column + issue.length, lineLength + 1));
 
+          // Determine marker severity based on issue severity
+          const markerSeverity = issue.severity === 'warning' 
+            ? (window as any).monaco.MarkerSeverity.Warning
+            : issue.severity === 'info'
+            ? (window as any).monaco.MarkerSeverity.Info
+            : (window as any).monaco.MarkerSeverity.Error;
+
           markers.push({
-            severity: (window as any).monaco.MarkerSeverity.Error,
+            severity: markerSeverity,
             startLineNumber: lineNumber,
             startColumn,
             endLineNumber: lineNumber,
@@ -1718,11 +1747,17 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
             message: issue.message,
           });
 
+          // Format rich hover message with recommendations if available
+          const hoverMessage = formatRecommendationAsMarkdown(issue);
+
           decorations.push({
             range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
             options: {
               glyphMarginClassName: 'error-glyph-margin',
-              glyphMarginHoverMessage: { value: issue.message },
+              glyphMarginHoverMessage: { 
+                value: hoverMessage,
+                isTrusted: true, // Allow markdown rendering
+              },
               minimap: {
                 color: '#f48771',
               },
