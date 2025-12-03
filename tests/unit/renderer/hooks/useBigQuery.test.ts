@@ -65,7 +65,7 @@ describe('useBigQuery', () => {
 
       const queryResult = await result.current.executeQuery('SELECT 1');
 
-      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith('SELECT 1', 'test-project');
+      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith('SELECT 1', 'test-project', undefined);
       expect(queryResult.jobId).toBe('job-123');
     });
 
@@ -85,7 +85,8 @@ describe('useBigQuery', () => {
 
       expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith(
         'SELECT * FROM `dataset.table`',
-        'test-project'
+        'test-project',
+        undefined
       );
     });
 

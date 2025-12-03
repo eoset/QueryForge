@@ -113,7 +113,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
   // Memory management: Limit cache size and clear when data changes significantly
   const formattedCellsRef = useRef<Map<string, string>>(new Map());
-  const MAX_FORMATTED_CACHE_SIZE = 10000; // Limit to 10k cells to prevent memory issues
+  const MAX_FORMATTED_CACHE_SIZE = 100000; // Limit to 10k cells to prevent memory issues
   
   // Pre-format all cell values to avoid expensive formatting during render
   // This is the key optimization - format values once when data changes, not on every render

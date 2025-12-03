@@ -21,6 +21,20 @@
   margin-right: 0.5rem;
 }
 
+.results-info span.loading-indicator {
+  color: var(--text-secondary);
+  animation: loading-pulse 1s ease-in-out infinite;
+}
+
+@keyframes loading-pulse {
+  0%, 100% { 
+    opacity: 1; 
+  }
+  50% { 
+    opacity: 0.4; 
+  }
+}
+
 .results-table-container {
   flex: 1;
   overflow: hidden;

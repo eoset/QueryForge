@@ -44,11 +44,13 @@ A powerful desktop application for browsing and querying Google Cloud Platform B
 
 ### Query Results
 - **High-Performance Table**: Canvas-based rendering for large datasets
-- **Pagination**: Navigate through results with 200 rows per page (up to 100,000 total)
+- **Large Dataset Support**: Handle up to 500,000 rows with SQLite-backed storage
+- **SQLite Caching**: Results stored in local SQLite database for memory-efficient handling of large datasets
+- **Live Loading Progress**: Real-time progress indicator shows rows fetched during large query execution
+- **Pagination**: Navigate through results with 200 rows per page
 - **Column Sorting**: Sort results by any column
 - **Column Resizing**: Adjust column widths by dragging
 - **Copy Values**: Right-click to copy cell values
-- **Results Caching**: Fast page navigation with cached results
 
 ### Sample Data
 - **Quick Preview**: View sample data from any table

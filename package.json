@@ -4,6 +4,7 @@
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
+    "postinstall": "electron-rebuild",
     "build": "tsc -p tsconfig.prod.json && NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
     "build:main": "tsc",
     "build:main:prod": "tsc -p tsconfig.prod.json",
@@ -34,19 +35,16 @@
   },
   "dependencies": {
     "@google-cloud/bigquery": "^7.0.0",
+    "better-sqlite3": "^12.5.0",
     "electron-store": "^10.0.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
     "@monaco-editor/react": "^4.6.0",
-    "node-sql-parser": "^5.3.13",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-window": "^1.8.10",
-    "sql-formatter": "^15.6.10",
-    "zustand": "^4.4.7",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.48",
@@ -68,13 +66,21 @@
     "jest": "^30.2.0",
     "jest-environment-jsdom": "^30.2.0",
     "prettier": "^3.2.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-window": "^1.8.10",
+    "sql-formatter": "^15.6.10",
+    "sql-parser-cst": "^0.12.0",
     "style-loader": "^4.0.0",
+    "tree-sitter-sql-bigquery": "^0.8.0",
     "ts-jest": "^29.4.5",
     "ts-loader": "^9.5.4",
     "typescript": "^5.3.3",
+    "web-tree-sitter": "^0.25.10",
     "webpack": "^5.103.0",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.2"
+    "webpack-dev-server": "^5.2.2",
+    "zustand": "^4.4.7"
   },
   "build": {
     "appId": "com.query-forge",

@@ -28,6 +28,7 @@ export const QueryResults: React.FC = () => {
   } | null>(null);
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
   
   // Store metadata and current page separately for efficient cache access
   const [resultsMetadata, setResultsMetadata] = useState<{
@@ -42,8 +43,65 @@ export const QueryResults: React.FC = () => {
   const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
   const [isLoadingCache, setIsLoadingCache] = useState(false);
   const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
   const error = activeTab?.error;
   const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  const jobId = activeTab?.jobId;
+  
+  // Listen for progress events during query execution AND background fetching
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onProgress) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
+      // Show progress during initial execution or background page fetching
+      if (data.jobId === jobId) {
+        setProgressMessage(data.message);
+        setIsBackgroundFetching(!data.isComplete);
+      }
+    });
+    
+    return unsubscribe;
+  }, [jobId]);
+  
+  // Clear progress when execution status changes to idle or error
+  useEffect(() => {
+    if (executionStatus === 'idle' || executionStatus === 'error') {
+      setProgressMessage(null);
+      setIsBackgroundFetching(false);
+    }
+  }, [executionStatus]);
+  
+  // Listen for rows updates (background fetching of additional pages)
+  // Data is saved directly to SQLite by the main process - we just reload from cache
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
+      // Only process updates for the current job
+      if (data.jobId !== jobId) return;
+      
+      // Data is already in SQLite cache - just reload metadata and current page
+      if (window.electronAPI?.resultsCache) {
+        // Reload metadata to reflect final row count
+        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
+        if (metadata) {
+          setResultsMetadata(metadata);
+        }
+        
+        // Reload current page to ensure we have latest data
+        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        }
+        
+        // Clear loading indicators
+        setProgressMessage(null);
+        setIsBackgroundFetching(false);
+      }
+    });
+    
+    return unsubscribe;
+  }, [activeTabId, jobId, currentPage]);
   
   // Load metadata from cache when tab changes or when execution completes
   useEffect(() => {
@@ -335,9 +393,9 @@ export const QueryResults: React.FC = () => {
   }
 
   if (!resultsMetadata) {
-    // Show "Executing query..." when status is running, otherwise show default message
+    // Show progress message if available, otherwise show default messages
     const message = executionStatus === 'running' 
-      ? 'Executing query...' 
+      ? (progressMessage || 'Executing query...')
       : isLoadingCache
       ? 'Loading results...'
       : 'Execute a query to see results here.';
@@ -374,18 +432,35 @@ export const QueryResults: React.FC = () => {
   const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
   const hasRows = currentPageRows && currentPageRows.length > 0;
 
+  // Determine how to display row count
+  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
+  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
+  // - hasMore indicates if there are more rows beyond our limit
+  const displayRowCount = () => {
+    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
+      // We hit the limit - show how many we have of the total
+      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else if (resultsMetadata.hasMore) {
+      // Still loading more rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else {
+      // We have all rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    }
+  };
+
   if (!hasColumns && !hasRows) {
     return (
       <div className="query-results">
         <div className="results-header">
           <div className="results-info">
-            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-            )}
+            <span>{displayRowCount()}</span>
             <span> • {resultsMetadata.executionTimeMs}ms</span>
             {resultsMetadata.bytesProcessed && (
               <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
             )}
           </div>
         </div>
@@ -399,13 +474,13 @@ export const QueryResults: React.FC = () => {
       <div className="query-results">
         <div className="results-header">
           <div className="results-info">
-            <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-            {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-              <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-            )}
+            <span>{displayRowCount()}</span>
             <span> • {resultsMetadata.executionTimeMs}ms</span>
             {resultsMetadata.bytesProcessed && (
               <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
             )}
           </div>
         </div>
@@ -418,13 +493,13 @@ export const QueryResults: React.FC = () => {
     <div className="query-results">
       <div className="results-header">
         <div className="results-info">
-          <span>{resultsMetadata.rowsReturned.toLocaleString()} rows</span>
-          {resultsMetadata.totalRows > resultsMetadata.rowsReturned && (
-            <span> of {resultsMetadata.totalRows.toLocaleString()} total</span>
-          )}
+          <span>{displayRowCount()}</span>
           <span> • {resultsMetadata.executionTimeMs}ms</span>
           {resultsMetadata.bytesProcessed && (
             <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+          {progressMessage && (
+            <span className="loading-indicator"> • {progressMessage}</span>
           )}
         </div>
       </div>

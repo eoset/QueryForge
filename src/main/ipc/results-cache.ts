@@ -4,9 +4,12 @@ import {
   getResults,
   getResultsMetadata,
   getResultsPage,
+  getResultsRange,
   deleteResults,
   clearAllResults,
-} from '../storage/results-cache-store';
+  closeDatabase,
+  getCacheStats,
+} from '../storage/results-cache-sqlite';
 import type { QueryResult, Row } from '../../shared/types/query';
 import { BigQueryErrorCode } from '../../shared/types/bigquery';
 
@@ -85,5 +88,39 @@ export function registerResultsCacheHandlers(): void {
       };
     }
   });
+
+  // New: Get a range of rows (for virtual scrolling)
+  ipcMain.handle('results-cache:getRange', async (_event, tabId: string, startIndex: number, count: number): Promise<Row[] | null> => {
+    try {
+      const rows = getResultsRange(tabId, startIndex, count);
+      return rows || null;
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get results range from cache',
+        details: error.message,
+      };
+    }
+  });
+
+  // New: Get cache statistics
+  ipcMain.handle('results-cache:stats', async () => {
+    try {
+      return getCacheStats();
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get cache stats',
+        details: error.message,
+      };
+    }
+  });
 }
 
+/**
+ * Close the database connection
+ * Should be called when the app is closing
+ */
+export function closeCacheDatabase(): void {
+  closeDatabase();
+}
