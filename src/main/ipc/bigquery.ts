@@ -1174,28 +1174,38 @@ export function registerBigQueryHandlers(): void {
         statementType: metadata?.statistics?.query?.statementType || null,
       };
     } catch (error: any) {
+      // Electron IPC requires Error objects with message property to serialize properly
+      // Plain objects thrown will appear as [object Object]
+      
       // Handle specific BigQuery errors
       if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'Table not found',
-          details: error.message,
-        };
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.message;
+        throw err;
       }
+      
       // Handle syntax errors and other query errors
+      // BigQuery errors include location info (line, column) which we pass through
       if (error.errors && error.errors.length > 0) {
         const firstError = error.errors[0];
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: firstError.message || 'Query validation failed',
-          details: error.errors,
-        };
+        const err = new Error(firstError.message || 'Query validation failed');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        // Include location info if available
+        if (firstError.location) {
+          (err as any).location = {
+            line: firstError.location.line,
+            column: firstError.location.column,
+          };
+        }
+        (err as any).details = JSON.stringify(error.errors);
+        throw err;
       }
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Dry run failed',
-        details: error.errors || error,
-      };
+      
+      const err = new Error(error.message || 'Dry run failed');
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors ? JSON.stringify(error.errors) : String(error);
+      throw err;
     }
   });
 }

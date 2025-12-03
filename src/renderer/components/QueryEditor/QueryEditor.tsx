@@ -2578,10 +2578,15 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // Skip dry run if SQL syntax is invalid (syntax errors take precedence)
-      // But still allow clearing previous table not found errors
-      const shouldSkipDryRun = sqlValidationStatus.isValid === false && 
-        (!sqlValidationStatus.errorMessage || !sqlValidationStatus.errorMessage.includes('Table not found'));
+      // Skip dry run if SQL syntax is invalid from local parser (syntax errors take precedence)
+      // But still allow dry run if the error is from BigQuery (table/column not found, etc.)
+      // so we can clear those errors when fixed
+      const isBigQueryError = sqlValidationStatus.errorMessage && (
+        sqlValidationStatus.errorMessage.includes('Table not found') ||
+        sqlValidationStatus.errorMessage.includes('Unknown column') ||
+        sqlValidationStatus.errorMessage.includes('Unrecognized name')
+      );
+      const shouldSkipDryRun = sqlValidationStatus.isValid === false && !isBigQueryError;
       
       if (shouldSkipDryRun) {
         setExpectedQuerySize(null);
@@ -2594,21 +2599,32 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         // Use BigQuery's native dry run to get accurate byte estimate
         const result = await window.electronAPI.bigquery.dryRun(textToAnalyze);
         
-        // Clear any previous table not found errors if dry run succeeded
+        // Clear any previous BigQuery validation errors if dry run succeeded
         setSqlValidationStatus((prev) => {
-          // Only clear if the current error is a table not found error
-          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+          // Clear BigQuery errors (table/column not found, etc.) when query is now valid
+          const wasBigQueryError = prev.errorMessage && (
+            prev.errorMessage.includes('Table not found') ||
+            prev.errorMessage.includes('Unknown column') ||
+            prev.errorMessage.includes('Unrecognized name')
+          );
+          if (wasBigQueryError) {
             return { isValid: true, errorMessage: null, errorLine: null };
           }
-          // Keep other errors (syntax errors)
+          // Keep local syntax errors
           return prev;
         });
         
         setExpectedQuerySize(result.totalBytesProcessed);
       } catch (err: any) {
         // Extract error information from Electron IPC wrapper
-        const errorMessage = err?.message || err?.details || '';
-        const errorDetails = err?.details || '';
+        let errorMessage = err?.message || '';
+        const errorDetails = typeof err?.details === 'string' ? err.details : '';
+        const errorLocation = err?.location;
+        
+        // Strip Electron IPC error prefix: "Error invoking remote method 'bigquery:dryRun': Error: "
+        errorMessage = errorMessage
+          .replace(/^Error invoking remote method '[^']+': /, '')
+          .replace(/^Error: /, '');
         
         // Check for table not found errors
         const isTableNotFound = 
@@ -2617,28 +2633,62 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           errorDetails.includes('Not found: Table') ||
           err?.code === 404;
         
+        // Check for column not found errors
+        const isColumnNotFound = 
+          errorMessage.includes('Unrecognized name') ||
+          errorMessage.includes('Name') && errorMessage.includes('not found');
+        
+        // Determine the display message and line number
+        let displayMessage = errorMessage;
+        let errorLine: number | null = errorLocation?.line || null;
+        
+        // Try to extract line number from error message like "at [2:1]"
+        if (!errorLine) {
+          const lineMatch = errorMessage.match(/at \[(\d+):\d+\]/);
+          if (lineMatch) {
+            errorLine = parseInt(lineMatch[1], 10);
+          }
+        }
+        
         if (isTableNotFound) {
           // Extract table reference from error message
-          let displayMessage = 'Table not found';
           const tableMatch = errorMessage.match(/Not found: Table ([^\s]+)/) ||
                             errorDetails.match(/Not found: Table ([^\s]+)/);
           if (tableMatch) {
             displayMessage = `Table not found: ${tableMatch[1]}`;
+          } else {
+            displayMessage = 'Table not found';
           }
-          
+        } else if (isColumnNotFound) {
+          // Clean up column error message
+          const columnMatch = errorMessage.match(/Unrecognized name: (\w+)/);
+          if (columnMatch) {
+            displayMessage = `Unknown column: ${columnMatch[1]}`;
+          }
+        }
+        
+        // Show BigQuery validation errors in the status bar
+        // These are more accurate than local parsing as they validate against actual schema
+        if (displayMessage) {
           setSqlValidationStatus((prev) => {
-            // Only set table not found error if SQL syntax is valid (syntax errors take precedence)
-            if (prev.isValid === true || prev.isValid === null) {
+            // Local syntax errors from tree-sitter take precedence
+            // But BigQuery errors (table/column not found, semantic errors) should be shown
+            const isLocalSyntaxError = prev.isValid === false && 
+              prev.errorMessage && 
+              !prev.errorMessage.includes('Table not found') &&
+              !prev.errorMessage.includes('Unknown column');
+            
+            if (!isLocalSyntaxError) {
               return {
                 isValid: false,
                 errorMessage: displayMessage,
-                errorLine: null,
+                errorLine: errorLine,
               };
             }
             return prev;
           });
         }
-        // Silently ignore other dry run errors (they'll be caught when actually running the query)
+        
         setExpectedQuerySize(null);
       } finally {
         setIsLoadingQuerySize(false);
