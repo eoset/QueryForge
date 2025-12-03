@@ -1125,4 +1125,77 @@ export function registerBigQueryHandlers(): void {
       };
     }
   });
+
+  /**
+   * Perform a dry run of a query to estimate bytes processed without executing.
+   * This uses BigQuery's native dry run feature which accounts for:
+   * - Column selection (only selected columns count)
+   * - Partitioning (only scanned partitions count)
+   * - Clustering benefits
+   * - Query optimization
+   */
+  ipcMain.handle('bigquery:dryRun', async (_event, queryText: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create a dry run query job - this validates and estimates without executing
+      // For dry runs, the job is not actually created in BigQuery, so we can't call getMetadata()
+      // The statistics are returned directly in job.metadata
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+        dryRun: true,
+      });
+
+      // For dry runs, metadata is available directly on the job object
+      // Don't call getMetadata() as dry run jobs don't actually exist in BigQuery
+      const metadata = job.metadata;
+      
+      // totalBytesProcessed is in statistics
+      const totalBytesProcessed = parseInt(
+        metadata?.statistics?.totalBytesProcessed || '0', 
+        10
+      );
+
+      return {
+        totalBytesProcessed,
+        // Include additional useful statistics if available
+        cacheHit: metadata?.statistics?.query?.cacheHit || false,
+        statementType: metadata?.statistics?.query?.statementType || null,
+      };
+    } catch (error: any) {
+      // Handle specific BigQuery errors
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'Table not found',
+          details: error.message,
+        };
+      }
+      // Handle syntax errors and other query errors
+      if (error.errors && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: firstError.message || 'Query validation failed',
+          details: error.errors,
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Dry run failed',
+        details: error.errors || error,
+      };
+    }
+  });
 }

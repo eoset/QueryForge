@@ -2566,7 +2566,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
-  // Calculate expected query size from table/view metadata
+  // Calculate expected query size using BigQuery's native dry run feature
+  // This provides accurate cost estimates accounting for column selection, partitioning, and clustering
   useEffect(() => {
     const calculateExpectedQuerySize = async () => {
       // Use selected text if available, otherwise use full query text
@@ -2577,12 +2578,12 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // Skip table validation if SQL syntax is invalid (syntax errors take precedence)
+      // Skip dry run if SQL syntax is invalid (syntax errors take precedence)
       // But still allow clearing previous table not found errors
-      const shouldSkipTableCheck = sqlValidationStatus.isValid === false && 
+      const shouldSkipDryRun = sqlValidationStatus.isValid === false && 
         (!sqlValidationStatus.errorMessage || !sqlValidationStatus.errorMessage.includes('Table not found'));
       
-      if (shouldSkipTableCheck) {
+      if (shouldSkipDryRun) {
         setExpectedQuerySize(null);
         return;
       }
@@ -2590,323 +2591,54 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       setIsLoadingQuerySize(true);
       
       try {
-        const tableRefs = extractTableReferences(textToAnalyze);
+        // Use BigQuery's native dry run to get accurate byte estimate
+        const result = await window.electronAPI.bigquery.dryRun(textToAnalyze);
         
-        if (tableRefs.length === 0) {
-          setExpectedQuerySize(null);
-          setIsLoadingQuerySize(false);
-          return;
-        }
-
-        // Helper function to get size for a table or view
-        // For views, recursively fetches the underlying table sizes
-        // visitedViews tracks already processed views to prevent infinite loops
-        const getTableOrViewSize = async (
-          datasetId: string,
-          tableId: string,
-          visitedViews: Set<string>
-        ): Promise<{ bytes: number; hasMetadata: boolean; error?: { message: string; tableRef: string } }> => {
-          const tableKey = `${datasetId}.${tableId}`;
-          
-          // Prevent infinite recursion for views that reference each other
-          if (visitedViews.has(tableKey)) {
-            return { bytes: 0, hasMetadata: false };
+        // Clear any previous table not found errors if dry run succeeded
+        setSqlValidationStatus((prev) => {
+          // Only clear if the current error is a table not found error
+          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+            return { isValid: true, errorMessage: null, errorLine: null };
+          }
+          // Keep other errors (syntax errors)
+          return prev;
+        });
+        
+        setExpectedQuerySize(result.totalBytesProcessed);
+      } catch (err: any) {
+        // Extract error information from Electron IPC wrapper
+        const errorMessage = err?.message || err?.details || '';
+        const errorDetails = err?.details || '';
+        
+        // Check for table not found errors
+        const isTableNotFound = 
+          errorMessage.includes('Table not found') ||
+          errorMessage.includes('Not found: Table') ||
+          errorDetails.includes('Not found: Table') ||
+          err?.code === 404;
+        
+        if (isTableNotFound) {
+          // Extract table reference from error message
+          let displayMessage = 'Table not found';
+          const tableMatch = errorMessage.match(/Not found: Table ([^\s]+)/) ||
+                            errorDetails.match(/Not found: Table ([^\s]+)/);
+          if (tableMatch) {
+            displayMessage = `Table not found: ${tableMatch[1]}`;
           }
           
-          try {
-            const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
-            
-            // If numBytes exists and is > 0, this is a regular table with data
-            if (schemaResult.metadata?.numBytes !== undefined && schemaResult.metadata.numBytes > 0) {
-              return { bytes: schemaResult.metadata.numBytes, hasMetadata: true };
-            }
-            
-            // If numBytes is 0 or undefined, this might be a view
-            // Try to get the view definition and extract underlying tables
-            try {
-              const viewResult = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-              if (viewResult.definition) {
-                // Mark this view as visited before processing its definition
-                visitedViews.add(tableKey);
-                
-                // Extract table references from the view definition
-                const viewTableRefs = extractTableReferences(viewResult.definition);
-                
-                // If no table references found in view definition, return 0 bytes but mark as having metadata
-                // so the user sees "0 bytes" rather than hiding the estimate
-                if (viewTableRefs.length === 0) {
-                  return { bytes: 0, hasMetadata: true };
-                }
-                
-                let viewTotalBytes = 0;
-                let viewHasMetadata = false;
-                
-                // Recursively get sizes for all tables referenced in the view
-                for (const ref of viewTableRefs) {
-                  const result = await getTableOrViewSize(ref.datasetId, ref.tableId, visitedViews);
-                  if (result.error) {
-                    // Propagate the first error encountered
-                    return result;
-                  }
-                  if (result.hasMetadata) {
-                    viewTotalBytes += result.bytes;
-                    viewHasMetadata = true;
-                  }
-                }
-                
-                // If we successfully processed a view, always mark as having metadata
-                // so the estimate is shown (even if 0 bytes)
-                return { bytes: viewTotalBytes, hasMetadata: true };
-              }
-            } catch {
-              // Not a view, or view definition couldn't be fetched
-              // This is normal for empty tables, just return no bytes
-            }
-            
-            // Regular table with no data, or couldn't determine view definition
-            return { bytes: 0, hasMetadata: schemaResult.metadata?.numBytes !== undefined };
-          } catch (err: any) {
-            // Handle table not found errors - will be processed below
-            throw err;
-          }
-        };
-
-        // Fetch metadata for each table/view and sum up numBytes
-        // This includes all tables from FROM and JOIN clauses
-        let totalBytes = 0;
-        let hasMetadata = false;
-        let tableNotFoundError: { message: string; tableRef: string } | null = null;
-        // Track visited views to prevent infinite loops when views reference each other
-        const visitedViews = new Set<string>();
-
-        for (const { datasetId, tableId } of tableRefs) {
-          try {
-            const result = await getTableOrViewSize(datasetId, tableId, visitedViews);
-            if (result.error) {
-              tableNotFoundError = result.error;
-              break;
-            }
-            if (result.hasMetadata) {
-              totalBytes += result.bytes;
-              hasMetadata = true;
-            }
-          } catch (err: any) {
-            // Electron IPC wraps errors, so we need to extract the actual error
-            // The error structure can be:
-            // 1. Direct error object with code/message/details
-            // 2. Error object with nested details
-            // 3. Error message string containing "[object Object]" that needs parsing
-            
-            let actualError = err;
-            let errorCode: string | undefined;
-            let errorMessage: string = '';
-            let errorDetails: any = null;
-            
-            // Try to extract the actual error from Electron IPC wrapper
-            // Electron IPC errors often have the real error nested in various places
-            if (err instanceof Error) {
-              errorMessage = err.message;
-              // Check if message contains "[object Object]" - means nested error
-              if (errorMessage.includes('[object Object]')) {
-                // Try to get the actual error from various possible locations
-                actualError = (err as any).cause || (err as any).details || (err as any).error || err;
-              } else {
-                actualError = err;
-              }
-            } else if (typeof err === 'object' && err !== null) {
-              actualError = err;
-            }
-            
-            // Extract error properties from the actual error object
-            // Try multiple possible locations for the error code and message
-            // The error thrown from main process is: { code: 'BIGQUERY_ERROR', message: 'Table not found', details: '...' }
-            // But Electron IPC wraps it, so we need to check the error object itself
-            errorCode = actualError?.code || 
-                       (actualError as any)?.error?.code ||
-                       (err as any)?.code;
-            
-            // Check if errorMessage is just "[object Object]" - if so, try to get real message from error object
-            if (!errorMessage || errorMessage.includes('[object Object]')) {
-              errorMessage = actualError?.message || 
-                            (actualError as any)?.error?.message || 
-                            (actualError as any)?.details?.message ||
-                            (err as any)?.message ||
-                            '';
-            }
-            
-            // For errorDetails, check if it's the actual error object or a string
-            errorDetails = actualError?.details || 
-                          (actualError as any)?.error?.details ||
-                          (actualError as any)?.error ||
-                          actualError?.message || 
-                          errorMessage;
-            
-            // If errorDetails is still "[object Object]", the actual error might be in err itself
-            if (String(errorDetails).includes('[object Object]')) {
-              // Try to access the error properties directly from err
-              if ((err as any)?.code) errorCode = (err as any).code;
-              if ((err as any)?.message && !(err as any).message.includes('[object Object]')) {
-                errorMessage = (err as any).message;
-              }
-              if ((err as any)?.details) {
-                errorDetails = (err as any).details;
-              }
-            }
-            
-            // If we still have "[object Object]", try to extract nested error properties
-            if (errorMessage.includes('[object Object]') || String(errorDetails).includes('[object Object]')) {
-              try {
-                // Try to access nested error properties directly
-                // Electron IPC might nest the error in different ways
-                const nestedError = (actualError as any)?.error || 
-                                   (actualError as any)?.details ||
-                                   (actualError as any)?.cause ||
-                                   actualError;
-                
-                if (nestedError && nestedError !== actualError) {
-                  errorCode = nestedError?.code;
-                  errorMessage = nestedError?.message || errorMessage;
-                  errorDetails = nestedError?.details || nestedError?.message || errorMessage;
-                }
-                
-                // Try to stringify to see the structure
-                try {
-                  const errorStr = JSON.stringify(actualError, null, 2);
-                  const parsed = JSON.parse(errorStr);
-                  if (parsed.error || parsed.details) {
-                    const extracted = parsed.error || parsed.details;
-                    errorCode = extracted?.code || errorCode;
-                    errorMessage = extracted?.message || errorMessage;
-                    errorDetails = extracted?.details || extracted?.message || errorMessage;
-                  }
-                } catch (e) {
-                  // Silently handle stringify errors
-                }
-              } catch (e) {
-                // Silently handle extraction errors
-              }
-            }
-            
-            // If errorDetails is an object, try to extract message from it
-            if (typeof errorDetails === 'object' && errorDetails !== null) {
-              if (errorDetails.message) {
-                errorMessage = errorDetails.message;
-                errorDetails = errorDetails.message;
-              } else if (Array.isArray(errorDetails) && errorDetails.length > 0) {
-                const firstDetail = errorDetails[0];
-                if (typeof firstDetail === 'object' && firstDetail.message) {
-                  errorMessage = firstDetail.message;
-                  errorDetails = firstDetail.message;
-                } else if (typeof firstDetail === 'string') {
-                  errorMessage = firstDetail;
-                  errorDetails = firstDetail;
-                }
-              } else {
-                // Try to stringify to get readable error
-                try {
-                  errorDetails = JSON.stringify(errorDetails);
-                } catch {
-                  errorDetails = String(errorDetails);
-                }
-              }
-            }
-            
-            // Convert errorDetails to string for checking
-            const errorDetailsStr = typeof errorDetails === 'string' ? errorDetails : String(errorDetails);
-            const errorMessageStr = typeof errorMessage === 'string' ? errorMessage : String(errorMessage);
-            
-            // Check for table not found error - can be identified by:
-            // 1. code === 'BIGQUERY_ERROR' and message === 'Table not found'
-            // 2. message/details containing 'Table not found' or 'Not found: Table'
-            // 3. error code 404 (BigQuery returns 404 for not found)
-            // 4. Check error object properties directly (even if message is "[object Object]")
-            // 5. If error is from getTableSchema and contains "[object Object]", it's likely table not found
-            const actualErrorCode = actualError?.code || (err as any)?.code;
-            const actualErrorMessage = actualError?.message || (err as any)?.message || errorMessageStr;
-            
-            // Check if this is an IPC error from getTableSchema - if so, check error properties
-            const isGetTableSchemaError = errorMessageStr.includes('bigquery:getTableSchema');
-            
-            // Check both the extracted strings and the error object properties directly
-            const isTableNotFound = 
-              (errorCode === 'BIGQUERY_ERROR' && errorMessageStr === 'Table not found') ||
-              (actualErrorCode === 'BIGQUERY_ERROR' && actualErrorMessage === 'Table not found') ||
-              (errorMessageStr.includes('Table not found')) ||
-              (errorMessageStr.includes('Not found: Table')) ||
-              (actualErrorMessage.includes('Table not found')) ||
-              (actualErrorMessage.includes('Not found: Table')) ||
-              (errorDetailsStr.includes('Table not found')) ||
-              (errorDetailsStr.includes('Not found: Table')) ||
-              (actualErrorCode === 404 || actualErrorCode === '404') ||
-              ((err as any)?.code === 404) ||
-              // Fallback: if it's a getTableSchema error and we can't extract details, assume table not found
-              (isGetTableSchemaError && errorMessageStr.includes('[object Object]'));
-            
-            if (isTableNotFound) {
-              const tableRef = `${datasetId}.${tableId}`;
-              // Extract table name from error details if available
-              let displayMessage = `Table not found: ${tableRef}`;
-              
-              // Try to extract the full table reference from error details
-              const fullMatch = errorDetailsStr.match(/Not found: Table ([^\s]+)/);
-              if (fullMatch) {
-                displayMessage = `Table not found: ${fullMatch[1]}`;
-              } else {
-                // Try to extract from project.dataset.table format in error message
-                const tableMatch = errorMessageStr.match(/([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)/);
-                if (tableMatch) {
-                  displayMessage = `Table not found: ${tableMatch[1]}`;
-                }
-              }
-              
-              tableNotFoundError = {
-                message: displayMessage,
-                tableRef,
-              };
-              // Break on first table not found error to show it in status bar
-              break;
-            } else {
-              // Silently skip other errors (permissions, etc.)
-              console.debug(`Could not fetch metadata for ${datasetId}.${tableId}:`, {
-                err,
-                errorCode,
-                errorMessage: errorMessageStr,
-                errorDetails: errorDetailsStr,
-              });
-            }
-          }
-        }
-
-        // If a table was not found, update SQL validation status to show error
-        if (tableNotFoundError) {
           setSqlValidationStatus((prev) => {
             // Only set table not found error if SQL syntax is valid (syntax errors take precedence)
             if (prev.isValid === true || prev.isValid === null) {
               return {
                 isValid: false,
-                errorMessage: tableNotFoundError.message,
+                errorMessage: displayMessage,
                 errorLine: null,
               };
             }
-            // Keep syntax error if it exists
             return prev;
           });
-          setExpectedQuerySize(null);
-        } else {
-          // Clear any previous table not found errors if all tables are valid
-          setSqlValidationStatus((prev) => {
-            // Only clear if the current error is a table not found error
-            if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-              // Clear table not found error, restore to valid if syntax was valid
-              return { isValid: true, errorMessage: null, errorLine: null };
-            }
-            // Keep other errors (syntax errors)
-            return prev;
-          });
-          setExpectedQuerySize(hasMetadata ? totalBytes : null);
         }
-      } catch (err) {
-        console.error('Failed to calculate expected query size:', err);
+        // Silently ignore other dry run errors (they'll be caught when actually running the query)
         setExpectedQuerySize(null);
       } finally {
         setIsLoadingQuerySize(false);

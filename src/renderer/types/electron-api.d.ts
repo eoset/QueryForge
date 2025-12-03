@@ -10,6 +10,7 @@ export interface ElectronAPI {
   bigquery: {
     execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
     cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
     listDatasets(): Promise<Dataset[]>;
     listTables(datasetId: string): Promise<Table[]>;
     getTableSchema(datasetId: string, tableId: string): Promise<{ 

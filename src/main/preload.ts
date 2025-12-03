@@ -11,6 +11,7 @@ export interface ElectronAPI {
   bigquery: {
     execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
     cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
     listDatasets(): Promise<Dataset[]>;
     listTables(datasetId: string): Promise<Table[]>;
     getTableSchema(datasetId: string, tableId: string): Promise<{ 
@@ -104,6 +105,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     execute: (queryText: string, projectId: string, tabId?: string) =>
       ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
     cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
     listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
     listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
     getTableSchema: (datasetId: string, tableId: string) =>
