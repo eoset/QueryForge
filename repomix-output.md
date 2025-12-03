@@ -8660,6 +8660,75 @@ export interface Table {
 }
 ````
 
+## File: src/shared/types/query.ts
+````typescript
+/**
+ * Query-related types
+ */
+
+export type TabType = 'query' | 'explorer' | 'saved-queries';
+
+export interface QueryTab {
+  id: string;
+  title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
+  queryText: string;
+  isModified: boolean;
+  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string; // ISO timestamp
+  lastExecutedQueryText?: string; // The query text that was last executed
+  savedQueryId?: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sqlText: string;
+  description?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  tags?: string[];
+}
+
+export interface SaveQueryInput {
+  name: string;
+  sqlText: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateQueryInput {
+  name?: string;
+  sqlText?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface QueryResult {
+  columns: ColumnMetadata[];
+  rows: Row[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
+  mode?: string; // NULLABLE, REQUIRED, REPEATED
+}
+
+export interface Row {
+  values: any[]; // Values matching column order
+}
+````
+
 ## File: src/shared/utils/connection-validation.ts
 ````typescript
 import type { ConnectionConfig } from '../types/connection';
@@ -11291,6 +11360,146 @@ export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
 };
 ````
 
+## File: src/renderer/components/TabBar/TabBar.tsx
+````typescript
+import React, { useState, useRef, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import './TabBar.css';
+
+export const TabBar: React.FC = () => {
+  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
+  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
+  const queryTabs = tabs.filter(tab => tab.type === 'query');
+  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Create a transparent drag image canvas once
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, 1, 1);
+    }
+    dragImageRef.current = canvas;
+  }, []);
+
+  const handleTabClick = (tabId: string) => {
+    setActiveTab(tabId);
+  };
+
+  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    
+    if (tab?.isModified) {
+      const confirmed = window.confirm(
+        'This tab has unsaved changes. Are you sure you want to close it?'
+      );
+      if (!confirmed) return;
+    }
+    closeTab(tabId);
+  };
+
+  const handleNewTab = () => {
+    createTab();
+  };
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    // Don't start drag if clicking on the close button
+    const target = e.target as HTMLElement;
+    if (target.closest('.tab-close')) {
+      e.preventDefault();
+      return;
+    }
+    
+    setDraggedTabIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
+    
+    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
+    if (dragImageRef.current) {
+      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedTabIndex !== null && draggedTabIndex !== index) {
+      setDragOverIndex(index);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    
+    // Map dropIndex from queryTabs array back to full tabs array
+    const dropTab = queryTabs[dropIndex];
+    if (!dropTab) {
+      setDraggedTabIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    
+    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
+    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
+    
+    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
+      reorderTabs(actualDragIndex, actualDropIndex);
+    }
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  return (
+    <div className="tab-bar">
+      <div className="tabs-container">
+        {queryTabs.map((tab, index) => (
+          <div
+            key={tab.id}
+            draggable
+            onDragStart={(e) => handleDragStart(e, index)}
+            onDragOver={(e) => handleDragOver(e, index)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, index)}
+            onDragEnd={handleDragEnd}
+            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
+              draggedTabIndex === index ? 'dragging' : ''
+            } ${dragOverIndex === index ? 'drag-over' : ''}`}
+            onClick={() => handleTabClick(tab.id)}
+          >
+            <span className="tab-title">{tab.title}</span>
+            {tab.isModified && <span className="modified-indicator">●</span>}
+            <button
+              className="tab-close"
+              onClick={(e) => handleCloseTab(e, tab.id)}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
+          +
+        </button>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/hooks/useBigQuery.ts
 ````typescript
 import { useCallback } from 'react';
@@ -11331,6 +11540,302 @@ export function useBigQuery() {
     cancelQuery,
     isConnected: !!connection,
   };
+}
+````
+
+## File: src/renderer/stores/tabs-store.ts
+````typescript
+import { create } from 'zustand';
+import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
+
+interface TabsState {
+  tabs: QueryTab[];
+  activeTabId: string | null;
+  createTab: () => string;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  reorderTabs: (fromIndex: number, toIndex: number) => void;
+  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
+  setTabQuery: (tabId: string, queryText: string) => void;
+  setTabResults: (tabId: string, results: QueryResult) => void;
+  setTabError: (tabId: string, error: string) => void;
+  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
+  loadTabs: () => Promise<void>;
+  saveTabs: () => Promise<void>;
+}
+
+function generateTabId(): string {
+  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Debounce function for saving tabs
+let saveTimeout: NodeJS.Timeout | null = null;
+const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = setTimeout(() => {
+    saveFn().catch((error) => {
+      console.error('Failed to save tabs:', error);
+    });
+  }, delay);
+};
+
+// Filter out any legacy Explorer or Saved Queries tabs
+function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
+  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
+}
+
+export const useTabsStore = create<TabsState>((set, get) => {
+  return {
+    tabs: [
+      {
+        id: generateTabId(),
+        title: 'Query 1',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+      {
+        id: generateTabId(),
+        title: 'Query 2',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+    ],
+    activeTabId: null,
+
+    loadTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const savedTabs = await window.electronAPI.tabs.getTabs();
+        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
+        
+        // Filter out any legacy Explorer or Saved Queries tabs
+        let filteredTabs = filterStaticTabs(savedTabs || []);
+        
+        if (filteredTabs.length === 0) {
+          // No saved tabs, use default tabs
+          filteredTabs = get().tabs;
+        }
+        
+        // Ensure active tab ID is valid (not a static tab)
+        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
+        
+        if (filteredTabs.length > 0) {
+          set({
+            tabs: filteredTabs,
+            activeTabId: validActiveTabId,
+          });
+        } else {
+          // No tabs left, use default
+          const defaultTabId = get().tabs[0]?.id || null;
+          set({ activeTabId: defaultTabId });
+        }
+      } catch (error) {
+        console.error('Failed to load tabs:', error);
+        // Use default tab if loading fails
+        const defaultTabId = get().tabs[0]?.id || null;
+        set({ activeTabId: defaultTabId });
+      }
+    },
+
+    saveTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const { tabs, activeTabId } = get();
+        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
+      } catch (error) {
+        console.error('Failed to save tabs:', error);
+      }
+    },
+
+    createTab: () => {
+      const tabs = get().tabs;
+      const newTabId = generateTabId();
+      const newTab: QueryTab = {
+        id: newTabId,
+        title: `Query ${tabs.length + 1}`,
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      };
+      const updatedTabs = [...tabs, newTab];
+      set({
+        tabs: updatedTabs,
+        activeTabId: newTabId,
+      });
+      return newTabId;
+    },
+
+    closeTab: (tabId: string) => {
+      const { tabs, activeTabId } = get();
+      const tabIndex = tabs.findIndex((t) => t.id === tabId);
+      if (tabIndex === -1) return;
+
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      
+      // If closing the active tab, switch to another tab
+      let newActiveTabId = activeTabId;
+      if (activeTabId === tabId) {
+        if (newTabs.length > 0) {
+          // Switch to the tab that was before this one, or the first tab
+          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
+        } else {
+          // No tabs left
+          newActiveTabId = null;
+        }
+      }
+
+      set({
+        tabs: newTabs,
+        activeTabId: newActiveTabId,
+      });
+    },
+
+    setActiveTab: (tabId: string) => {
+      set({ activeTabId: tabId });
+    },
+
+    reorderTabs: (fromIndex: number, toIndex: number) => {
+      const { tabs } = get();
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
+        return;
+      }
+      
+      const newTabs = [...tabs];
+      const [movedTab] = newTabs.splice(fromIndex, 1);
+      newTabs.splice(toIndex, 0, movedTab);
+      
+      set({ tabs: newTabs });
+    },
+
+    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
+      set((state) => {
+        const updatedTabs = state.tabs.map((tab) =>
+          tab.id === tabId ? { ...tab, ...updates } : tab
+        );
+        return {
+          tabs: updatedTabs,
+        };
+      });
+    },
+
+    setTabQuery: (tabId: string, queryText: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab) {
+        get().updateTab(tabId, {
+          queryText,
+          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
+        });
+      }
+    },
+
+    setTabResults: (tabId: string, results: QueryResult) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        results,
+        executionStatus: 'completed',
+        error: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabError: (tabId: string, error: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        error,
+        executionStatus: 'error',
+        results: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
+      get().updateTab(tabId, { executionStatus: status });
+    },
+  };
+});
+
+// Subscribe to tab changes and auto-save (debounced)
+let previousTabs: QueryTab[] = [];
+let previousActiveTabId: string | null = null;
+
+useTabsStore.subscribe((state) => {
+  // Filter out any legacy static tabs that might have been loaded
+  const filteredTabs = filterStaticTabs(state.tabs);
+  if (filteredTabs.length !== state.tabs.length) {
+    // Found static tabs, remove them
+    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
+    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
+    return;
+  }
+  
+  // Check if tabs or activeTabId actually changed
+  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
+  
+  if (tabsChanged) {
+    previousTabs = state.tabs;
+    previousActiveTabId = state.activeTabId;
+    // Auto-save when tabs or activeTabId changes
+    debouncedSave(() => useTabsStore.getState().saveTabs());
+  }
+});
+
+// Track if initialization has been done to prevent multiple calls
+let isInitialized = false;
+
+// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
+// This function can be called multiple times safely (idempotent)
+export function initializeTabsStore(): void {
+  if (isInitialized) {
+    return; // Already initialized
+  }
+
+  if (window.electronAPI?.tabs) {
+    isInitialized = true;
+    
+    useTabsStore.getState().loadTabs().then(() => {
+      // Initialize active tab after loading
+      const state = useTabsStore.getState();
+      if (!state.activeTabId && state.tabs.length > 0) {
+        useTabsStore.setState({ activeTabId: state.tabs[0].id });
+      }
+    }).catch((error) => {
+      console.error('Failed to initialize tabs:', error);
+      // Fallback: Initialize active tab on first load if loading fails
+      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+    });
+
+    // Listen for before-close event to save tabs immediately
+    window.electronAPI.tabs.onBeforeClose(() => {
+      // Clear any pending debounced save and save immediately
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+      useTabsStore.getState().saveTabs();
+    });
+  } else {
+    // Fallback: Initialize active tab on first load if electronAPI is not available
+    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+  }
+}
+
+// Try to initialize immediately if electronAPI is already available
+// Otherwise, it will be initialized from App.tsx
+if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
+  initializeTabsStore();
 }
 ````
 
@@ -16714,6 +17219,5219 @@ module.exports = (env, argv) => {
 };
 ````
 
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
+````css
+.connection-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.connection-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 500px;
+  max-width: 600px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.connection-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: var(--text-white);
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.form-group textarea {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  resize: vertical;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  border-radius: 3px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.checkbox-group {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-primary);
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+````
+
+## File: src/renderer/components/DatasetTree/DatasetTree.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
+import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
+import type { Dataset, Table } from '../../../shared/types/dataset';
+import './DatasetTree.css';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  expanded?: boolean;
+  loading?: boolean;
+}
+
+interface DatasetTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
+  const connection = useConnectionStore((state) => state.connection);
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    dataset: Dataset;
+    table: Table;
+  } | null>(null);
+  const [sampleDataModal, setSampleDataModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+
+  const loadDatasets = useCallback(async () => {
+    if (!connection || !window.electronAPI) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const datasetList = await window.electronAPI.bigquery.listDatasets();
+      const datasetsWithState = datasetList.map((ds) => ({
+        ...ds,
+        expanded: false,
+        loading: false,
+      }));
+      setDatasets(datasetsWithState);
+      
+      // Also store in metadata store for completion provider
+      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
+      
+      // Preload tables for all datasets in the background
+      datasetList.forEach((dataset) => {
+        window.electronAPI!.bigquery
+          .listTables(dataset.id)
+          .then((tables) => {
+            setDatasetTables(dataset.id, tables);
+          })
+          .catch((err) => {
+            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
+          });
+      });
+    } catch (err: any) {
+      setError(err.message || 'Failed to load datasets');
+      console.error('Failed to load datasets:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connection, setMetadataDatasets, setDatasetTables]);
+
+  useEffect(() => {
+    if (connection) {
+      loadDatasets();
+    } else {
+      setDatasets([]);
+    }
+  }, [connection, loadDatasets]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadDatasets, isLoading);
+    }
+  }, [onRefreshReady, loadDatasets, isLoading]);
+
+  const toggleDataset = async (datasetId: string) => {
+    if (!window.electronAPI) return;
+
+    setDatasets((prev) =>
+      prev.map((ds) => {
+        if (ds.id === datasetId) {
+          if (ds.expanded) {
+            // Collapse
+            return { ...ds, expanded: false };
+          } else {
+            // Expand - load tables if not already loaded
+            if (!ds.tables) {
+              // Set loading state
+              const updated = { ...ds, expanded: true, loading: true };
+              
+              // Load tables
+              window.electronAPI.bigquery
+                .listTables(datasetId)
+                .then((tables) => {
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, tables, loading: false }
+                        : d
+                    )
+                  );
+                  // Also store in metadata store
+                  setDatasetTables(datasetId, tables);
+                })
+                .catch((err) => {
+                  console.error('Failed to load tables:', err);
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, loading: false }
+                        : d
+                    )
+                  );
+                });
+              
+              return updated;
+            }
+            return { ...ds, expanded: true };
+          }
+        }
+        return ds;
+      })
+    );
+  };
+
+  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    // Handle Ctrl/Cmd+click to insert SELECT statement
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
+      const selectStatement = `SELECT * FROM ${tableRef}`;
+      window.dispatchEvent(
+        new CustomEvent('insertTableReference', { detail: selectStatement })
+      );
+    }
+    // Regular left click does nothing (removed table insertion feature)
+  };
+
+  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
+    if (event.ctrlKey || event.metaKey) {
+      if (onShowSchema && connection?.projectId) {
+        onShowSchema(connection.projectId, dataset.id, table.id);
+      }
+      return;
+    }
+    
+    // Show context menu
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      dataset,
+      table,
+    });
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu || !connection) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const queryText = `SELECT * FROM ${tableRef}`;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, queryText);
+    updateTab(newTabId, {
+      title: `${dataset.name}.${table.name}`,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleShowSchema = () => {
+    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
+    
+    const { dataset, table } = contextMenu;
+    onShowSchema(connection.projectId, dataset.id, table.id);
+    setContextMenu(null);
+  };
+
+  const handleViewSampleData = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setSampleDataModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleViewDefinition = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setViewDefinitionModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleAddWithJoin = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
+    
+    // Get the active tab's query
+    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
+    const currentQuery = activeTab?.queryText || '';
+    
+    let newQuery: string;
+    
+    if (!currentQuery.trim()) {
+      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
+      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
+    } else {
+      const trimmedQuery = currentQuery.trim();
+      const upperQuery = trimmedQuery.toUpperCase();
+      
+      // Check if there's already a FROM clause
+      const fromMatch = upperQuery.match(/\bFROM\b/i);
+      
+      if (fromMatch) {
+        // There's already a FROM clause, add JOIN
+        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
+        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
+        
+        if (clauseMatch && clauseMatch.index !== undefined) {
+          // Insert JOIN before the clause
+          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
+          const afterClause = trimmedQuery.substring(clauseMatch.index);
+          // Find the last table reference to use in JOIN condition
+          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
+          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
+            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
+            : 't1';
+          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        } else {
+          // No WHERE/ORDER/etc clause, append JOIN at the end
+          // Try to find the first table alias from FROM clause
+          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
+          const firstTableAlias = fromTableMatch?.[1] || 't1';
+          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        }
+      } else {
+        // No FROM clause found, add FROM (can't add JOIN without a first table)
+        // Check if it starts with SELECT
+        if (upperQuery.startsWith('SELECT')) {
+          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
+        } else {
+          // Not a SELECT query, prepend SELECT and add FROM
+          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
+        }
+      }
+    }
+    
+    // Update the active tab, or create a new one if none exists
+    if (activeTab) {
+      setTabQuery(activeTab.id, newQuery);
+    } else {
+      const newTabId = createTab();
+      setTabQuery(newTabId, newQuery);
+    }
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter datasets and tables based on search term
+  const filteredDatasets = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return datasets;
+    }
+
+    const searchLower = searchTerm.toLowerCase().trim();
+    
+    return datasets
+      .filter((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+        return datasetMatches || matchingTables.length > 0;
+      })
+      .map((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+
+        return {
+          ...dataset,
+          // Auto-expand if searching and there are matching tables or dataset matches
+          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
+          // Show all tables if dataset name matches, otherwise show only matching tables
+          // Prefer local tables if available, otherwise use metadata tables
+          tables: datasetMatches 
+            ? (localTables.length > 0 ? localTables : allTables)
+            : matchingTables.length > 0 
+              ? matchingTables 
+              : (localTables.length > 0 ? localTables : allTables),
+        };
+      });
+  }, [datasets, searchTerm, getDatasetTables]);
+
+  if (!connection) {
+    return (
+      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <div className="dataset-tree-empty">Not connected</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="dataset-tree-search">
+            <input
+              type="text"
+              className="dataset-tree-search-input"
+              placeholder="Search datasets and tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                // Prevent closing context menu when typing in search
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="dataset-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="dataset-tree-content">
+            {isLoading && datasets.length === 0 && (
+              <div className="dataset-tree-skeleton">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
+                  <div key={i} className="skeleton-item">
+                    <div className="skeleton-icon" />
+                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {error && <div className="dataset-tree-error">{error}</div>}
+            {filteredDatasets.length === 0 && !isLoading && !error && (
+              <div className="dataset-tree-empty">
+                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
+              </div>
+            )}
+            {filteredDatasets.map((dataset) => (
+            <div key={dataset.id} className="dataset-item">
+              <div
+                className="dataset-header"
+                onClick={() => toggleDataset(dataset.id)}
+              >
+                <span className="dataset-icon">
+                  {dataset.expanded ? '▼' : '▶'}
+                </span>
+                <span className="dataset-name">{dataset.name}</span>
+              </div>
+              {dataset.expanded && (
+                <div className="dataset-tables">
+                  {dataset.loading ? (
+                    <div className="table-loading">Loading tables...</div>
+                  ) : (
+                    dataset.tables?.map((table) => (
+                      <div
+                        key={table.id}
+                        className="table-item"
+                        onClick={(e) => handleTableClick(e, dataset, table)}
+                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
+                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
+                      >
+                        <span className="table-icon">
+                          {table.type === 'VIEW' ? '📄' : '🗄'}
+                        </span>
+                        <span className="table-name">{table.name}</span>
+                      </div>
+                    ))
+                  )}
+                  {dataset.tables && dataset.tables.length === 0 && (
+                    <div className="table-empty">No tables</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleAddWithJoin}>
+            Add with JOIN
+          </div>
+          <div className="context-menu-item" onClick={handleViewSampleData}>
+            View sample data
+          </div>
+          {contextMenu.table.type === 'VIEW' && (
+            <div className="context-menu-item" onClick={handleViewDefinition}>
+              Show view definition
+            </div>
+          )}
+          {onShowSchema && connection?.projectId && (
+            <div className="context-menu-item" onClick={handleShowSchema}>
+              Show schema
+            </div>
+          )}
+        </div>
+      )}
+      {sampleDataModal && (
+        <SampleDataModal
+          projectId={sampleDataModal.projectId}
+          datasetId={sampleDataModal.datasetId}
+          tableId={sampleDataModal.tableId}
+          onClose={() => setSampleDataModal(null)}
+        />
+      )}
+      {viewDefinitionModal && (
+        <ViewDefinitionModal
+          projectId={viewDefinitionModal.projectId}
+          datasetId={viewDefinitionModal.datasetId}
+          tableId={viewDefinitionModal.tableId}
+          onClose={() => setViewDefinitionModal(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
+    prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.css
+````css
+.query-results {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.results-header {
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.results-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.results-info span {
+  margin-right: 0.5rem;
+}
+
+.results-info span.loading-indicator {
+  color: var(--text-secondary);
+  animation: loading-pulse 1s ease-in-out infinite;
+}
+
+@keyframes loading-pulse {
+  0%, 100% { 
+    opacity: 1; 
+  }
+  50% { 
+    opacity: 0.4; 
+  }
+}
+
+.results-table-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  position: relative;
+}
+
+.canvas-table-container {
+  width: 100%;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: scroll;
+  background-color: var(--bg-primary);
+  /* Ensure scrollbars are always visible when content overflows */
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
+  /* Force scrollbars to be visible on macOS and Windows */
+  -webkit-overflow-scrolling: touch;
+  /* Force scrollbars to always be visible (not auto-hide on macOS) */
+  overflow: -moz-scrollbars-vertical;
+  overflow: -moz-scrollbars-horizontal;
+}
+
+.canvas-table-container::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  -webkit-appearance: none;
+  /* Force scrollbars to always be visible on macOS */
+  display: block;
+}
+
+.canvas-table-container::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+  border: 1px solid var(--bg-tertiary);
+  /* Ensure track is always visible */
+  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--bg-primary);
+  min-height: 20px;
+  min-width: 20px;
+  /* Make thumb more visible */
+  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:active {
+  background: var(--bg-scrollbar-thumb-active);
+}
+
+.canvas-table-container::-webkit-scrollbar-corner {
+  background: var(--bg-primary);
+}
+
+.no-rows-message {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  color: var(--text-primary);
+}
+
+.results-table thead {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-secondary);
+  z-index: 1;
+}
+
+.results-table th {
+  padding: 0;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  position: relative;
+  min-width: 50px;
+}
+
+.results-table th:last-child {
+  border-right: none;
+}
+
+.results-table th .th-content {
+  padding: 0.375rem 0.5rem;
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 100%;
+}
+
+.results-table th .resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background-color: transparent;
+  z-index: 2;
+  transition: background-color 0.15s ease;
+}
+
+.results-table th .resize-handle:hover {
+  background-color: var(--accent-primary);
+}
+
+.results-table th:last-child .resize-handle {
+  display: none;
+}
+
+.results-table td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.results-table td:last-child {
+  border-right: none;
+}
+
+.results-table tbody tr:nth-child(even) {
+  background-color: var(--bg-secondary);
+}
+
+.results-table tbody tr:nth-child(odd) {
+  background-color: var(--bg-primary);
+}
+
+.results-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.no-results {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 200px;
+}
+
+.query-spinner-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.query-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: query-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes query-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.error-results {
+  padding: 2rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  margin: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.results-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 200px;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 6px;
+  background-color: var(--border-primary);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: var(--accent-primary);
+  border-radius: 3px;
+  width: 0%;
+  animation: progress-bar-animation 1.5s ease-in-out infinite;
+  display: block;
+}
+
+@keyframes progress-bar-animation {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.results-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.pagination-button {
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.pagination-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  min-width: 100px;
+  text-align: center;
+}
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.tsx
+````typescript
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { RowContextMenu } from './RowContextMenu';
+import { CanvasTable } from './CanvasTable';
+import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import './QueryResults.css';
+
+const ROWS_PER_PAGE = 200;
+
+export const QueryResults: React.FC = () => {
+  // Use separate selectors to ensure reactivity for each property
+  const activeTabId = useTabsStore((state) => state.activeTabId);
+  const activeTab = useTabsStore((state) => {
+    if (!activeTabId) return null;
+    return state.tabs.find((t) => t.id === activeTabId) || null;
+  });
+  
+  // All hooks must be called before any conditional returns
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rowIndex?: number;
+    columnIndex?: number;
+    isRowNumberColumn?: boolean;
+  } | null>(null);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
+  const error = activeTab?.error;
+  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  const jobId = activeTab?.jobId;
+  
+  // Listen for progress events during query execution AND background fetching
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onProgress) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
+      // Show progress during initial execution or background page fetching
+      if (data.jobId === jobId) {
+        setProgressMessage(data.message);
+        setIsBackgroundFetching(!data.isComplete);
+      }
+    });
+    
+    return unsubscribe;
+  }, [jobId]);
+  
+  // Clear progress when execution status changes to idle or error
+  useEffect(() => {
+    if (executionStatus === 'idle' || executionStatus === 'error') {
+      setProgressMessage(null);
+      setIsBackgroundFetching(false);
+    }
+  }, [executionStatus]);
+  
+  // Listen for rows updates (background fetching of additional pages)
+  // Data is saved directly to SQLite by the main process - we just reload from cache
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
+      // Only process updates for the current job
+      if (data.jobId !== jobId) return;
+      
+      // Data is already in SQLite cache - just reload metadata and current page
+      if (window.electronAPI?.resultsCache) {
+        // Reload metadata to reflect final row count
+        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
+        if (metadata) {
+          setResultsMetadata(metadata);
+        }
+        
+        // Reload current page to ensure we have latest data
+        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        }
+        
+        // Clear loading indicators
+        setProgressMessage(null);
+        setIsBackgroundFetching(false);
+      }
+    });
+    
+    return unsubscribe;
+  }, [activeTabId, jobId, currentPage]);
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!activeTabId || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(activeTabId)
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [activeTabId, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(activeTabId, currentPage)
+      .then((pageRows: Row[] | null) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Reset column widths when results change (use jobId as stable identifier)
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
+  
+  useEffect(() => {
+    if (resultsJobId !== undefined) {
+      setColumnWidths({});
+      setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
+    }
+  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
+
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      rowIndex,
+      isRowNumberColumn,
+    });
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
+    // Escape commas, quotes, and newlines in values
+    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
+      return `"${formatted.replace(/"/g, '""')}"`;
+    }
+    return formatted;
+  }, [formatValue]);
+
+  const handleCopyRowValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
+
+    // Use sorted rows from results (which matches what's displayed)
+    const rowIndex = contextMenu.rowIndex;
+    const row = results.rows[rowIndex];
+    
+    if (!row) return;
+
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
+
+    // Format: header1,header2,header3\nvalue1,value2,value3
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleCopyColumnValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
+
+    const columnIndex = contextMenu.columnIndex;
+    const column = results.columns[columnIndex];
+    
+    if (!column) return;
+
+    // Get header
+    const header = formatCSVValue(column.name);
+    
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+
+    // Format: header\nvalue1\nvalue2\nvalue3...
+    const csvText = [header, ...values].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      columnIndex,
+    });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Now we can do conditional returns after all hooks
+  if (error) {
+    return (
+      <div className="query-results">
+        <div className="error-results">
+          <strong>Error:</strong> {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!resultsMetadata) {
+    // Show progress message if available, otherwise show default messages
+    const message = executionStatus === 'running' 
+      ? (progressMessage || 'Executing query...')
+      : isLoadingCache
+      ? 'Loading results...'
+      : 'Execute a query to see results here.';
+    
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>{message}</div>
+          {(executionStatus === 'running' || isLoadingCache) && (
+            <div className="query-spinner-container">
+              <div className="query-spinner"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if we have columns and rows to display
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
+
+  // Determine how to display row count
+  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
+  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
+  // - hasMore indicates if there are more rows beyond our limit
+  const displayRowCount = () => {
+    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
+      // We hit the limit - show how many we have of the total
+      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else if (resultsMetadata.hasMore) {
+      // Still loading more rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else {
+      // We have all rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    }
+  };
+
+  if (!hasColumns && !hasRows) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">No data to display (empty result set).</div>
+      </div>
+    );
+  }
+
+  if (!hasColumns) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">Error: No column information available.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="query-results">
+      <div className="results-header">
+        <div className="results-info">
+          <span>{displayRowCount()}</span>
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+          {progressMessage && (
+            <span className="loading-indicator"> • {progressMessage}</span>
+          )}
+        </div>
+      </div>
+      <div className="results-table-container">
+        {hasRows && results ? (
+          <CanvasTable
+            results={results}
+            columnWidths={columnWidths}
+            onColumnResize={handleColumnResize}
+            onRowContextMenu={handleRowContextMenu}
+            onColumnContextMenu={handleColumnContextMenu}
+            formatValue={formatValue}
+            currentPage={currentPage}
+            rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
+          />
+        ) : (
+          <div className="no-rows-message">No rows returned</div>
+        )}
+      </div>
+      {hasRows && totalPages > 1 && (
+        <div className="results-pagination">
+          <button
+            className="pagination-button"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+            title="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+          </span>
+          <button
+            className="pagination-button"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+            title="Next page"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {contextMenu && (
+        <RowContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
+        />
+      )}
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/SampleDataModal/SampleDataModal.css
+````css
+.sample-data-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.sample-data-modal {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 1400px;
+  height: 85%;
+  max-height: 900px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.sample-data-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  border-radius: 4px 4px 0 0;
+}
+
+.sample-data-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sample-data-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.5rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.sample-data-modal-close:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sample-data-modal-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
+
+.sample-data-loading,
+.sample-data-error,
+.sample-data-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  gap: 1rem;
+}
+
+.sample-data-error {
+  color: var(--text-error);
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sample-data-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.sample-data-info span {
+  margin-right: 0.75rem;
+}
+
+.sample-data-canvas-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  min-height: 200px;
+}
+
+.sample-data-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.pagination-button {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  min-width: 32px;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--border-primary);
+  border-color: var(--accent-primary);
+}
+
+.pagination-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 4px;
+  background-color: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: var(--accent-primary);
+  animation: loading-progress 1.5s ease-in-out infinite;
+}
+
+@keyframes loading-progress {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
+````typescript
+import React, { useState, useEffect, useRef, memo } from 'react';
+import { useQueriesStore } from '../../stores/queries-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { SavedQuery } from '../../../shared/types/query';
+import './SavedQueriesTree.css';
+
+interface SavedQueriesTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
+  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    query: SavedQuery;
+  } | null>(null);
+  const [hoveredQuery, setHoveredQuery] = useState<{
+    query: SavedQuery;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    loadQueries();
+  }, [loadQueries]);
+
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadQueries, isLoading);
+    }
+  }, [onRefreshReady, loadQueries, isLoading]);
+
+  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      query,
+    });
+  };
+
+  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery({
+        query,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleQueryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredQuery(null);
+  };
+
+  const handleLoadToNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { query } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, query.sqlText);
+    updateTab(newTabId, {
+      title: query.name,
+      savedQueryId: query.id,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter queries based on search term
+  const filteredQueries = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return queries;
+    }
+    return getFilteredQueries();
+  }, [queries, searchTerm, getFilteredQueries]);
+
+  return (
+    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="saved-queries-tree-search">
+            <input
+              type="text"
+              className="saved-queries-tree-search-input"
+              placeholder="Search saved queries..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="saved-queries-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="saved-queries-tree-content">
+            {isLoading && queries.length === 0 && (
+              <div className="saved-queries-tree-loading">Loading saved queries...</div>
+            )}
+            {filteredQueries.length === 0 && !isLoading && (
+              <div className="saved-queries-tree-empty">
+                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
+              </div>
+            )}
+            {filteredQueries.map((query) => (
+              <div
+                key={query.id}
+                className="saved-query-item"
+                onContextMenu={(e) => handleQueryContextMenu(e, query)}
+                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
+                onMouseLeave={handleQueryMouseLeave}
+              >
+                <span className="saved-query-icon">📝</span>
+                <div className="saved-query-info">
+                  <span className="saved-query-name">{query.name}</span>
+                  {query.description && (
+                    <span className="saved-query-description">{query.description}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleLoadToNewTab}>
+            Open in new tab
+          </div>
+        </div>
+      )}
+      {hoveredQuery && (
+        <div
+          className="saved-query-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredQuery.x}px`,
+            top: `${hoveredQuery.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
+  );
+});
+````
+
+## File: src/renderer/components/SidebarHeader/SidebarHeader.css
+````css
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  gap: 0.5rem;
+  height: 35px;
+}
+
+.sidebar-header-collapsed {
+  justify-content: center;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+````
+
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
+````css
+.sidebar-switcher {
+  display: flex;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  padding: 0.25rem;
+  gap: 0.25rem;
+}
+
+.sidebar-switcher-button {
+  flex: 1;
+  background-color: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  padding: 0.5rem 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-switcher-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-switcher-button.active {
+  background-color: var(--bg-primary);
+  color: var(--text-active);
+  font-weight: 500;
+  border-bottom: 2px solid var(--accent-primary);
+}
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
+````css
+.view-definition-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.view-definition-modal-dialog {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.view-definition-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.view-definition-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.view-definition-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+
+.view-definition-modal-close:hover {
+  color: var(--text-white);
+}
+
+.view-definition-modal-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.view-definition-actions {
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.view-definition-copy-button {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.view-definition-copy-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.view-definition-editor {
+  flex: 1;
+  min-height: 400px;
+  height: 100%;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-definition-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.view-definition-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: view-definition-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes view-definition-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.view-definition-error {
+  padding: 1rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+import './ViewDefinitionModal.css';
+
+interface ViewDefinitionModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [definition, setDefinition] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
+
+  // Listen for theme changes
+  useEffect(() => {
+    const updateTheme = () => {
+      const currentTheme = document.documentElement.getAttribute('data-theme');
+      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
+    };
+    
+    // Initial theme
+    updateTheme();
+    
+    // Watch for attribute changes
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const loadViewDefinition = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+        setDefinition(result.definition);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load view definition');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadViewDefinition();
+  }, [datasetId, tableId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(definition);
+  };
+
+  return (
+    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
+      <div className="view-definition-modal-dialog">
+        <div className="view-definition-modal-header">
+          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
+          <button className="view-definition-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="view-definition-modal-content">
+          {isLoading && (
+            <div className="view-definition-loading">
+              <div className="view-definition-spinner"></div>
+              <div>Loading view definition...</div>
+            </div>
+          )}
+          {error && (
+            <div className="view-definition-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && definition && (
+            <>
+              <div className="view-definition-actions">
+                <button onClick={handleCopy} className="view-definition-copy-button">
+                  Copy to Clipboard
+                </button>
+              </div>
+              <div className="view-definition-editor">
+                <Editor
+                  height="400px"
+                  language="sql"
+                  value={definition}
+                  theme={editorTheme}
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    folding: true,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    renderLineHighlight: 'none',
+                    scrollbar: {
+                      vertical: 'auto',
+                      horizontal: 'auto',
+                    },
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/App.css
+````css
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background-color: var(--bg-primary);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+}
+
+/* Global scrollbar styling to match Monaco Editor */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-scrollbar);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--bg-scrollbar);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 5px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--bg-scrollbar);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.app-header {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--text-secondary);
+}
+
+.status-indicator.connected {
+  background-color: var(--text-success);
+}
+
+.header-actions button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  background-color: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.header-actions button:hover {
+  background-color: var(--bg-hover);
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.app-editor-results {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  position: relative;
+}
+
+.query-section {
+  flex: 0 0 auto;
+  min-height: 200px;
+  max-height: 800px;
+  border-bottom: 1px solid var(--border-primary);
+  overflow: hidden;
+}
+
+.resize-handle-horizontal {
+  height: 4px;
+  background-color: var(--border-primary);
+  cursor: row-resize;
+  flex-shrink: 0;
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+
+.resize-handle-horizontal:hover {
+  background-color: var(--accent-primary);
+}
+
+.resize-handle-horizontal::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  cursor: row-resize;
+}
+
+.resize-handle-vertical {
+  width: 4px;
+  background-color: var(--border-primary);
+  cursor: col-resize;
+  flex-shrink: 0;
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+
+.resize-handle-vertical:hover {
+  background-color: var(--accent-primary);
+}
+
+.resize-handle-vertical::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -2px;
+  right: -2px;
+  bottom: 0;
+  cursor: col-resize;
+}
+
+.results-section {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+````
+
+## File: tests/unit/renderer/hooks/useBigQuery.test.ts
+````typescript
+import { renderHook, act, waitFor } from '@testing-library/react';
+import { useBigQuery } from '../../../../src/renderer/hooks/useBigQuery';
+import { useConnectionStore } from '../../../../src/renderer/stores/connection-store';
+
+describe('useBigQuery', () => {
+  beforeEach(() => {
+    // Reset connection store
+    act(() => {
+      useConnectionStore.getState().clearConnection();
+    });
+
+    // Reset mocks
+    jest.clearAllMocks();
+    (window.electronAPI.bigquery.execute as jest.Mock).mockResolvedValue({
+      columns: [{ name: 'col1', type: 'STRING' }],
+      rows: [{ values: ['value1'] }],
+      totalRows: 1,
+      rowsReturned: 1,
+      executionTimeMs: 100,
+      jobId: 'job-123',
+      hasMore: false,
+    });
+    (window.electronAPI.bigquery.cancel as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  describe('isConnected', () => {
+    it('should return false when no connection', () => {
+      const { result } = renderHook(() => useBigQuery());
+      expect(result.current.isConnected).toBe(false);
+    });
+
+    it('should return true when connected', () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+      expect(result.current.isConnected).toBe(true);
+    });
+  });
+
+  describe('executeQuery', () => {
+    it('should throw error when no connection', async () => {
+      const { result } = renderHook(() => useBigQuery());
+
+      await expect(result.current.executeQuery('SELECT 1')).rejects.toThrow('No active connection');
+    });
+
+    it('should execute query when connected', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+
+      const queryResult = await result.current.executeQuery('SELECT 1');
+
+      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith('SELECT 1', 'test-project', undefined);
+      expect(queryResult.jobId).toBe('job-123');
+    });
+
+    it('should pass query text to API', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+
+      await result.current.executeQuery('SELECT * FROM `dataset.table`');
+
+      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith(
+        'SELECT * FROM `dataset.table`',
+        'test-project',
+        undefined
+      );
+    });
+
+    it('should return query result', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      const { result } = renderHook(() => useBigQuery());
+
+      const queryResult = await result.current.executeQuery('SELECT 1');
+
+      expect(queryResult).toEqual({
+        columns: [{ name: 'col1', type: 'STRING' }],
+        rows: [{ values: ['value1'] }],
+        totalRows: 1,
+        rowsReturned: 1,
+        executionTimeMs: 100,
+        jobId: 'job-123',
+        hasMore: false,
+      });
+    });
+
+    it('should propagate API errors', async () => {
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      (window.electronAPI.bigquery.execute as jest.Mock).mockRejectedValue(
+        new Error('Query syntax error')
+      );
+
+      const { result } = renderHook(() => useBigQuery());
+
+      await expect(result.current.executeQuery('INVALID SQL')).rejects.toThrow('Query syntax error');
+    });
+  });
+
+  describe('cancelQuery', () => {
+    it('should cancel a running query', async () => {
+      const { result } = renderHook(() => useBigQuery());
+
+      await result.current.cancelQuery('job-123');
+
+      expect(window.electronAPI.bigquery.cancel).toHaveBeenCalledWith('job-123');
+    });
+
+    it('should propagate cancel errors', async () => {
+      (window.electronAPI.bigquery.cancel as jest.Mock).mockRejectedValue(
+        new Error('Job not found')
+      );
+
+      const { result } = renderHook(() => useBigQuery());
+
+      await expect(result.current.cancelQuery('invalid-job')).rejects.toThrow('Job not found');
+    });
+  });
+
+  describe('connection state changes', () => {
+    it('should update isConnected when connection changes', () => {
+      const { result, rerender } = renderHook(() => useBigQuery());
+
+      expect(result.current.isConnected).toBe(false);
+
+      // Set connection
+      act(() => {
+        useConnectionStore.getState().setConnection({
+          projectId: 'test-project',
+          authType: 'application-default',
+          location: 'EU',
+          isActive: true,
+        });
+      });
+
+      rerender();
+      expect(result.current.isConnected).toBe(true);
+
+      // Clear connection
+      act(() => {
+        useConnectionStore.getState().clearConnection();
+      });
+
+      rerender();
+      expect(result.current.isConnected).toBe(false);
+    });
+  });
+});
+````
+
+## File: tests/unit/renderer/App.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import App from '../../../src/renderer/App';
+
+// Mock the components that might have dependencies
+jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
+  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
+  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
+}));
+
+jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
+  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
+  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
+}));
+
+jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
+  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
+  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
+}));
+
+jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
+  QueryResults: () => <div data-testid="query-results">Query Results</div>,
+}));
+
+jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
+  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
+  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
+  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
+}));
+
+jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
+  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
+    <div data-testid="sidebar-switcher" data-view={currentView}>
+      <button onClick={() => onViewChange('explorer')}>Explorer</button>
+      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
+    </div>
+  ),
+}));
+
+jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
+  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
+}));
+
+describe('App', () => {
+  beforeEach(() => {
+    // Reset mocks to return an active connection to avoid triggering setShowConnectionDialog
+    (window as any).electronAPI.connection.getActive.mockResolvedValue({
+      projectId: 'test-project',
+      keyFilePath: '/path/to/key.json',
+    });
+  });
+
+  it('renders without crashing', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+    });
+  });
+
+  it('renders the main app structure', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('query-editor')).toBeInTheDocument();
+      expect(screen.getByTestId('query-results')).toBeInTheDocument();
+    });
+  });
+
+  it('renders sidebar components', async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
+      expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
+    });
+  });
+});
+````
+
+## File: .gitignore
+````
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+PROJECT_REFERENCE.md
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Electron
+*.asar
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.AppImage
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+coverage/
+.nyc_output/
+*.test.js.snap
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Electron specific
+app/dist/
+release/
+````
+
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+});
+````
+
+## File: src/main/preload.ts
+````typescript
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
+  };
+}
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string, tabId?: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:progress', handler);
+      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+    },
+    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:rows-update', handler);
+      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
+    },
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    getRange: (tabId: string, startIndex: number, count: number) =>
+      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+    stats: () => ipcRenderer.invoke('results-cache:stats'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+} as ElectronAPI);
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
+## File: src/renderer/components/DatasetTree/DatasetTree.css
+````css
+.dataset-tree {
+  width: 100%;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.dataset-tree.collapsed {
+  min-width: 30px;
+  max-width: 30px;
+}
+
+.dataset-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+  gap: 0.5rem;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dataset-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dataset-tree-search {
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dataset-tree-search-input {
+  flex: 1;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  padding: 0.375rem 0.5rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.dataset-tree-search-input:focus {
+  border-color: var(--accent-primary);
+}
+
+.dataset-tree-search-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.dataset-tree-search-clear {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.dataset-tree-search-clear:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dataset-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
+
+.dataset-tree-loading,
+.dataset-tree-error,
+.dataset-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.dataset-tree-error {
+  color: var(--text-error);
+}
+
+/* Skeleton loading styles */
+.dataset-tree-skeleton {
+  padding: 0.25rem 0;
+}
+
+.skeleton-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  gap: 0.375rem;
+}
+
+.skeleton-icon {
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.skeleton-text {
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 3px;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.dataset-item {
+  user-select: none;
+}
+
+.dataset-header {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.dataset-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.dataset-icon {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+.dataset-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-tables {
+  padding-left: 1rem;
+}
+
+.table-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  padding-left: 1.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.table-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.table-icon {
+  font-size: 0.75rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+.table-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-loading,
+.table-empty {
+  padding: 0.5rem 1rem;
+  padding-left: 2rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.context-menu {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  min-width: 180px;
+  padding: 0.25rem 0;
+  z-index: 1000;
+  user-select: none;
+}
+
+.context-menu-item {
+  padding: 0.5rem 1rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-active);
+}
+
+.context-menu-item:first-child {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.context-menu-item:last-child {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+````
+
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-primary);
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
+}
+
+.query-editor-toolbar .run-button {
+  background-color: var(--accent-primary);
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: var(--accent-orange);
+  color: var(--text-white);
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: var(--accent-orange-hover);
+}
+
+.query-editor-toolbar .save-button {
+  background-color: var(--accent-success);
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: var(--accent-success-hover);
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: var(--accent-danger);
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.connection-warning {
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: var(--text-success);
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: var(--text-error);
+}
+
+.editor-status-bar .status-valid {
+  color: var(--text-success);
+}
+
+.editor-status-bar .status-invalid {
+  color: var(--text-error);
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-white);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+````
+
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+````css
+.saved-queries-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-primary);
+  overflow: hidden;
+  min-height: 0;
+}
+
+.saved-queries-tree.collapsed {
+  width: 30px;
+}
+
+.saved-queries-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  min-height: 35px;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  margin-right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.collapse-button:hover {
+  background-color: var(--border-primary);
+}
+
+.saved-queries-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 3px;
+}
+
+.refresh-button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background-color: var(--border-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.saved-queries-tree-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  position: relative;
+}
+
+.saved-queries-tree-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: var(--border-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
+
+.saved-queries-tree-search-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background-color: var(--bg-primary);
+}
+
+.saved-queries-tree-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.saved-queries-tree-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.saved-queries-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
+
+.saved-queries-tree-loading,
+.saved-queries-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.saved-query-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.saved-query-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.saved-query-icon {
+  margin-right: 0.5rem;
+  font-size: 1rem;
+}
+
+.saved-query-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-query-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-query-description {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Query preview tooltip */
+.saved-query-tooltip {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-tooltip);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.saved-query-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
+````
+
+## File: src/renderer/components/TabBar/TabBar.css
+````css
+.tab-bar {
+  display: flex;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+}
+
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background-color: var(--bg-tertiary);
+  border-right: 1px solid var(--border-primary);
+  cursor: pointer;
+  user-select: none;
+  min-width: 120px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: var(--bg-hover);
+}
+
+.tab.active {
+  background-color: var(--bg-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  color: var(--text-active);
+  font-weight: 500;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid var(--accent-primary);
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: var(--accent-primary);
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  margin-left: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-close:hover {
+  background-color: var(--accent-close-hover);
+  color: white;
+}
+
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: var(--text-secondary);
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid var(--border-primary);
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+````
+
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
+import './App.css';
+
+type Theme = 'dark' | 'light';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor theme={theme} />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getTheme: jest.fn().mockResolvedValue('dark'),
+    setTheme: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+    onToggleTheme: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
+````
+
 ## File: src/main/ipc/bigquery.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -17843,4696 +23561,90 @@ export function registerBigQueryHandlers(): void {
       };
     }
   });
-}
-````
 
-## File: src/main/preload.ts
-````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
+  /**
+   * Perform a dry run of a query to estimate bytes processed without executing.
+   * This uses BigQuery's native dry run feature which accounts for:
+   * - Column selection (only selected columns count)
+   * - Partitioning (only scanned partitions count)
+   * - Clustering benefits
+   * - Query optimization
+   */
+  ipcMain.handle('bigquery:dryRun', async (_event, queryText: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
       };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-  };
-
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
-}
-
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string, tabId?: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:progress', handler);
-      return () => ipcRenderer.removeListener('bigquery:progress', handler);
-    },
-    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:rows-update', handler);
-      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
-    },
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
-    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    getRange: (tabId: string, startIndex: number, count: number) =>
-      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-    stats: () => ipcRenderer.invoke('results-cache:stats'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-    onToggleTheme: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:toggle-theme', handler);
-      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-} as ElectronAPI);
-
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
-````css
-.connection-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.connection-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 500px;
-  max-width: 600px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.connection-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: var(--text-white);
-}
-
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.form-group textarea {
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  resize: vertical;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  border-radius: 3px;
-  margin-bottom: 1rem;
-  border: 1px solid var(--border-error);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.checkbox-group {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border-primary);
-}
-
-.checkbox-label {
-  display: flex !important;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  user-select: none;
-}
-
-.checkbox-label input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--accent-primary);
-}
-
-.field-hint {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.css
-````css
-.query-results {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-}
-
-.results-header {
-  padding: 0.5rem 1rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.results-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.results-info span {
-  margin-right: 0.5rem;
-}
-
-.results-info span.loading-indicator {
-  color: var(--text-secondary);
-  animation: loading-pulse 1s ease-in-out infinite;
-}
-
-@keyframes loading-pulse {
-  0%, 100% { 
-    opacity: 1; 
-  }
-  50% { 
-    opacity: 0.4; 
-  }
-}
-
-.results-table-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-  position: relative;
-}
-
-.canvas-table-container {
-  width: 100%;
-  height: 100%;
-  overflow-x: scroll;
-  overflow-y: scroll;
-  background-color: var(--bg-primary);
-  /* Ensure scrollbars are always visible when content overflows */
-  scrollbar-width: thin;
-  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
-  /* Force scrollbars to be visible on macOS and Windows */
-  -webkit-overflow-scrolling: touch;
-  /* Force scrollbars to always be visible (not auto-hide on macOS) */
-  overflow: -moz-scrollbars-vertical;
-  overflow: -moz-scrollbars-horizontal;
-}
-
-.canvas-table-container::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-  -webkit-appearance: none;
-  /* Force scrollbars to always be visible on macOS */
-  display: block;
-}
-
-.canvas-table-container::-webkit-scrollbar-track {
-  background: var(--bg-primary);
-  border: 1px solid var(--bg-tertiary);
-  /* Ensure track is always visible */
-  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb {
-  background: var(--bg-scrollbar-thumb);
-  border-radius: 6px;
-  border: 2px solid var(--bg-primary);
-  min-height: 20px;
-  min-width: 20px;
-  /* Make thumb more visible */
-  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-scrollbar-thumb-hover);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:active {
-  background: var(--bg-scrollbar-thumb-active);
-}
-
-.canvas-table-container::-webkit-scrollbar-corner {
-  background: var(--bg-primary);
-}
-
-.no-rows-message {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.results-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  color: var(--text-primary);
-}
-
-.results-table thead {
-  position: sticky;
-  top: 0;
-  background-color: var(--bg-secondary);
-  z-index: 1;
-}
-
-.results-table th {
-  padding: 0;
-  text-align: left;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-primary);
-  border-right: 1px solid var(--border-primary);
-  background-color: var(--bg-secondary);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  position: relative;
-  min-width: 50px;
-}
-
-.results-table th:last-child {
-  border-right: none;
-}
-
-.results-table th .th-content {
-  padding: 0.375rem 0.5rem;
-  display: flex;
-  align-items: center;
-  position: relative;
-  height: 100%;
-}
-
-.results-table th .resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-  background-color: transparent;
-  z-index: 2;
-  transition: background-color 0.15s ease;
-}
-
-.results-table th .resize-handle:hover {
-  background-color: var(--accent-primary);
-}
-
-.results-table th:last-child .resize-handle {
-  display: none;
-}
-
-.results-table td {
-  padding: 0.375rem 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  border-right: 1px solid var(--border-primary);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-}
-
-.results-table td:last-child {
-  border-right: none;
-}
-
-.results-table tbody tr:nth-child(even) {
-  background-color: var(--bg-secondary);
-}
-
-.results-table tbody tr:nth-child(odd) {
-  background-color: var(--bg-primary);
-}
-
-.results-table tbody tr:hover {
-  background-color: var(--bg-hover);
-}
-
-.no-results {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  min-height: 200px;
-}
-
-.query-spinner-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 0.5rem;
-}
-
-.query-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-primary);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: query-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes query-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.error-results {
-  padding: 2rem;
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  border-radius: 3px;
-  margin: 1rem;
-  border: 1px solid var(--border-error);
-}
-
-.results-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 200px;
-  gap: 1rem;
-  padding: 2rem;
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 6px;
-  background-color: var(--border-primary);
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: var(--accent-primary);
-  border-radius: 3px;
-  width: 0%;
-  animation: progress-bar-animation 1.5s ease-in-out infinite;
-  display: block;
-}
-
-@keyframes progress-bar-animation {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.results-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.pagination-button {
-  background: transparent;
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 1rem;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  padding: 0;
-  line-height: 1;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  border-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.pagination-button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  min-width: 100px;
-  text-align: center;
-}
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.tsx
-````typescript
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import { RowContextMenu } from './RowContextMenu';
-import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import './QueryResults.css';
-
-const ROWS_PER_PAGE = 200;
-
-export const QueryResults: React.FC = () => {
-  // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
-  const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
-  });
-  
-  // All hooks must be called before any conditional returns
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [currentPage, setCurrentPage] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    rowIndex?: number;
-    columnIndex?: number;
-    isRowNumberColumn?: boolean;
-  } | null>(null);
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
-  
-  // Store metadata and current page separately for efficient cache access
-  const [resultsMetadata, setResultsMetadata] = useState<{
-    columns: any[];
-    totalRows: number;
-    rowsReturned: number;
-    executionTimeMs: number;
-    bytesProcessed?: number;
-    jobId: string;
-    hasMore: boolean;
-  } | null>(null);
-  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
-  const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isLoadingPage, setIsLoadingPage] = useState(false);
-  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  const jobId = activeTab?.jobId;
-  
-  // Listen for progress events during query execution AND background fetching
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onProgress) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
-      // Show progress during initial execution or background page fetching
-      if (data.jobId === jobId) {
-        setProgressMessage(data.message);
-        setIsBackgroundFetching(!data.isComplete);
-      }
-    });
-    
-    return unsubscribe;
-  }, [jobId]);
-  
-  // Clear progress when execution status changes to idle or error
-  useEffect(() => {
-    if (executionStatus === 'idle' || executionStatus === 'error') {
-      setProgressMessage(null);
-      setIsBackgroundFetching(false);
     }
-  }, [executionStatus]);
-  
-  // Listen for rows updates (background fetching of additional pages)
-  // Data is saved directly to SQLite by the main process - we just reload from cache
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
-      // Only process updates for the current job
-      if (data.jobId !== jobId) return;
-      
-      // Data is already in SQLite cache - just reload metadata and current page
-      if (window.electronAPI?.resultsCache) {
-        // Reload metadata to reflect final row count
-        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
-        if (metadata) {
-          setResultsMetadata(metadata);
-        }
-        
-        // Reload current page to ensure we have latest data
-        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        }
-        
-        // Clear loading indicators
-        setProgressMessage(null);
-        setIsBackgroundFetching(false);
-      }
-    });
-    
-    return unsubscribe;
-  }, [activeTabId, jobId, currentPage]);
-  
-  // Load metadata from cache when tab changes or when execution completes
-  useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // If query is running, don't load from cache (wait for new results)
-    if (executionStatus === 'running') {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // Load metadata from cache
-    setIsLoadingCache(true);
-    window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
-      .then((metadata: {
-        columns: ColumnMetadata[];
-        totalRows: number;
-        rowsReturned: number;
-        executionTimeMs: number;
-        bytesProcessed?: number;
-        jobId: string;
-        hasMore: boolean;
-      } | null) => {
-        if (metadata) {
-          setResultsMetadata(metadata);
-          setIsLoadingCache(false);
-        } else {
-          setResultsMetadata(null);
-          setCurrentPageRows([]);
-          setIsLoadingCache(false);
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load results metadata from cache:', err);
-        setResultsMetadata(null);
-        setCurrentPageRows([]);
-        setIsLoadingCache(false);
-      });
-  }, [activeTabId, executionStatus]);
-  
-  // Load current page from cache when metadata or page changes
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    setIsLoadingPage(true);
-    window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
-      .then((pageRows: Row[] | null) => {
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        } else {
-          setCurrentPageRows([]);
-        }
-        setIsLoadingPage(false);
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load page from cache:', err);
-        setCurrentPageRows([]);
-        setIsLoadingPage(false);
-      });
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Prefetch adjacent pages for smoother navigation
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      return;
-    }
-    
-    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
-    
-    // Prefetch next page if available
-    if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-    
-    // Prefetch previous page if available
-    if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = resultsMetadata?.jobId;
-  const resultsColumnCount = resultsMetadata?.columns?.length;
-  
-  useEffect(() => {
-    if (resultsJobId !== undefined) {
-      setColumnWidths({});
-      setCurrentPage(1); // Reset to first page when results change
-      setSortColumn(null); // Reset sorting when results change
-      setSortDirection(null);
-    }
-  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = React.useMemo(() => {
-    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
-      return currentPageRows;
-    }
-
-    const sorted = [...currentPageRows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = resultsMetadata?.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
-
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: sortedRows, // Use sorted rows instead of currentPageRows
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      rowIndex,
-      isRowNumberColumn,
-    });
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    // Pass both type and name to formatter for better date detection
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
-    const formatted = formatValue(val, columnType, columnName);
-    // Escape commas, quotes, and newlines in values
-    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
-      return `"${formatted.replace(/"/g, '""')}"`;
-    }
-    return formatted;
-  }, [formatValue]);
-
-  const handleCopyRowValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
-
-    // Use sorted rows from results (which matches what's displayed)
-    const rowIndex = contextMenu.rowIndex;
-    const row = results.rows[rowIndex];
-    
-    if (!row) return;
-
-    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => {
-      const col = results.columns[idx];
-      return formatCSVValue(val, col?.type, col?.name);
-    });
-
-    // Format: header1,header2,header3\nvalue1,value2,value3
-    const csvText = [headers.join(','), values.join(',')].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleCopyColumnValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
-
-    const columnIndex = contextMenu.columnIndex;
-    const column = results.columns[columnIndex];
-    
-    if (!column) return;
-
-    // Get header
-    const header = formatCSVValue(column.name);
-    
-    // Get all values for this column from sorted rows (matches what's displayed)
-    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
-
-    // Format: header\nvalue1\nvalue2\nvalue3...
-    const csvText = [header, ...values].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      columnIndex,
-    });
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  // Pagination calculations - use metadata for total rows, current page rows are already loaded
-  const totalRows = resultsMetadata?.rowsReturned || 0;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Now we can do conditional returns after all hooks
-  if (error) {
-    return (
-      <div className="query-results">
-        <div className="error-results">
-          <strong>Error:</strong> {error}
-        </div>
-      </div>
-    );
-  }
-
-  if (!resultsMetadata) {
-    // Show progress message if available, otherwise show default messages
-    const message = executionStatus === 'running' 
-      ? (progressMessage || 'Executing query...')
-      : isLoadingCache
-      ? 'Loading results...'
-      : 'Execute a query to see results here.';
-    
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>{message}</div>
-          {(executionStatus === 'running' || isLoadingCache) && (
-            <div className="query-spinner-container">
-              <div className="query-spinner"></div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-  
-  // Show loading indicator while page is loading
-  if (isLoadingPage && currentPageRows.length === 0) {
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>Loading page {currentPage}...</div>
-          <div className="query-spinner-container">
-            <div className="query-spinner"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if we have columns and rows to display
-  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
-  const hasRows = currentPageRows && currentPageRows.length > 0;
-
-  // Determine how to display row count
-  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
-  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
-  // - hasMore indicates if there are more rows beyond our limit
-  const displayRowCount = () => {
-    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
-      // We hit the limit - show how many we have of the total
-      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else if (resultsMetadata.hasMore) {
-      // Still loading more rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else {
-      // We have all rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    }
-  };
-
-  if (!hasColumns && !hasRows) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">No data to display (empty result set).</div>
-      </div>
-    );
-  }
-
-  if (!hasColumns) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">Error: No column information available.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="query-results">
-      <div className="results-header">
-        <div className="results-info">
-          <span>{displayRowCount()}</span>
-          <span> • {resultsMetadata.executionTimeMs}ms</span>
-          {resultsMetadata.bytesProcessed && (
-            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-          )}
-          {progressMessage && (
-            <span className="loading-indicator"> • {progressMessage}</span>
-          )}
-        </div>
-      </div>
-      <div className="results-table-container">
-        {hasRows && results ? (
-          <CanvasTable
-            results={results}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-            onRowContextMenu={handleRowContextMenu}
-            onColumnContextMenu={handleColumnContextMenu}
-            formatValue={formatValue}
-            currentPage={currentPage}
-            rowsPerPage={ROWS_PER_PAGE}
-            sortColumn={sortColumn}
-            sortDirection={sortDirection}
-            onSortColumn={handleSortColumn}
-          />
-        ) : (
-          <div className="no-rows-message">No rows returned</div>
-        )}
-      </div>
-      {hasRows && totalPages > 1 && (
-        <div className="results-pagination">
-          <button
-            className="pagination-button"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
-          <span className="pagination-info">
-            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      {contextMenu && (
-        <RowContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={
-            contextMenu.columnIndex !== undefined 
-              ? 'Copy column values (with header)' 
-              : contextMenu.isRowNumberColumn 
-                ? 'Copy row as CSV' 
-                : 'Copy values (with headers)'
-          }
-        />
-      )}
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/SampleDataModal/SampleDataModal.css
-````css
-.sample-data-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-}
-
-.sample-data-modal {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  width: 90%;
-  max-width: 1400px;
-  height: 85%;
-  max-height: 900px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-modal);
-}
-
-.sample-data-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  border-radius: 4px 4px 0 0;
-}
-
-.sample-data-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.sample-data-modal-close {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1.5rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.sample-data-modal-close:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.sample-data-modal-content {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  padding: 1rem;
-}
-
-.sample-data-loading,
-.sample-data-error,
-.sample-data-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  gap: 1rem;
-}
-
-.sample-data-error {
-  color: var(--text-error);
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.sample-data-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.sample-data-info span {
-  margin-right: 0.75rem;
-}
-
-.sample-data-canvas-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  min-height: 200px;
-}
-
-.sample-data-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 0.75rem 0;
-  margin-top: 0.75rem;
-  border-top: 1px solid var(--border-primary);
-}
-
-.pagination-button {
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-  min-width: 32px;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: var(--border-primary);
-  border-color: var(--accent-primary);
-}
-
-.pagination-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 4px;
-  background-color: var(--bg-tertiary);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: var(--accent-primary);
-  animation: loading-progress 1.5s ease-in-out infinite;
-}
-
-@keyframes loading-progress {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-}
-````
-
-## File: src/renderer/components/SidebarHeader/SidebarHeader.css
-````css
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  gap: 0.5rem;
-  height: 35px;
-}
-
-.sidebar-header-collapsed {
-  justify-content: center;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.collapse-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-````
-
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
-````css
-.sidebar-switcher {
-  display: flex;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  padding: 0.25rem;
-  gap: 0.25rem;
-}
-
-.sidebar-switcher-button {
-  flex: 1;
-  background-color: transparent;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  font-weight: 400;
-  padding: 0.5rem 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.sidebar-switcher-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.sidebar-switcher-button.active {
-  background-color: var(--bg-primary);
-  color: var(--text-active);
-  font-weight: 500;
-  border-bottom: 2px solid var(--accent-primary);
-}
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
-````css
-.view-definition-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.view-definition-modal-dialog {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  width: 90%;
-  max-width: 900px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-modal);
-}
-
-.view-definition-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  background-color: var(--bg-secondary);
-}
-
-.view-definition-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.view-definition-modal-close {
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 1.5rem;
-  cursor: pointer;
-  padding: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  transition: color 0.15s ease;
-}
-
-.view-definition-modal-close:hover {
-  color: var(--text-white);
-}
-
-.view-definition-modal-content {
-  flex: 1;
-  overflow: hidden;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.view-definition-actions {
-  margin-bottom: 1rem;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.view-definition-copy-button {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.view-definition-copy-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.view-definition-editor {
-  flex: 1;
-  min-height: 400px;
-  height: 100%;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.view-definition-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 3rem;
-  color: var(--text-secondary);
-}
-
-.view-definition-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-primary);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: view-definition-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes view-definition-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.view-definition-error {
-  padding: 1rem;
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
-import './ViewDefinitionModal.css';
-
-interface ViewDefinitionModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
-}
-
-export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const [definition, setDefinition] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
-
-  // Listen for theme changes
-  useEffect(() => {
-    const updateTheme = () => {
-      const currentTheme = document.documentElement.getAttribute('data-theme');
-      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
-    };
-    
-    // Initial theme
-    updateTheme();
-    
-    // Watch for attribute changes
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const loadViewDefinition = async () => {
-      if (!window.electronAPI) {
-        setError('Electron API not available');
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-        setDefinition(result.definition);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load view definition');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadViewDefinition();
-  }, [datasetId, tableId]);
-
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleEscape);
-    return () => window.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(definition);
-  };
-
-  return (
-    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
-      <div className="view-definition-modal-dialog">
-        <div className="view-definition-modal-header">
-          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
-          <button className="view-definition-modal-close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="view-definition-modal-content">
-          {isLoading && (
-            <div className="view-definition-loading">
-              <div className="view-definition-spinner"></div>
-              <div>Loading view definition...</div>
-            </div>
-          )}
-          {error && (
-            <div className="view-definition-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          {!isLoading && !error && definition && (
-            <>
-              <div className="view-definition-actions">
-                <button onClick={handleCopy} className="view-definition-copy-button">
-                  Copy to Clipboard
-                </button>
-              </div>
-              <div className="view-definition-editor">
-                <Editor
-                  height="400px"
-                  language="sql"
-                  value={definition}
-                  theme={editorTheme}
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 13,
-                    lineNumbers: 'on',
-                    folding: true,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                    renderLineHighlight: 'none',
-                    scrollbar: {
-                      vertical: 'auto',
-                      horizontal: 'auto',
-                    },
-                  }}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/App.css
-````css
-* {
-  box-sizing: border-box;
-}
-
-html {
-  background-color: var(--bg-primary);
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-}
-
-/* Global scrollbar styling to match Monaco Editor */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-scrollbar);
-}
-
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-*::-webkit-scrollbar-track {
-  background: var(--bg-scrollbar);
-}
-
-*::-webkit-scrollbar-thumb {
-  background: var(--bg-scrollbar-thumb);
-  border-radius: 5px;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-scrollbar-thumb-hover);
-}
-
-*::-webkit-scrollbar-corner {
-  background: var(--bg-scrollbar);
-}
-
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-}
-
-.app-header {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
-  padding: 0.5rem 1rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--border-primary);
-  height: 35px;
-}
-
-.app-header h1 {
-  margin: 0;
-  font-size: 0.875rem;
-  font-weight: 400;
-  color: var(--text-primary);
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.connection-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-}
-
-.status-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: var(--text-secondary);
-}
-
-.status-indicator.connected {
-  background-color: var(--text-success);
-}
-
-.header-actions button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  background-color: transparent;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.header-actions button:hover {
-  background-color: var(--bg-hover);
-}
-
-.app-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-}
-
-.app-content {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-}
-
-.app-editor-results {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-width: 0;
-  position: relative;
-}
-
-.query-section {
-  flex: 0 0 auto;
-  min-height: 200px;
-  max-height: 800px;
-  border-bottom: 1px solid var(--border-primary);
-  overflow: hidden;
-}
-
-.resize-handle-horizontal {
-  height: 4px;
-  background-color: var(--border-primary);
-  cursor: row-resize;
-  flex-shrink: 0;
-  position: relative;
-  transition: background-color 0.15s ease;
-}
-
-.resize-handle-horizontal:hover {
-  background-color: var(--accent-primary);
-}
-
-.resize-handle-horizontal::before {
-  content: '';
-  position: absolute;
-  top: -2px;
-  left: 0;
-  right: 0;
-  bottom: -2px;
-  cursor: row-resize;
-}
-
-.resize-handle-vertical {
-  width: 4px;
-  background-color: var(--border-primary);
-  cursor: col-resize;
-  flex-shrink: 0;
-  position: relative;
-  transition: background-color 0.15s ease;
-}
-
-.resize-handle-vertical:hover {
-  background-color: var(--accent-primary);
-}
-
-.resize-handle-vertical::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -2px;
-  right: -2px;
-  bottom: 0;
-  cursor: col-resize;
-}
-
-.results-section {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-}
-````
-
-## File: src/shared/types/query.ts
-````typescript
-/**
- * Query-related types
- */
-
-export type TabType = 'query' | 'explorer' | 'saved-queries';
-
-export interface QueryTab {
-  id: string;
-  title: string;
-  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
-  queryText: string;
-  isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string; // ISO timestamp
-  lastExecutedQueryText?: string; // The query text that was last executed
-  savedQueryId?: string;
-}
-
-export interface SavedQuery {
-  id: string;
-  name: string;
-  sqlText: string;
-  description?: string;
-  createdAt: string; // ISO timestamp
-  updatedAt: string; // ISO timestamp
-  tags?: string[];
-}
-
-export interface SaveQueryInput {
-  name: string;
-  sqlText: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface UpdateQueryInput {
-  name?: string;
-  sqlText?: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface QueryResult {
-  columns: ColumnMetadata[];
-  rows: Row[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-export interface ColumnMetadata {
-  name: string;
-  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
-  mode?: string; // NULLABLE, REQUIRED, REPEATED
-}
-
-export interface Row {
-  values: any[]; // Values matching column order
-}
-````
-
-## File: tests/unit/renderer/hooks/useBigQuery.test.ts
-````typescript
-import { renderHook, act, waitFor } from '@testing-library/react';
-import { useBigQuery } from '../../../../src/renderer/hooks/useBigQuery';
-import { useConnectionStore } from '../../../../src/renderer/stores/connection-store';
-
-describe('useBigQuery', () => {
-  beforeEach(() => {
-    // Reset connection store
-    act(() => {
-      useConnectionStore.getState().clearConnection();
-    });
-
-    // Reset mocks
-    jest.clearAllMocks();
-    (window.electronAPI.bigquery.execute as jest.Mock).mockResolvedValue({
-      columns: [{ name: 'col1', type: 'STRING' }],
-      rows: [{ values: ['value1'] }],
-      totalRows: 1,
-      rowsReturned: 1,
-      executionTimeMs: 100,
-      jobId: 'job-123',
-      hasMore: false,
-    });
-    (window.electronAPI.bigquery.cancel as jest.Mock).mockResolvedValue(undefined);
-  });
-
-  describe('isConnected', () => {
-    it('should return false when no connection', () => {
-      const { result } = renderHook(() => useBigQuery());
-      expect(result.current.isConnected).toBe(false);
-    });
-
-    it('should return true when connected', () => {
-      act(() => {
-        useConnectionStore.getState().setConnection({
-          projectId: 'test-project',
-          authType: 'application-default',
-          location: 'EU',
-          isActive: true,
-        });
-      });
-
-      const { result } = renderHook(() => useBigQuery());
-      expect(result.current.isConnected).toBe(true);
-    });
-  });
-
-  describe('executeQuery', () => {
-    it('should throw error when no connection', async () => {
-      const { result } = renderHook(() => useBigQuery());
-
-      await expect(result.current.executeQuery('SELECT 1')).rejects.toThrow('No active connection');
-    });
-
-    it('should execute query when connected', async () => {
-      act(() => {
-        useConnectionStore.getState().setConnection({
-          projectId: 'test-project',
-          authType: 'application-default',
-          location: 'EU',
-          isActive: true,
-        });
-      });
-
-      const { result } = renderHook(() => useBigQuery());
-
-      const queryResult = await result.current.executeQuery('SELECT 1');
-
-      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith('SELECT 1', 'test-project', undefined);
-      expect(queryResult.jobId).toBe('job-123');
-    });
-
-    it('should pass query text to API', async () => {
-      act(() => {
-        useConnectionStore.getState().setConnection({
-          projectId: 'test-project',
-          authType: 'application-default',
-          location: 'EU',
-          isActive: true,
-        });
-      });
-
-      const { result } = renderHook(() => useBigQuery());
-
-      await result.current.executeQuery('SELECT * FROM `dataset.table`');
-
-      expect(window.electronAPI.bigquery.execute).toHaveBeenCalledWith(
-        'SELECT * FROM `dataset.table`',
-        'test-project',
-        undefined
-      );
-    });
-
-    it('should return query result', async () => {
-      act(() => {
-        useConnectionStore.getState().setConnection({
-          projectId: 'test-project',
-          authType: 'application-default',
-          location: 'EU',
-          isActive: true,
-        });
-      });
-
-      const { result } = renderHook(() => useBigQuery());
-
-      const queryResult = await result.current.executeQuery('SELECT 1');
-
-      expect(queryResult).toEqual({
-        columns: [{ name: 'col1', type: 'STRING' }],
-        rows: [{ values: ['value1'] }],
-        totalRows: 1,
-        rowsReturned: 1,
-        executionTimeMs: 100,
-        jobId: 'job-123',
-        hasMore: false,
-      });
-    });
-
-    it('should propagate API errors', async () => {
-      act(() => {
-        useConnectionStore.getState().setConnection({
-          projectId: 'test-project',
-          authType: 'application-default',
-          location: 'EU',
-          isActive: true,
-        });
-      });
-
-      (window.electronAPI.bigquery.execute as jest.Mock).mockRejectedValue(
-        new Error('Query syntax error')
-      );
-
-      const { result } = renderHook(() => useBigQuery());
-
-      await expect(result.current.executeQuery('INVALID SQL')).rejects.toThrow('Query syntax error');
-    });
-  });
-
-  describe('cancelQuery', () => {
-    it('should cancel a running query', async () => {
-      const { result } = renderHook(() => useBigQuery());
-
-      await result.current.cancelQuery('job-123');
-
-      expect(window.electronAPI.bigquery.cancel).toHaveBeenCalledWith('job-123');
-    });
-
-    it('should propagate cancel errors', async () => {
-      (window.electronAPI.bigquery.cancel as jest.Mock).mockRejectedValue(
-        new Error('Job not found')
-      );
-
-      const { result } = renderHook(() => useBigQuery());
-
-      await expect(result.current.cancelQuery('invalid-job')).rejects.toThrow('Job not found');
-    });
-  });
-
-  describe('connection state changes', () => {
-    it('should update isConnected when connection changes', () => {
-      const { result, rerender } = renderHook(() => useBigQuery());
-
-      expect(result.current.isConnected).toBe(false);
-
-      // Set connection
-      act(() => {
-        useConnectionStore.getState().setConnection({
-          projectId: 'test-project',
-          authType: 'application-default',
-          location: 'EU',
-          isActive: true,
-        });
-      });
-
-      rerender();
-      expect(result.current.isConnected).toBe(true);
-
-      // Clear connection
-      act(() => {
-        useConnectionStore.getState().clearConnection();
-      });
-
-      rerender();
-      expect(result.current.isConnected).toBe(false);
-    });
-  });
-});
-````
-
-## File: tests/unit/renderer/App.test.tsx
-````typescript
-import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
-import App from '../../../src/renderer/App';
-
-// Mock the components that might have dependencies
-jest.mock('../../../src/renderer/components/ConnectionDialog/ConnectionDialog', () => ({
-  ConnectionDialog: () => <div data-testid="connection-dialog">Connection Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SavedQueries/SavedQueries', () => ({
-  SavedQueries: () => <div data-testid="saved-queries">Saved Queries</div>,
-}));
-
-jest.mock('../../../src/renderer/components/HelpDialog/HelpDialog', () => ({
-  HelpDialog: () => <div data-testid="help-dialog">Help Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/AboutDialog/AboutDialog', () => ({
-  AboutDialog: () => <div data-testid="about-dialog">About Dialog</div>,
-}));
-
-jest.mock('../../../src/renderer/components/TabBar/TabBar', () => ({
-  TabBar: () => <div data-testid="tab-bar">Tab Bar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryEditor/QueryEditor', () => ({
-  QueryEditor: () => <div data-testid="query-editor">Query Editor</div>,
-}));
-
-jest.mock('../../../src/renderer/components/QueryResults/QueryResults', () => ({
-  QueryResults: () => <div data-testid="query-results">Query Results</div>,
-}));
-
-jest.mock('../../../src/renderer/components/DatasetTree/DatasetTree', () => ({
-  DatasetTree: () => <div data-testid="dataset-tree">Dataset Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SavedQueriesTree/SavedQueriesTree', () => ({
-  SavedQueriesTree: () => <div data-testid="saved-queries-tree">Saved Queries Tree</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SchemaSidebar/SchemaSidebar', () => ({
-  SchemaSidebar: () => <div data-testid="schema-sidebar">Schema Sidebar</div>,
-}));
-
-jest.mock('../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher', () => ({
-  SidebarSwitcher: ({ currentView, onViewChange }: { currentView: string; onViewChange: (view: string) => void }) => (
-    <div data-testid="sidebar-switcher" data-view={currentView}>
-      <button onClick={() => onViewChange('explorer')}>Explorer</button>
-      <button onClick={() => onViewChange('saved-queries')}>Saved Queries</button>
-    </div>
-  ),
-}));
-
-jest.mock('../../../src/renderer/components/SidebarHeader/SidebarHeader', () => ({
-  SidebarHeader: () => <div data-testid="sidebar-header">Sidebar Header</div>,
-}));
-
-describe('App', () => {
-  beforeEach(() => {
-    // Reset mocks to return an active connection to avoid triggering setShowConnectionDialog
-    (window as any).electronAPI.connection.getActive.mockResolvedValue({
-      projectId: 'test-project',
-      keyFilePath: '/path/to/key.json',
-    });
-  });
-
-  it('renders without crashing', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-    });
-  });
-
-  it('renders the main app structure', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getByTestId('tab-bar')).toBeInTheDocument();
-      expect(screen.getByTestId('query-editor')).toBeInTheDocument();
-      expect(screen.getByTestId('query-results')).toBeInTheDocument();
-    });
-  });
-
-  it('renders sidebar components', async () => {
-    render(<App />);
-    await waitFor(() => {
-      expect(screen.getByTestId('sidebar-header')).toBeInTheDocument();
-      expect(screen.getByTestId('sidebar-switcher')).toBeInTheDocument();
-    });
-  });
-});
-````
-
-## File: .gitignore
-````
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-yarn.lock
-pnpm-lock.yaml
-PROJECT_REFERENCE.md
-
-# Build outputs
-dist/
-build/
-out/
-*.tsbuildinfo
-
-# Electron
-*.asar
-*.dmg
-*.exe
-*.deb
-*.rpm
-*.AppImage
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-*.log.*
-
-# Testing
-coverage/
-.nyc_output/
-*.test.js.snap
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Desktop.ini
-
-# Electron specific
-app/dist/
-release/
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-});
-````
-
-## File: src/renderer/components/DatasetTree/DatasetTree.css
-````css
-.dataset-tree {
-  width: 100%;
-  flex: 1;
-  background-color: var(--bg-secondary);
-  border-right: 1px solid var(--border-primary);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.dataset-tree.collapsed {
-  min-width: 30px;
-  max-width: 30px;
-}
-
-.dataset-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  height: 35px;
-  gap: 0.5rem;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.collapse-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.dataset-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dataset-tree-search {
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.dataset-tree-search-input {
-  flex: 1;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.dataset-tree-search-input:focus {
-  border-color: var(--accent-primary);
-}
-
-.dataset-tree-search-input::placeholder {
-  color: var(--text-secondary);
-}
-
-.dataset-tree-search-clear {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.dataset-tree-search-clear:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.dataset-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
-
-.dataset-tree-loading,
-.dataset-tree-error,
-.dataset-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.dataset-tree-error {
-  color: var(--text-error);
-}
-
-/* Skeleton loading styles */
-.dataset-tree-skeleton {
-  padding: 0.25rem 0;
-}
-
-.skeleton-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  gap: 0.375rem;
-}
-
-.skeleton-icon {
-  width: 12px;
-  height: 12px;
-  background: linear-gradient(
-    90deg,
-    var(--bg-tertiary) 25%,
-    var(--bg-hover) 50%,
-    var(--bg-tertiary) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.skeleton-text {
-  height: 14px;
-  background: linear-gradient(
-    90deg,
-    var(--bg-tertiary) 25%,
-    var(--bg-hover) 50%,
-    var(--bg-tertiary) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
-  border-radius: 3px;
-}
-
-@keyframes skeleton-shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-
-.dataset-item {
-  user-select: none;
-}
-
-.dataset-header {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.dataset-header:hover {
-  background-color: var(--bg-hover);
-}
-
-.dataset-icon {
-  font-size: 0.625rem;
-  color: var(--text-secondary);
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-}
-
-.dataset-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dataset-tables {
-  padding-left: 1rem;
-}
-
-.table-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  padding-left: 1.5rem;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.table-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.table-icon {
-  font-size: 0.75rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
-
-.table-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-loading,
-.table-empty {
-  padding: 0.5rem 1rem;
-  padding-left: 2rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  font-style: italic;
-}
-
-.context-menu {
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  box-shadow: var(--shadow-dropdown);
-  min-width: 180px;
-  padding: 0.25rem 0;
-  z-index: 1000;
-  user-select: none;
-}
-
-.context-menu-item {
-  padding: 0.5rem 1rem;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover {
-  background-color: var(--bg-active);
-}
-
-.context-menu-item:first-child {
-  border-top-left-radius: 3px;
-  border-top-right-radius: 3px;
-}
-
-.context-menu-item:last-child {
-  border-bottom-left-radius: 3px;
-  border-bottom-right-radius: 3px;
-}
-````
-
-## File: src/renderer/components/DatasetTree/DatasetTree.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
-import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
-import type { Dataset, Table } from '../../../shared/types/dataset';
-import './DatasetTree.css';
-
-interface DatasetWithTables extends Dataset {
-  tables?: Table[];
-  expanded?: boolean;
-  loading?: boolean;
-}
-
-interface DatasetTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
-}
-
-const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
-  const connection = useConnectionStore((state) => state.connection);
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    dataset: Dataset;
-    table: Table;
-  } | null>(null);
-  const [sampleDataModal, setSampleDataModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-
-  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
-
-  const loadDatasets = useCallback(async () => {
-    if (!connection || !window.electronAPI) {
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
 
     try {
-      const datasetList = await window.electronAPI.bigquery.listDatasets();
-      const datasetsWithState = datasetList.map((ds) => ({
-        ...ds,
-        expanded: false,
-        loading: false,
-      }));
-      setDatasets(datasetsWithState);
-      
-      // Also store in metadata store for completion provider
-      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
-      
-      // Preload tables for all datasets in the background
-      datasetList.forEach((dataset) => {
-        window.electronAPI!.bigquery
-          .listTables(dataset.id)
-          .then((tables) => {
-            setDatasetTables(dataset.id, tables);
-          })
-          .catch((err) => {
-            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
-          });
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create a dry run query job - this validates and estimates without executing
+      // For dry runs, the job is not actually created in BigQuery, so we can't call getMetadata()
+      // The statistics are returned directly in job.metadata
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+        dryRun: true,
       });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load datasets');
-      console.error('Failed to load datasets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [connection, setMetadataDatasets, setDatasetTables]);
 
-  useEffect(() => {
-    if (connection) {
-      loadDatasets();
-    } else {
-      setDatasets([]);
-    }
-  }, [connection, loadDatasets]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadDatasets, isLoading);
-    }
-  }, [onRefreshReady, loadDatasets, isLoading]);
-
-  const toggleDataset = async (datasetId: string) => {
-    if (!window.electronAPI) return;
-
-    setDatasets((prev) =>
-      prev.map((ds) => {
-        if (ds.id === datasetId) {
-          if (ds.expanded) {
-            // Collapse
-            return { ...ds, expanded: false };
-          } else {
-            // Expand - load tables if not already loaded
-            if (!ds.tables) {
-              // Set loading state
-              const updated = { ...ds, expanded: true, loading: true };
-              
-              // Load tables
-              window.electronAPI.bigquery
-                .listTables(datasetId)
-                .then((tables) => {
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, tables, loading: false }
-                        : d
-                    )
-                  );
-                  // Also store in metadata store
-                  setDatasetTables(datasetId, tables);
-                })
-                .catch((err) => {
-                  console.error('Failed to load tables:', err);
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, loading: false }
-                        : d
-                    )
-                  );
-                });
-              
-              return updated;
-            }
-            return { ...ds, expanded: true };
-          }
-        }
-        return ds;
-      })
-    );
-  };
-
-  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    // Handle Ctrl/Cmd+click to insert SELECT statement
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
-      const selectStatement = `SELECT * FROM ${tableRef}`;
-      window.dispatchEvent(
-        new CustomEvent('insertTableReference', { detail: selectStatement })
+      // For dry runs, metadata is available directly on the job object
+      // Don't call getMetadata() as dry run jobs don't actually exist in BigQuery
+      const metadata = job.metadata;
+      
+      // totalBytesProcessed is in statistics
+      const totalBytesProcessed = parseInt(
+        metadata?.statistics?.totalBytesProcessed || '0', 
+        10
       );
-    }
-    // Regular left click does nothing (removed table insertion feature)
-  };
 
-  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
-    if (event.ctrlKey || event.metaKey) {
-      if (onShowSchema && connection?.projectId) {
-        onShowSchema(connection.projectId, dataset.id, table.id);
-      }
-      return;
-    }
-    
-    // Show context menu
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      dataset,
-      table,
-    });
-  };
-
-  const handleOpenInNewTab = () => {
-    if (!contextMenu || !connection) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const queryText = `SELECT * FROM ${tableRef}`;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, queryText);
-    updateTab(newTabId, {
-      title: `${dataset.name}.${table.name}`,
-    });
-    
-    setContextMenu(null);
-  };
-
-  const handleShowSchema = () => {
-    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
-    
-    const { dataset, table } = contextMenu;
-    onShowSchema(connection.projectId, dataset.id, table.id);
-    setContextMenu(null);
-  };
-
-  const handleViewSampleData = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setSampleDataModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
-
-  const handleViewDefinition = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setViewDefinitionModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
-
-  const handleAddWithJoin = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
-    
-    // Get the active tab's query
-    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
-    const currentQuery = activeTab?.queryText || '';
-    
-    let newQuery: string;
-    
-    if (!currentQuery.trim()) {
-      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
-      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
-    } else {
-      const trimmedQuery = currentQuery.trim();
-      const upperQuery = trimmedQuery.toUpperCase();
+      return {
+        totalBytesProcessed,
+        // Include additional useful statistics if available
+        cacheHit: metadata?.statistics?.query?.cacheHit || false,
+        statementType: metadata?.statistics?.query?.statementType || null,
+      };
+    } catch (error: any) {
+      // Electron IPC requires Error objects with message property to serialize properly
+      // Plain objects thrown will appear as [object Object]
       
-      // Check if there's already a FROM clause
-      const fromMatch = upperQuery.match(/\bFROM\b/i);
+      // Handle specific BigQuery errors
+      if (error.code === 404) {
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
       
-      if (fromMatch) {
-        // There's already a FROM clause, add JOIN
-        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
-        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
-        
-        if (clauseMatch && clauseMatch.index !== undefined) {
-          // Insert JOIN before the clause
-          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
-          const afterClause = trimmedQuery.substring(clauseMatch.index);
-          // Find the last table reference to use in JOIN condition
-          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
-          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
-            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
-            : 't1';
-          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        } else {
-          // No WHERE/ORDER/etc clause, append JOIN at the end
-          // Try to find the first table alias from FROM clause
-          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
-          const firstTableAlias = fromTableMatch?.[1] || 't1';
-          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+      // Handle syntax errors and other query errors
+      // BigQuery errors include location info (line, column) which we pass through
+      if (error.errors && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        const err = new Error(firstError.message || 'Query validation failed');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        // Include location info if available
+        if (firstError.location) {
+          (err as any).location = {
+            line: firstError.location.line,
+            column: firstError.location.column,
+          };
         }
-      } else {
-        // No FROM clause found, add FROM (can't add JOIN without a first table)
-        // Check if it starts with SELECT
-        if (upperQuery.startsWith('SELECT')) {
-          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
-        } else {
-          // Not a SELECT query, prepend SELECT and add FROM
-          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
-        }
+        (err as any).details = JSON.stringify(error.errors);
+        throw err;
       }
+      
+      const err = new Error(error.message || 'Dry run failed');
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors ? JSON.stringify(error.errors) : String(error);
+      throw err;
     }
-    
-    // Update the active tab, or create a new one if none exists
-    if (activeTab) {
-      setTabQuery(activeTab.id, newQuery);
-    } else {
-      const newTabId = createTab();
-      setTabQuery(newTabId, newQuery);
-    }
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter datasets and tables based on search term
-  const filteredDatasets = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return datasets;
-    }
-
-    const searchLower = searchTerm.toLowerCase().trim();
-    
-    return datasets
-      .filter((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-        return datasetMatches || matchingTables.length > 0;
-      })
-      .map((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-
-        return {
-          ...dataset,
-          // Auto-expand if searching and there are matching tables or dataset matches
-          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
-          // Show all tables if dataset name matches, otherwise show only matching tables
-          // Prefer local tables if available, otherwise use metadata tables
-          tables: datasetMatches 
-            ? (localTables.length > 0 ? localTables : allTables)
-            : matchingTables.length > 0 
-              ? matchingTables 
-              : (localTables.length > 0 ? localTables : allTables),
-        };
-      });
-  }, [datasets, searchTerm, getDatasetTables]);
-
-  if (!connection) {
-    return (
-      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-        {!collapsed && (
-          <div className="dataset-tree-empty">Not connected</div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="dataset-tree-search">
-            <input
-              type="text"
-              className="dataset-tree-search-input"
-              placeholder="Search datasets and tables..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                // Prevent closing context menu when typing in search
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="dataset-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="dataset-tree-content">
-            {isLoading && datasets.length === 0 && (
-              <div className="dataset-tree-skeleton">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
-                  <div key={i} className="skeleton-item">
-                    <div className="skeleton-icon" />
-                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
-                  </div>
-                ))}
-              </div>
-            )}
-            {error && <div className="dataset-tree-error">{error}</div>}
-            {filteredDatasets.length === 0 && !isLoading && !error && (
-              <div className="dataset-tree-empty">
-                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
-              </div>
-            )}
-            {filteredDatasets.map((dataset) => (
-            <div key={dataset.id} className="dataset-item">
-              <div
-                className="dataset-header"
-                onClick={() => toggleDataset(dataset.id)}
-              >
-                <span className="dataset-icon">
-                  {dataset.expanded ? '▼' : '▶'}
-                </span>
-                <span className="dataset-name">{dataset.name}</span>
-              </div>
-              {dataset.expanded && (
-                <div className="dataset-tables">
-                  {dataset.loading ? (
-                    <div className="table-loading">Loading tables...</div>
-                  ) : (
-                    dataset.tables?.map((table) => (
-                      <div
-                        key={table.id}
-                        className="table-item"
-                        onClick={(e) => handleTableClick(e, dataset, table)}
-                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
-                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
-                      >
-                        <span className="table-icon">
-                          {table.type === 'VIEW' ? '📄' : '🗄'}
-                        </span>
-                        <span className="table-name">{table.name}</span>
-                      </div>
-                    ))
-                  )}
-                  {dataset.tables && dataset.tables.length === 0 && (
-                    <div className="table-empty">No tables</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleOpenInNewTab}>
-            Open in new tab
-          </div>
-          <div className="context-menu-item" onClick={handleAddWithJoin}>
-            Add with JOIN
-          </div>
-          <div className="context-menu-item" onClick={handleViewSampleData}>
-            View sample data
-          </div>
-          {contextMenu.table.type === 'VIEW' && (
-            <div className="context-menu-item" onClick={handleViewDefinition}>
-              Show view definition
-            </div>
-          )}
-          {onShowSchema && connection?.projectId && (
-            <div className="context-menu-item" onClick={handleShowSchema}>
-              Show schema
-            </div>
-          )}
-        </div>
-      )}
-      {sampleDataModal && (
-        <SampleDataModal
-          projectId={sampleDataModal.projectId}
-          datasetId={sampleDataModal.datasetId}
-          tableId={sampleDataModal.tableId}
-          onClose={() => setSampleDataModal(null)}
-        />
-      )}
-      {viewDefinitionModal && (
-        <ViewDefinitionModal
-          projectId={viewDefinitionModal.projectId}
-          datasetId={viewDefinitionModal.datasetId}
-          tableId={viewDefinitionModal.tableId}
-          onClose={() => setViewDefinitionModal(null)}
-        />
-      )}
-    </div>
-  );
-};
-
-export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
-  // Only re-render if these props change
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
-    prevProps.onShowSchema === nextProps.onShowSchema
-  );
-});
-````
-
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: var(--bg-primary);
+  });
 }
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background-color: var(--button-secondary);
-  color: var(--text-disabled);
-}
-
-.query-editor-toolbar .run-button {
-  background-color: var(--accent-primary);
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: var(--accent-orange);
-  color: var(--text-white);
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: var(--accent-orange-hover);
-}
-
-.query-editor-toolbar .save-button {
-  background-color: var(--accent-success);
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: var(--accent-success-hover);
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: var(--accent-danger);
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: var(--accent-danger-hover);
-}
-
-.connection-warning {
-  color: var(--text-warning);
-  background-color: var(--button-secondary);
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: var(--text-success);
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: var(--text-error);
-}
-
-.editor-status-bar .status-valid {
-  color: var(--text-success);
-}
-
-.editor-status-bar .status-invalid {
-  color: var(--text-error);
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: var(--text-white);
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
-````
-
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
-````typescript
-import React, { useState, useEffect, useRef, memo } from 'react';
-import { useQueriesStore } from '../../stores/queries-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import type { SavedQuery } from '../../../shared/types/query';
-import './SavedQueriesTree.css';
-
-interface SavedQueriesTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
-}
-
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
-  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    query: SavedQuery;
-  } | null>(null);
-  const [hoveredQuery, setHoveredQuery] = useState<{
-    query: SavedQuery;
-    x: number;
-    y: number;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    loadQueries();
-  }, [loadQueries]);
-
-  useEffect(() => {
-    setStoreSearchTerm(searchTerm);
-  }, [searchTerm, setStoreSearchTerm]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadQueries, isLoading);
-    }
-  }, [onRefreshReady, loadQueries, isLoading]);
-
-  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      query,
-    });
-  };
-
-  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    
-    // Clear any existing timeouts
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-    
-    // Add a small delay before showing tooltip
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery({
-        query,
-        x: rect.right + 8,
-        y: rect.top,
-      });
-    }, 300);
-  };
-
-  const handleQueryMouseLeave = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    // Delay hiding to allow cursor to move into tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery(null);
-    }, 100);
-  };
-
-  const handleTooltipMouseEnter = () => {
-    // Cancel the hide timeout when entering tooltip
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  };
-
-  const handleTooltipMouseLeave = () => {
-    // Hide tooltip when leaving it
-    setHoveredQuery(null);
-  };
-
-  const handleLoadToNewTab = () => {
-    if (!contextMenu) return;
-    
-    const { query } = contextMenu;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, query.sqlText);
-    updateTab(newTabId, {
-      title: query.name,
-      savedQueryId: query.id,
-      isModified: false,
-    });
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter queries based on search term
-  const filteredQueries = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return queries;
-    }
-    return getFilteredQueries();
-  }, [queries, searchTerm, getFilteredQueries]);
-
-  return (
-    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="saved-queries-tree-search">
-            <input
-              type="text"
-              className="saved-queries-tree-search-input"
-              placeholder="Search saved queries..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="saved-queries-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="saved-queries-tree-content">
-            {isLoading && queries.length === 0 && (
-              <div className="saved-queries-tree-loading">Loading saved queries...</div>
-            )}
-            {filteredQueries.length === 0 && !isLoading && (
-              <div className="saved-queries-tree-empty">
-                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
-              </div>
-            )}
-            {filteredQueries.map((query) => (
-              <div
-                key={query.id}
-                className="saved-query-item"
-                onContextMenu={(e) => handleQueryContextMenu(e, query)}
-                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
-                onMouseLeave={handleQueryMouseLeave}
-              >
-                <span className="saved-query-icon">📝</span>
-                <div className="saved-query-info">
-                  <span className="saved-query-name">{query.name}</span>
-                  {query.description && (
-                    <span className="saved-query-description">{query.description}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleLoadToNewTab}>
-            Open in new tab
-          </div>
-        </div>
-      )}
-      {hoveredQuery && (
-        <div
-          className="saved-query-tooltip"
-          style={{
-            position: 'fixed',
-            left: `${hoveredQuery.x}px`,
-            top: `${hoveredQuery.y}px`,
-          }}
-          onMouseEnter={handleTooltipMouseEnter}
-          onMouseLeave={handleTooltipMouseLeave}
-        >
-          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse
-  );
-});
-````
-
-## File: src/renderer/components/TabBar/TabBar.css
-````css
-.tab-bar {
-  display: flex;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-}
-
-.tabs-container {
-  display: flex;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  align-items: center;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  background-color: var(--bg-tertiary);
-  border-right: 1px solid var(--border-primary);
-  cursor: pointer;
-  user-select: none;
-  min-width: 120px;
-  max-width: 200px;
-  position: relative;
-  height: 35px;
-  color: var(--text-primary);
-  transition: background-color 0.15s ease;
-}
-
-.tab[draggable='true'] {
-  cursor: grab;
-}
-
-.tab[draggable='true']:active {
-  cursor: grabbing;
-}
-
-.tab:hover {
-  background-color: var(--bg-hover);
-}
-
-.tab.active {
-  background-color: var(--bg-primary);
-  border-bottom: 2px solid var(--accent-primary);
-  color: var(--text-active);
-  font-weight: 500;
-}
-
-.tab.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.tab.drag-over {
-  border-left: 2px solid var(--accent-primary);
-  padding-left: calc(0.75rem - 2px);
-}
-
-.tab.modified .tab-title::after {
-  content: '';
-}
-
-.tab-title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-}
-
-.modified-indicator {
-  color: var(--accent-primary);
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-}
-
-.tab-close {
-  margin-left: 0.5rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  color: var(--text-secondary);
-  padding: 0;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.tab-close:hover {
-  background-color: var(--accent-close-hover);
-  color: white;
-}
-
-.tab-close:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.tab-close:disabled:hover {
-  background-color: transparent;
-  color: var(--text-secondary);
-}
-
-.new-tab-button {
-  padding: 0 0.75rem;
-  background: none;
-  border: none;
-  border-left: 1px solid var(--border-primary);
-  cursor: pointer;
-  font-size: 1.25rem;
-  color: var(--text-secondary);
-  font-weight: 300;
-  height: 35px;
-  display: flex;
-  align-items: center;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.new-tab-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-````
-
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache (SQLite-backed for performance with large datasets)
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    /** Get a range of rows for virtual scrolling */
-    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-    /** Get cache statistics */
-    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: tests/setup.ts
-````typescript
-import '@testing-library/jest-dom';
-
-// Mock HTMLCanvasElement.getContext for jsdom
-HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
-  clearRect: jest.fn(),
-  fillRect: jest.fn(),
-  getImageData: jest.fn(),
-  putImageData: jest.fn(),
-  createImageData: jest.fn(),
-  setTransform: jest.fn(),
-  drawImage: jest.fn(),
-  save: jest.fn(),
-  restore: jest.fn(),
-  beginPath: jest.fn(),
-  moveTo: jest.fn(),
-  lineTo: jest.fn(),
-  closePath: jest.fn(),
-  stroke: jest.fn(),
-  fill: jest.fn(),
-  translate: jest.fn(),
-  scale: jest.fn(),
-  rotate: jest.fn(),
-  arc: jest.fn(),
-  measureText: jest.fn(() => ({ width: 0 })),
-  fillText: jest.fn(),
-  strokeText: jest.fn(),
-  clip: jest.fn(),
-})) as jest.Mock;
-
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getTheme: jest.fn().mockResolvedValue('dark'),
-    setTheme: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-    onToggleTheme: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
-};
-
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -23769,673 +24881,116 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 };
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
-````css
-.saved-queries-tree {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  background-color: var(--bg-secondary);
-  color: var(--text-primary);
-  border-right: 1px solid var(--border-primary);
-  overflow: hidden;
-  min-height: 0;
-}
-
-.saved-queries-tree.collapsed {
-  width: 30px;
-}
-
-.saved-queries-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  min-height: 35px;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  margin-right: 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.collapse-button:hover {
-  background-color: var(--border-primary);
-}
-
-.saved-queries-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.refresh-button:hover:not(:disabled) {
-  color: var(--text-primary);
-  background-color: var(--border-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.saved-queries-tree-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  position: relative;
-}
-
-.saved-queries-tree-search-input {
-  width: 100%;
-  padding: 0.375rem 0.5rem;
-  background-color: var(--border-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-}
-
-.saved-queries-tree-search-input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-  background-color: var(--bg-primary);
-}
-
-.saved-queries-tree-search-clear {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease;
-}
-
-.saved-queries-tree-search-clear:hover {
-  color: var(--text-primary);
-}
-
-.saved-queries-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem;
-}
-
-.saved-queries-tree-loading,
-.saved-queries-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.saved-query-item {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  cursor: pointer;
-  border-radius: 3px;
-  margin-bottom: 0.25rem;
-  transition: background-color 0.15s ease;
-}
-
-.saved-query-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.saved-query-icon {
-  margin-right: 0.5rem;
-  font-size: 1rem;
-}
-
-.saved-query-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.saved-query-name {
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.saved-query-description {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.context-menu {
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  box-shadow: var(--shadow-dropdown);
-  z-index: 1000;
-  min-width: 150px;
-}
-
-.context-menu-item {
-  padding: 0.5rem 0.75rem;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover:not(.disabled) {
-  background-color: var(--bg-hover);
-}
-
-.context-menu-item.disabled {
-  color: var(--text-secondary);
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* Query preview tooltip */
-.saved-query-tooltip {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  box-shadow: var(--shadow-tooltip);
-  z-index: 1000;
-  max-width: 400px;
-  min-width: 200px;
-  max-height: 300px;
-  overflow: hidden;
-}
-
-.saved-query-tooltip-code {
-  margin: 0;
-  padding: 0.75rem;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  max-height: 284px;
-}
-````
-
-## File: src/renderer/components/TabBar/TabBar.tsx
+## File: src/renderer/types/electron-api.d.ts
 ````typescript
-import React, { useState, useRef, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import './TabBar.css';
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
 
-export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
-  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
-  const queryTabs = tabs.filter(tab => tab.type === 'query');
-  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
-
-  // Create a transparent drag image canvas once
-  useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, 1, 1);
-    }
-    dragImageRef.current = canvas;
-  }, []);
-
-  const handleTabClick = (tabId: string) => {
-    setActiveTab(tabId);
-  };
-
-  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
-    e.stopPropagation();
-    const tab = queryTabs.find((t) => t.id === tabId);
-    
-    if (tab?.isModified) {
-      const confirmed = window.confirm(
-        'This tab has unsaved changes. Are you sure you want to close it?'
-      );
-      if (!confirmed) return;
-    }
-    closeTab(tabId);
-  };
-
-  const handleNewTab = () => {
-    createTab();
-  };
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    // Don't start drag if clicking on the close button
-    const target = e.target as HTMLElement;
-    if (target.closest('.tab-close')) {
-      e.preventDefault();
-      return;
-    }
-    
-    setDraggedTabIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
-    
-    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
-    if (dragImageRef.current) {
-      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (draggedTabIndex !== null && draggedTabIndex !== index) {
-      setDragOverIndex(index);
-    }
-  };
-
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    
-    // Map dropIndex from queryTabs array back to full tabs array
-    const dropTab = queryTabs[dropIndex];
-    if (!dropTab) {
-      setDraggedTabIndex(null);
-      setDragOverIndex(null);
-      return;
-    }
-    
-    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
-    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
-    
-    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
-      reorderTabs(actualDragIndex, actualDropIndex);
-    }
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  return (
-    <div className="tab-bar">
-      <div className="tabs-container">
-        {queryTabs.map((tab, index) => (
-          <div
-            key={tab.id}
-            draggable
-            onDragStart={(e) => handleDragStart(e, index)}
-            onDragOver={(e) => handleDragOver(e, index)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleDrop(e, index)}
-            onDragEnd={handleDragEnd}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
-              draggedTabIndex === index ? 'dragging' : ''
-            } ${dragOverIndex === index ? 'drag-over' : ''}`}
-            onClick={() => handleTabClick(tab.id)}
-          >
-            <span className="tab-title">{tab.title}</span>
-            {tab.isModified && <span className="modified-indicator">●</span>}
-            <button
-              className="tab-close"
-              onClick={(e) => handleCloseTab(e, tab.id)}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
-          +
-        </button>
-      </div>
-    </div>
-  );
-};
-````
-
-## File: src/renderer/stores/tabs-store.ts
-````typescript
-import { create } from 'zustand';
-import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
-
-interface TabsState {
-  tabs: QueryTab[];
-  activeTabId: string | null;
-  createTab: () => string;
-  closeTab: (tabId: string) => void;
-  setActiveTab: (tabId: string) => void;
-  reorderTabs: (fromIndex: number, toIndex: number) => void;
-  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
-  setTabQuery: (tabId: string, queryText: string) => void;
-  setTabResults: (tabId: string, results: QueryResult) => void;
-  setTabError: (tabId: string, error: string) => void;
-  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
-  loadTabs: () => Promise<void>;
-  saveTabs: () => Promise<void>;
-}
-
-function generateTabId(): string {
-  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
-
-// Debounce function for saving tabs
-let saveTimeout: NodeJS.Timeout | null = null;
-const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-  }
-  saveTimeout = setTimeout(() => {
-    saveFn().catch((error) => {
-      console.error('Failed to save tabs:', error);
-    });
-  }, delay);
-};
-
-// Filter out any legacy Explorer or Saved Queries tabs
-function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
-  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
-}
-
-export const useTabsStore = create<TabsState>((set, get) => {
-  return {
-    tabs: [
-      {
-        id: generateTabId(),
-        title: 'Query 1',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-      {
-        id: generateTabId(),
-        title: 'Query 2',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-    ],
-    activeTabId: null,
-
-    loadTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const savedTabs = await window.electronAPI.tabs.getTabs();
-        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
-        
-        // Filter out any legacy Explorer or Saved Queries tabs
-        let filteredTabs = filterStaticTabs(savedTabs || []);
-        
-        if (filteredTabs.length === 0) {
-          // No saved tabs, use default tabs
-          filteredTabs = get().tabs;
-        }
-        
-        // Ensure active tab ID is valid (not a static tab)
-        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
-        
-        if (filteredTabs.length > 0) {
-          set({
-            tabs: filteredTabs,
-            activeTabId: validActiveTabId,
-          });
-        } else {
-          // No tabs left, use default
-          const defaultTabId = get().tabs[0]?.id || null;
-          set({ activeTabId: defaultTabId });
-        }
-      } catch (error) {
-        console.error('Failed to load tabs:', error);
-        // Use default tab if loading fails
-        const defaultTabId = get().tabs[0]?.id || null;
-        set({ activeTabId: defaultTabId });
-      }
-    },
-
-    saveTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const { tabs, activeTabId } = get();
-        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
-      } catch (error) {
-        console.error('Failed to save tabs:', error);
-      }
-    },
-
-    createTab: () => {
-      const tabs = get().tabs;
-      const newTabId = generateTabId();
-      const newTab: QueryTab = {
-        id: newTabId,
-        title: `Query ${tabs.length + 1}`,
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
       };
-      const updatedTabs = [...tabs, newTab];
-      set({
-        tabs: updatedTabs,
-        activeTabId: newTabId,
-      });
-      return newTabId;
-    },
-
-    closeTab: (tabId: string) => {
-      const { tabs, activeTabId } = get();
-      const tabIndex = tabs.findIndex((t) => t.id === tabId);
-      if (tabIndex === -1) return;
-
-      const newTabs = tabs.filter((t) => t.id !== tabId);
-      
-      // If closing the active tab, switch to another tab
-      let newActiveTabId = activeTabId;
-      if (activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          // Switch to the tab that was before this one, or the first tab
-          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
-        } else {
-          // No tabs left
-          newActiveTabId = null;
-        }
-      }
-
-      set({
-        tabs: newTabs,
-        activeTabId: newActiveTabId,
-      });
-    },
-
-    setActiveTab: (tabId: string) => {
-      set({ activeTabId: tabId });
-    },
-
-    reorderTabs: (fromIndex: number, toIndex: number) => {
-      const { tabs } = get();
-      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
-        return;
-      }
-      
-      const newTabs = [...tabs];
-      const [movedTab] = newTabs.splice(fromIndex, 1);
-      newTabs.splice(toIndex, 0, movedTab);
-      
-      set({ tabs: newTabs });
-    },
-
-    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
-      set((state) => {
-        const updatedTabs = state.tabs.map((tab) =>
-          tab.id === tabId ? { ...tab, ...updates } : tab
-        );
-        return {
-          tabs: updatedTabs,
-        };
-      });
-    },
-
-    setTabQuery: (tabId: string, queryText: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (tab) {
-        get().updateTab(tabId, {
-          queryText,
-          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
-        });
-      }
-    },
-
-    setTabResults: (tabId: string, results: QueryResult) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        results,
-        executionStatus: 'completed',
-        error: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabError: (tabId: string, error: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        error,
-        executionStatus: 'error',
-        results: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
-      get().updateTab(tabId, { executionStatus: status });
-    },
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
-});
 
-// Subscribe to tab changes and auto-save (debounced)
-let previousTabs: QueryTab[] = [];
-let previousActiveTabId: string | null = null;
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
 
-useTabsStore.subscribe((state) => {
-  // Filter out any legacy static tabs that might have been loaded
-  const filteredTabs = filterStaticTabs(state.tabs);
-  if (filteredTabs.length !== state.tabs.length) {
-    // Found static tabs, remove them
-    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
-    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
-    return;
-  }
-  
-  // Check if tabs or activeTabId actually changed
-  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
-  
-  if (tabsChanged) {
-    previousTabs = state.tabs;
-    previousActiveTabId = state.activeTabId;
-    // Auto-save when tabs or activeTabId changes
-    debouncedSave(() => useTabsStore.getState().saveTabs());
-  }
-});
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
 
-// Track if initialization has been done to prevent multiple calls
-let isInitialized = false;
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
 
-// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
-// This function can be called multiple times safely (idempotent)
-export function initializeTabsStore(): void {
-  if (isInitialized) {
-    return; // Already initialized
-  }
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
 
-  if (window.electronAPI?.tabs) {
-    isInitialized = true;
-    
-    useTabsStore.getState().loadTabs().then(() => {
-      // Initialize active tab after loading
-      const state = useTabsStore.getState();
-      if (!state.activeTabId && state.tabs.length > 0) {
-        useTabsStore.setState({ activeTabId: state.tabs[0].id });
-      }
-    }).catch((error) => {
-      console.error('Failed to initialize tabs:', error);
-      // Fallback: Initialize active tab on first load if loading fails
-      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-    });
+  // Results cache (SQLite-backed for performance with large datasets)
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    /** Get a range of rows for virtual scrolling */
+    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+    /** Get cache statistics */
+    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
+  };
 
-    // Listen for before-close event to save tabs immediately
-    window.electronAPI.tabs.onBeforeClose(() => {
-      // Clear any pending debounced save and save immediately
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-        saveTimeout = null;
-      }
-      useTabsStore.getState().saveTabs();
-    });
-  } else {
-    // Fallback: Initialize active tab on first load if electronAPI is not available
-    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-  }
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
 }
 
-// Try to initialize immediately if electronAPI is already available
-// Otherwise, it will be initialized from App.tsx
-if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
-  initializeTabsStore();
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
 }
 ````
 
@@ -24728,475 +25283,6 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
-````
-
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './themes.css';
-import './App.css';
-
-type Theme = 'dark' | 'light';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-      };
-    }
-  }, [handleToggleTheme]);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
 ````
 
 ## File: tests/unit/renderer/utils/sql-validation.test.ts
@@ -32556,17 +32642,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // === HYBRID VALIDATION: tree-sitter + sql-parser-cst ===
+      // === HYBRID VALIDATION: tree-sitter for immediate feedback, dry run for authoritative validation ===
       
       // Step 1: Fast syntax validation with tree-sitter (if available)
-      // Tree-sitter excels at catching structural syntax errors
+      // Tree-sitter provides IMMEDIATE feedback while typing
+      // But BigQuery dry run is the AUTHORITATIVE validation source when connected
       if (isTreeSitterAvailable()) {
         const treeSitterErrors = validateWithTreeSitter(trimmedQuery);
         if (treeSitterErrors.length > 0) {
-          // Tree-sitter found syntax errors - show the first one
+          // Tree-sitter found syntax errors - show immediate feedback
           const firstError = treeSitterErrors[0];
           
-          // Set markers for all tree-sitter errors
+          // Set markers for all tree-sitter errors (immediate visual feedback)
           const markers = treeSitterErrors.map(err => ({
             severity: (window as any).monaco.MarkerSeverity.Error,
             startLineNumber: err.line,
@@ -32598,11 +32685,14 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
             );
           }
           
-          setSqlValidationStatus({
-            isValid: false,
-            errorMessage: firstError.message,
-            errorLine: firstError.line,
-          });
+          // Only set status when disconnected - when connected, dry run is authoritative
+          if (!isConnected) {
+            setSqlValidationStatus({
+              isValid: false,
+              errorMessage: firstError.message,
+              errorLine: firstError.line,
+            });
+          }
           
           // Still try sql-parser-cst for potentially better error messages
           // but don't block on it - tree-sitter already found the error
@@ -32791,17 +32881,22 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           return;
         }
         
-        // Parsing succeeded - set valid status immediately
-        // (column validation may change this to invalid later if issues are found)
-        setSqlValidationStatus((prev) => {
-          // Don't overwrite table not found errors - those are handled by calculateExpectedQuerySize
-          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-            return prev;
-          }
-          return { isValid: true, errorMessage: null, errorLine: null };
-        });
+        // Parsing succeeded - provide immediate visual feedback
+        // When connected to BigQuery, dry run will be the authoritative validation source
+        // When disconnected, local validation is the only source
+        if (!isConnected) {
+          setSqlValidationStatus((prev) => {
+            // Don't overwrite table not found errors - those are handled by calculateExpectedQuerySize
+            if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+              return prev;
+            }
+            return { isValid: true, errorMessage: null, errorLine: null };
+          });
+        }
+        // When connected, don't set isValid=true here - let dry run handle it
+        // This prevents local validation from overwriting BigQuery errors
         
-        // Clear markers
+        // Clear markers (dry run may set them again if there are errors)
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
         
         // Clear error decorations in glyph margin
@@ -33126,8 +33221,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           );
         }
         
-        // Update status bar - invalid SQL syntax (this takes precedence over table not found)
-        setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
+        // Update status bar - only when disconnected (dry run is authoritative when connected)
+        if (!isConnected) {
+          setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
+        }
         return;
       }
 
@@ -33229,21 +33326,27 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           );
         }
 
-        setSqlValidationStatus({
-          isValid: false,
-          errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
-          errorLine: columnIssues[0]?.line ?? null,
-        });
+        // Only set validation status when disconnected - when connected, dry run is authoritative
+        if (!isConnected) {
+          setSqlValidationStatus({
+            isValid: false,
+            errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
+            errorLine: columnIssues[0]?.line ?? null,
+          });
+        }
         return;
       }
 
       // Update status bar - valid SQL syntax (no column issues)
-      setSqlValidationStatus((prev) => {
-        if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-          return prev;
-        }
-        return { isValid: true, errorMessage: null, errorLine: null };
-      });
+      // Only when disconnected - when connected, dry run handles validation status
+      if (!isConnected) {
+        setSqlValidationStatus((prev) => {
+          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+            return prev;
+          }
+          return { isValid: true, errorMessage: null, errorLine: null };
+        });
+      }
     };
 
     // Store validation function in ref so it can be called from selection change listener
@@ -33881,7 +33984,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
-  // Calculate expected query size from table/view metadata
+  // Calculate expected query size AND validate syntax using BigQuery's native dry run feature
+  // Dry run is the PRIMARY validation source - it catches all syntax and semantic errors accurately
+  // Local validation (tree-sitter) is only used for immediate feedback while typing
   useEffect(() => {
     const calculateExpectedQuerySize = async () => {
       // Use selected text if available, otherwise use full query text
@@ -33892,336 +33997,165 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // Skip table validation if SQL syntax is invalid (syntax errors take precedence)
-      // But still allow clearing previous table not found errors
-      const shouldSkipTableCheck = sqlValidationStatus.isValid === false && 
-        (!sqlValidationStatus.errorMessage || !sqlValidationStatus.errorMessage.includes('Table not found'));
-      
-      if (shouldSkipTableCheck) {
-        setExpectedQuerySize(null);
-        return;
-      }
-
+      // ALWAYS run dry run - it's our primary validation source
+      // Don't skip based on local validation status
       setIsLoadingQuerySize(true);
       
       try {
-        const tableRefs = extractTableReferences(textToAnalyze);
+        // Use BigQuery's native dry run for BOTH validation and byte estimate
+        // This catches ALL errors: syntax, semantic, table not found, column not found, etc.
+        const result = await window.electronAPI.bigquery.dryRun(textToAnalyze);
         
-        if (tableRefs.length === 0) {
-          setExpectedQuerySize(null);
-          setIsLoadingQuerySize(false);
-          return;
+        // Dry run succeeded - query is VALID according to BigQuery
+        // Clear ALL previous errors (both local and BigQuery errors)
+        setSqlValidationStatus({ isValid: true, errorMessage: null, errorLine: null });
+        
+        // Clear Monaco editor markers since BigQuery says the query is valid
+        const model = editorRef.current?.getModel();
+        if (model && (window as any).monaco) {
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
+          // Clear error decorations in glyph margin
+          if (editorRef.current) {
+            errorDecorationsRef.current = editorRef.current.deltaDecorations(
+              errorDecorationsRef.current,
+              []
+            );
+          }
         }
-
-        // Helper function to get size for a table or view
-        // For views, recursively fetches the underlying table sizes
-        // visitedViews tracks already processed views to prevent infinite loops
-        const getTableOrViewSize = async (
-          datasetId: string,
-          tableId: string,
-          visitedViews: Set<string>
-        ): Promise<{ bytes: number; hasMetadata: boolean; error?: { message: string; tableRef: string } }> => {
-          const tableKey = `${datasetId}.${tableId}`;
+        
+        setExpectedQuerySize(result.totalBytesProcessed);
+      } catch (err: any) {
+        // Extract error information from Electron IPC wrapper
+        let errorMessage = err?.message || '';
+        const errorDetails = typeof err?.details === 'string' ? err.details : '';
+        const errorLocation = err?.location;
+        
+        // Strip Electron IPC error prefix: "Error invoking remote method 'bigquery:dryRun': Error: "
+        errorMessage = errorMessage
+          .replace(/^Error invoking remote method '[^']+': /, '')
+          .replace(/^Error: /, '');
+        
+        // Extract line and column from various error message formats
+        let errorLine: number | null = errorLocation?.line || null;
+        let errorColumn: number | null = errorLocation?.column || null;
+        
+        // Try to extract line:column from error message like "at [2:74]"
+        if (!errorLine) {
+          const lineColMatch = errorMessage.match(/at \[(\d+):(\d+)\]/);
+          if (lineColMatch) {
+            errorLine = parseInt(lineColMatch[1], 10);
+            errorColumn = parseInt(lineColMatch[2], 10);
+          }
+        }
+        
+        // Clean up error message for display
+        let displayMessage = errorMessage;
+        
+        // Check for table not found errors
+        const isTableNotFound = 
+          errorMessage.includes('Table not found') ||
+          errorMessage.includes('Not found: Table') ||
+          errorDetails.includes('Not found: Table') ||
+          err?.code === 404;
+        
+        // Check for column not found errors
+        const isColumnNotFound = 
+          errorMessage.includes('Unrecognized name') ||
+          (errorMessage.includes('Name') && errorMessage.includes('not found'));
+        
+        // Check for syntax errors
+        const isSyntaxError = 
+          errorMessage.includes('Syntax error') ||
+          errorMessage.includes('syntax error');
+        
+        if (isTableNotFound) {
+          // Extract table reference from error message
+          const tableMatch = errorMessage.match(/Not found: Table ([^\s;]+)/) ||
+                            errorDetails.match(/Not found: Table ([^\s;]+)/);
+          if (tableMatch) {
+            displayMessage = `Table not found: ${tableMatch[1]}`;
+          } else {
+            displayMessage = 'Table not found';
+          }
+        } else if (isColumnNotFound) {
+          // Clean up column error message
+          const columnMatch = errorMessage.match(/Unrecognized name: (\w+)/);
+          if (columnMatch) {
+            displayMessage = `Unknown column: ${columnMatch[1]}`;
+          }
+        } else if (isSyntaxError) {
+          // Keep the original syntax error message - it's usually descriptive
+          // Just clean up the location part for the status bar
+          displayMessage = errorMessage.replace(/; reason:.*$/, '');
+        }
+        
+        // BigQuery dry run found an error - update status bar
+        setSqlValidationStatus({
+          isValid: false,
+          errorMessage: displayMessage,
+          errorLine: errorLine,
+        });
+        
+        // Add Monaco editor markers for the BigQuery error
+        const model = editorRef.current?.getModel();
+        if (model && (window as any).monaco && errorLine) {
+          // Ensure line and column are within bounds
+          const totalLines = model.getLineCount();
+          const actualLine = Math.max(1, Math.min(errorLine, totalLines));
+          const lineLength = model.getLineLength(actualLine);
+          const actualColumn = errorColumn ? Math.max(1, Math.min(errorColumn, lineLength + 1)) : 1;
           
-          // Prevent infinite recursion for views that reference each other
-          if (visitedViews.has(tableKey)) {
-            return { bytes: 0, hasMetadata: false };
+          // Calculate end column - highlight a reasonable portion
+          let endColumn = actualColumn + 10;
+          if (isSyntaxError || isColumnNotFound) {
+            // For syntax/column errors, try to highlight the problematic token
+            const lineText = model.getLineContent(actualLine);
+            const wordMatch = lineText.substring(actualColumn - 1).match(/^\S+/);
+            if (wordMatch) {
+              endColumn = actualColumn + wordMatch[0].length;
+            }
           }
+          endColumn = Math.min(endColumn, lineLength + 1);
           
-          try {
-            const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
+          const markers: any[] = [
+            {
+              severity: (window as any).monaco.MarkerSeverity.Error,
+              startLineNumber: actualLine,
+              startColumn: actualColumn,
+              endLineNumber: actualLine,
+              endColumn: endColumn,
+              message: displayMessage,
+              source: 'BigQuery',
+            },
+          ];
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+          
+          // Add error indicator in glyph margin
+          if (editorRef.current) {
+            const decorations: any[] = [
+              {
+                range: new (window as any).monaco.Range(actualLine, 1, actualLine, 1),
+                options: {
+                  glyphMarginClassName: 'error-glyph-margin',
+                  glyphMarginHoverMessage: { value: displayMessage },
+                  minimap: {
+                    color: '#f48771',
+                  },
+                  overviewRuler: {
+                    color: '#f48771',
+                    position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
+                  },
+                },
+              },
+            ];
             
-            // If numBytes exists and is > 0, this is a regular table with data
-            if (schemaResult.metadata?.numBytes !== undefined && schemaResult.metadata.numBytes > 0) {
-              return { bytes: schemaResult.metadata.numBytes, hasMetadata: true };
-            }
-            
-            // If numBytes is 0 or undefined, this might be a view
-            // Try to get the view definition and extract underlying tables
-            try {
-              const viewResult = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-              if (viewResult.definition) {
-                // Mark this view as visited before processing its definition
-                visitedViews.add(tableKey);
-                
-                // Extract table references from the view definition
-                const viewTableRefs = extractTableReferences(viewResult.definition);
-                
-                // If no table references found in view definition, return 0 bytes but mark as having metadata
-                // so the user sees "0 bytes" rather than hiding the estimate
-                if (viewTableRefs.length === 0) {
-                  return { bytes: 0, hasMetadata: true };
-                }
-                
-                let viewTotalBytes = 0;
-                let viewHasMetadata = false;
-                
-                // Recursively get sizes for all tables referenced in the view
-                for (const ref of viewTableRefs) {
-                  const result = await getTableOrViewSize(ref.datasetId, ref.tableId, visitedViews);
-                  if (result.error) {
-                    // Propagate the first error encountered
-                    return result;
-                  }
-                  if (result.hasMetadata) {
-                    viewTotalBytes += result.bytes;
-                    viewHasMetadata = true;
-                  }
-                }
-                
-                // If we successfully processed a view, always mark as having metadata
-                // so the estimate is shown (even if 0 bytes)
-                return { bytes: viewTotalBytes, hasMetadata: true };
-              }
-            } catch {
-              // Not a view, or view definition couldn't be fetched
-              // This is normal for empty tables, just return no bytes
-            }
-            
-            // Regular table with no data, or couldn't determine view definition
-            return { bytes: 0, hasMetadata: schemaResult.metadata?.numBytes !== undefined };
-          } catch (err: any) {
-            // Handle table not found errors - will be processed below
-            throw err;
-          }
-        };
-
-        // Fetch metadata for each table/view and sum up numBytes
-        // This includes all tables from FROM and JOIN clauses
-        let totalBytes = 0;
-        let hasMetadata = false;
-        let tableNotFoundError: { message: string; tableRef: string } | null = null;
-        // Track visited views to prevent infinite loops when views reference each other
-        const visitedViews = new Set<string>();
-
-        for (const { datasetId, tableId } of tableRefs) {
-          try {
-            const result = await getTableOrViewSize(datasetId, tableId, visitedViews);
-            if (result.error) {
-              tableNotFoundError = result.error;
-              break;
-            }
-            if (result.hasMetadata) {
-              totalBytes += result.bytes;
-              hasMetadata = true;
-            }
-          } catch (err: any) {
-            // Electron IPC wraps errors, so we need to extract the actual error
-            // The error structure can be:
-            // 1. Direct error object with code/message/details
-            // 2. Error object with nested details
-            // 3. Error message string containing "[object Object]" that needs parsing
-            
-            let actualError = err;
-            let errorCode: string | undefined;
-            let errorMessage: string = '';
-            let errorDetails: any = null;
-            
-            // Try to extract the actual error from Electron IPC wrapper
-            // Electron IPC errors often have the real error nested in various places
-            if (err instanceof Error) {
-              errorMessage = err.message;
-              // Check if message contains "[object Object]" - means nested error
-              if (errorMessage.includes('[object Object]')) {
-                // Try to get the actual error from various possible locations
-                actualError = (err as any).cause || (err as any).details || (err as any).error || err;
-              } else {
-                actualError = err;
-              }
-            } else if (typeof err === 'object' && err !== null) {
-              actualError = err;
-            }
-            
-            // Extract error properties from the actual error object
-            // Try multiple possible locations for the error code and message
-            // The error thrown from main process is: { code: 'BIGQUERY_ERROR', message: 'Table not found', details: '...' }
-            // But Electron IPC wraps it, so we need to check the error object itself
-            errorCode = actualError?.code || 
-                       (actualError as any)?.error?.code ||
-                       (err as any)?.code;
-            
-            // Check if errorMessage is just "[object Object]" - if so, try to get real message from error object
-            if (!errorMessage || errorMessage.includes('[object Object]')) {
-              errorMessage = actualError?.message || 
-                            (actualError as any)?.error?.message || 
-                            (actualError as any)?.details?.message ||
-                            (err as any)?.message ||
-                            '';
-            }
-            
-            // For errorDetails, check if it's the actual error object or a string
-            errorDetails = actualError?.details || 
-                          (actualError as any)?.error?.details ||
-                          (actualError as any)?.error ||
-                          actualError?.message || 
-                          errorMessage;
-            
-            // If errorDetails is still "[object Object]", the actual error might be in err itself
-            if (String(errorDetails).includes('[object Object]')) {
-              // Try to access the error properties directly from err
-              if ((err as any)?.code) errorCode = (err as any).code;
-              if ((err as any)?.message && !(err as any).message.includes('[object Object]')) {
-                errorMessage = (err as any).message;
-              }
-              if ((err as any)?.details) {
-                errorDetails = (err as any).details;
-              }
-            }
-            
-            // If we still have "[object Object]", try to extract nested error properties
-            if (errorMessage.includes('[object Object]') || String(errorDetails).includes('[object Object]')) {
-              try {
-                // Try to access nested error properties directly
-                // Electron IPC might nest the error in different ways
-                const nestedError = (actualError as any)?.error || 
-                                   (actualError as any)?.details ||
-                                   (actualError as any)?.cause ||
-                                   actualError;
-                
-                if (nestedError && nestedError !== actualError) {
-                  errorCode = nestedError?.code;
-                  errorMessage = nestedError?.message || errorMessage;
-                  errorDetails = nestedError?.details || nestedError?.message || errorMessage;
-                }
-                
-                // Try to stringify to see the structure
-                try {
-                  const errorStr = JSON.stringify(actualError, null, 2);
-                  const parsed = JSON.parse(errorStr);
-                  if (parsed.error || parsed.details) {
-                    const extracted = parsed.error || parsed.details;
-                    errorCode = extracted?.code || errorCode;
-                    errorMessage = extracted?.message || errorMessage;
-                    errorDetails = extracted?.details || extracted?.message || errorMessage;
-                  }
-                } catch (e) {
-                  // Silently handle stringify errors
-                }
-              } catch (e) {
-                // Silently handle extraction errors
-              }
-            }
-            
-            // If errorDetails is an object, try to extract message from it
-            if (typeof errorDetails === 'object' && errorDetails !== null) {
-              if (errorDetails.message) {
-                errorMessage = errorDetails.message;
-                errorDetails = errorDetails.message;
-              } else if (Array.isArray(errorDetails) && errorDetails.length > 0) {
-                const firstDetail = errorDetails[0];
-                if (typeof firstDetail === 'object' && firstDetail.message) {
-                  errorMessage = firstDetail.message;
-                  errorDetails = firstDetail.message;
-                } else if (typeof firstDetail === 'string') {
-                  errorMessage = firstDetail;
-                  errorDetails = firstDetail;
-                }
-              } else {
-                // Try to stringify to get readable error
-                try {
-                  errorDetails = JSON.stringify(errorDetails);
-                } catch {
-                  errorDetails = String(errorDetails);
-                }
-              }
-            }
-            
-            // Convert errorDetails to string for checking
-            const errorDetailsStr = typeof errorDetails === 'string' ? errorDetails : String(errorDetails);
-            const errorMessageStr = typeof errorMessage === 'string' ? errorMessage : String(errorMessage);
-            
-            // Check for table not found error - can be identified by:
-            // 1. code === 'BIGQUERY_ERROR' and message === 'Table not found'
-            // 2. message/details containing 'Table not found' or 'Not found: Table'
-            // 3. error code 404 (BigQuery returns 404 for not found)
-            // 4. Check error object properties directly (even if message is "[object Object]")
-            // 5. If error is from getTableSchema and contains "[object Object]", it's likely table not found
-            const actualErrorCode = actualError?.code || (err as any)?.code;
-            const actualErrorMessage = actualError?.message || (err as any)?.message || errorMessageStr;
-            
-            // Check if this is an IPC error from getTableSchema - if so, check error properties
-            const isGetTableSchemaError = errorMessageStr.includes('bigquery:getTableSchema');
-            
-            // Check both the extracted strings and the error object properties directly
-            const isTableNotFound = 
-              (errorCode === 'BIGQUERY_ERROR' && errorMessageStr === 'Table not found') ||
-              (actualErrorCode === 'BIGQUERY_ERROR' && actualErrorMessage === 'Table not found') ||
-              (errorMessageStr.includes('Table not found')) ||
-              (errorMessageStr.includes('Not found: Table')) ||
-              (actualErrorMessage.includes('Table not found')) ||
-              (actualErrorMessage.includes('Not found: Table')) ||
-              (errorDetailsStr.includes('Table not found')) ||
-              (errorDetailsStr.includes('Not found: Table')) ||
-              (actualErrorCode === 404 || actualErrorCode === '404') ||
-              ((err as any)?.code === 404) ||
-              // Fallback: if it's a getTableSchema error and we can't extract details, assume table not found
-              (isGetTableSchemaError && errorMessageStr.includes('[object Object]'));
-            
-            if (isTableNotFound) {
-              const tableRef = `${datasetId}.${tableId}`;
-              // Extract table name from error details if available
-              let displayMessage = `Table not found: ${tableRef}`;
-              
-              // Try to extract the full table reference from error details
-              const fullMatch = errorDetailsStr.match(/Not found: Table ([^\s]+)/);
-              if (fullMatch) {
-                displayMessage = `Table not found: ${fullMatch[1]}`;
-              } else {
-                // Try to extract from project.dataset.table format in error message
-                const tableMatch = errorMessageStr.match(/([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)/);
-                if (tableMatch) {
-                  displayMessage = `Table not found: ${tableMatch[1]}`;
-                }
-              }
-              
-              tableNotFoundError = {
-                message: displayMessage,
-                tableRef,
-              };
-              // Break on first table not found error to show it in status bar
-              break;
-            } else {
-              // Silently skip other errors (permissions, etc.)
-              console.debug(`Could not fetch metadata for ${datasetId}.${tableId}:`, {
-                err,
-                errorCode,
-                errorMessage: errorMessageStr,
-                errorDetails: errorDetailsStr,
-              });
-            }
+            errorDecorationsRef.current = editorRef.current.deltaDecorations(
+              errorDecorationsRef.current,
+              decorations
+            );
           }
         }
-
-        // If a table was not found, update SQL validation status to show error
-        if (tableNotFoundError) {
-          setSqlValidationStatus((prev) => {
-            // Only set table not found error if SQL syntax is valid (syntax errors take precedence)
-            if (prev.isValid === true || prev.isValid === null) {
-              return {
-                isValid: false,
-                errorMessage: tableNotFoundError.message,
-                errorLine: null,
-              };
-            }
-            // Keep syntax error if it exists
-            return prev;
-          });
-          setExpectedQuerySize(null);
-        } else {
-          // Clear any previous table not found errors if all tables are valid
-          setSqlValidationStatus((prev) => {
-            // Only clear if the current error is a table not found error
-            if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-              // Clear table not found error, restore to valid if syntax was valid
-              return { isValid: true, errorMessage: null, errorLine: null };
-            }
-            // Keep other errors (syntax errors)
-            return prev;
-          });
-          setExpectedQuerySize(hasMetadata ? totalBytes : null);
-        }
-      } catch (err) {
-        console.error('Failed to calculate expected query size:', err);
+        
         setExpectedQuerySize(null);
       } finally {
         setIsLoadingQuerySize(false);
@@ -34229,9 +34163,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     };
 
     // Debounce calculation to avoid excessive API calls
-    const timeoutId = setTimeout(calculateExpectedQuerySize, 500);
+    // Use 250ms delay - fast enough for good UX, slow enough to not spam BigQuery
+    const timeoutId = setTimeout(calculateExpectedQuerySize, 250);
     return () => clearTimeout(timeoutId);
-  }, [queryText, selectedText, isConnected, connection?.projectId, sqlValidationStatus.isValid]);
+  }, [queryText, selectedText, isConnected, connection?.projectId]);
 
   // Listen for table reference insertion from DatasetTree
   useEffect(() => {
@@ -34469,9 +34404,6 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 ) : (
                   <span className="status-text status-invalid">
                     <span className="status-indicator status-indicator-invalid"></span>
-                    {sqlValidationStatus.errorLine && (
-                      <span className="status-error-line">Line {sqlValidationStatus.errorLine}: </span>
-                    )}
                     <span className="status-error-message">{sqlValidationStatus.errorMessage || 'SQL syntax error'}</span>
                   </span>
                 )}
