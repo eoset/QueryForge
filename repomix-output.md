@@ -21013,6 +21013,557 @@ app.on('will-quit', () => {
 }
 ````
 
+## File: src/renderer/components/DatasetTree/DatasetTree.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
+import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
+import type { Dataset, Table } from '../../../shared/types/dataset';
+import './DatasetTree.css';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  expanded?: boolean;
+  loading?: boolean;
+}
+
+interface DatasetTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
+  const connection = useConnectionStore((state) => state.connection);
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    dataset: Dataset;
+    table: Table;
+  } | null>(null);
+  const [sampleDataModal, setSampleDataModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+
+  const loadDatasets = useCallback(async () => {
+    if (!connection || !window.electronAPI) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const datasetList = await window.electronAPI.bigquery.listDatasets();
+      const datasetsWithState = datasetList.map((ds) => ({
+        ...ds,
+        expanded: false,
+        loading: false,
+      }));
+      setDatasets(datasetsWithState);
+      
+      // Also store in metadata store for completion provider
+      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
+      
+      // Preload tables for all datasets in the background
+      datasetList.forEach((dataset) => {
+        window.electronAPI!.bigquery
+          .listTables(dataset.id)
+          .then((tables) => {
+            setDatasetTables(dataset.id, tables);
+          })
+          .catch((err) => {
+            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
+          });
+      });
+    } catch (err: any) {
+      setError(err.message || 'Failed to load datasets');
+      console.error('Failed to load datasets:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connection, setMetadataDatasets, setDatasetTables]);
+
+  useEffect(() => {
+    if (connection) {
+      loadDatasets();
+    } else {
+      setDatasets([]);
+    }
+  }, [connection, loadDatasets]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadDatasets, isLoading);
+    }
+  }, [onRefreshReady, loadDatasets, isLoading]);
+
+  const toggleDataset = async (datasetId: string) => {
+    if (!window.electronAPI) return;
+
+    setDatasets((prev) =>
+      prev.map((ds) => {
+        if (ds.id === datasetId) {
+          if (ds.expanded) {
+            // Collapse
+            return { ...ds, expanded: false };
+          } else {
+            // Expand - load tables if not already loaded
+            if (!ds.tables) {
+              // Set loading state
+              const updated = { ...ds, expanded: true, loading: true };
+              
+              // Load tables
+              window.electronAPI.bigquery
+                .listTables(datasetId)
+                .then((tables) => {
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, tables, loading: false }
+                        : d
+                    )
+                  );
+                  // Also store in metadata store
+                  setDatasetTables(datasetId, tables);
+                })
+                .catch((err) => {
+                  console.error('Failed to load tables:', err);
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, loading: false }
+                        : d
+                    )
+                  );
+                });
+              
+              return updated;
+            }
+            return { ...ds, expanded: true };
+          }
+        }
+        return ds;
+      })
+    );
+  };
+
+  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    // Handle Ctrl/Cmd+click to insert SELECT statement
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
+      const selectStatement = `SELECT * FROM ${tableRef}`;
+      window.dispatchEvent(
+        new CustomEvent('insertTableReference', { detail: selectStatement })
+      );
+    }
+    // Regular left click does nothing (removed table insertion feature)
+  };
+
+  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
+    if (event.ctrlKey || event.metaKey) {
+      if (onShowSchema && connection?.projectId) {
+        onShowSchema(connection.projectId, dataset.id, table.id);
+      }
+      return;
+    }
+    
+    // Show context menu
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      dataset,
+      table,
+    });
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu || !connection) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const queryText = `SELECT * FROM ${tableRef}`;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, queryText);
+    updateTab(newTabId, {
+      title: `${dataset.name}.${table.name}`,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleShowSchema = () => {
+    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
+    
+    const { dataset, table } = contextMenu;
+    onShowSchema(connection.projectId, dataset.id, table.id);
+    setContextMenu(null);
+  };
+
+  const handleViewSampleData = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setSampleDataModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleViewDefinition = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setViewDefinitionModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleAddWithJoin = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
+    
+    // Get the active tab's query
+    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
+    const currentQuery = activeTab?.queryText || '';
+    
+    let newQuery: string;
+    
+    if (!currentQuery.trim()) {
+      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
+      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
+    } else {
+      const trimmedQuery = currentQuery.trim();
+      const upperQuery = trimmedQuery.toUpperCase();
+      
+      // Check if there's already a FROM clause
+      const fromMatch = upperQuery.match(/\bFROM\b/i);
+      
+      if (fromMatch) {
+        // There's already a FROM clause, add JOIN
+        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
+        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
+        
+        if (clauseMatch && clauseMatch.index !== undefined) {
+          // Insert JOIN before the clause
+          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
+          const afterClause = trimmedQuery.substring(clauseMatch.index);
+          // Find the last table reference to use in JOIN condition
+          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
+          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
+            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
+            : 't1';
+          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        } else {
+          // No WHERE/ORDER/etc clause, append JOIN at the end
+          // Try to find the first table alias from FROM clause
+          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
+          const firstTableAlias = fromTableMatch?.[1] || 't1';
+          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        }
+      } else {
+        // No FROM clause found, add FROM (can't add JOIN without a first table)
+        // Check if it starts with SELECT
+        if (upperQuery.startsWith('SELECT')) {
+          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
+        } else {
+          // Not a SELECT query, prepend SELECT and add FROM
+          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
+        }
+      }
+    }
+    
+    // Update the active tab, or create a new one if none exists
+    if (activeTab) {
+      setTabQuery(activeTab.id, newQuery);
+    } else {
+      const newTabId = createTab();
+      setTabQuery(newTabId, newQuery);
+    }
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter datasets and tables based on search term
+  const filteredDatasets = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return datasets;
+    }
+
+    const searchLower = searchTerm.toLowerCase().trim();
+    
+    return datasets
+      .filter((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+        return datasetMatches || matchingTables.length > 0;
+      })
+      .map((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+
+        return {
+          ...dataset,
+          // Auto-expand if searching and there are matching tables or dataset matches
+          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
+          // Show all tables if dataset name matches, otherwise show only matching tables
+          // Prefer local tables if available, otherwise use metadata tables
+          tables: datasetMatches 
+            ? (localTables.length > 0 ? localTables : allTables)
+            : matchingTables.length > 0 
+              ? matchingTables 
+              : (localTables.length > 0 ? localTables : allTables),
+        };
+      });
+  }, [datasets, searchTerm, getDatasetTables]);
+
+  if (!connection) {
+    return (
+      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <div className="dataset-tree-empty">Not connected</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="dataset-tree-search">
+            <input
+              type="text"
+              className="dataset-tree-search-input"
+              placeholder="Search datasets and tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                // Prevent closing context menu when typing in search
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="dataset-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="dataset-tree-content">
+            {isLoading && datasets.length === 0 && (
+              <div className="dataset-tree-skeleton">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
+                  <div key={i} className="skeleton-item">
+                    <div className="skeleton-icon" />
+                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {error && <div className="dataset-tree-error">{error}</div>}
+            {filteredDatasets.length === 0 && !isLoading && !error && (
+              <div className="dataset-tree-empty">
+                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
+              </div>
+            )}
+            {filteredDatasets.map((dataset) => (
+            <div key={dataset.id} className="dataset-item">
+              <div
+                className="dataset-header"
+                onClick={() => toggleDataset(dataset.id)}
+              >
+                <span className="dataset-icon">
+                  {dataset.expanded ? '▼' : '▶'}
+                </span>
+                <span className="dataset-name">{dataset.name}</span>
+              </div>
+              {dataset.expanded && (
+                <div className="dataset-tables">
+                  {dataset.loading ? (
+                    <div className="table-loading">Loading tables...</div>
+                  ) : (
+                    dataset.tables?.map((table) => (
+                      <div
+                        key={table.id}
+                        className="table-item"
+                        onClick={(e) => handleTableClick(e, dataset, table)}
+                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
+                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
+                      >
+                        <span className="table-icon">
+                          {table.type === 'VIEW' ? '📄' : '🗄'}
+                        </span>
+                        <span className="table-name">{table.name}</span>
+                      </div>
+                    ))
+                  )}
+                  {dataset.tables && dataset.tables.length === 0 && (
+                    <div className="table-empty">No tables</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleAddWithJoin}>
+            Add with JOIN
+          </div>
+          <div className="context-menu-item" onClick={handleViewSampleData}>
+            View sample data
+          </div>
+          {contextMenu.table.type === 'VIEW' && (
+            <div className="context-menu-item" onClick={handleViewDefinition}>
+              Show view definition
+            </div>
+          )}
+          {onShowSchema && connection?.projectId && (
+            <div className="context-menu-item" onClick={handleShowSchema}>
+              Show schema
+            </div>
+          )}
+        </div>
+      )}
+      {sampleDataModal && (
+        <SampleDataModal
+          projectId={sampleDataModal.projectId}
+          datasetId={sampleDataModal.datasetId}
+          tableId={sampleDataModal.tableId}
+          onClose={() => setSampleDataModal(null)}
+        />
+      )}
+      {viewDefinitionModal && (
+        <ViewDefinitionModal
+          projectId={viewDefinitionModal.projectId}
+          datasetId={viewDefinitionModal.datasetId}
+          tableId={viewDefinitionModal.tableId}
+          onClose={() => setViewDefinitionModal(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
+    prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
+````
+
 ## File: src/renderer/components/QueryEditor/QueryEditor.css
 ````css
 .query-editor {
@@ -21982,557 +22533,6 @@ jest.mock('@monaco-editor/react', () => ({
     return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
   },
 }));
-````
-
-## File: src/renderer/components/DatasetTree/DatasetTree.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
-import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
-import type { Dataset, Table } from '../../../shared/types/dataset';
-import './DatasetTree.css';
-
-interface DatasetWithTables extends Dataset {
-  tables?: Table[];
-  expanded?: boolean;
-  loading?: boolean;
-}
-
-interface DatasetTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
-}
-
-const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
-  const connection = useConnectionStore((state) => state.connection);
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    dataset: Dataset;
-    table: Table;
-  } | null>(null);
-  const [sampleDataModal, setSampleDataModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-
-  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
-
-  const loadDatasets = useCallback(async () => {
-    if (!connection || !window.electronAPI) {
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const datasetList = await window.electronAPI.bigquery.listDatasets();
-      const datasetsWithState = datasetList.map((ds) => ({
-        ...ds,
-        expanded: false,
-        loading: false,
-      }));
-      setDatasets(datasetsWithState);
-      
-      // Also store in metadata store for completion provider
-      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
-      
-      // Preload tables for all datasets in the background
-      datasetList.forEach((dataset) => {
-        window.electronAPI!.bigquery
-          .listTables(dataset.id)
-          .then((tables) => {
-            setDatasetTables(dataset.id, tables);
-          })
-          .catch((err) => {
-            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
-          });
-      });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load datasets');
-      console.error('Failed to load datasets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [connection, setMetadataDatasets, setDatasetTables]);
-
-  useEffect(() => {
-    if (connection) {
-      loadDatasets();
-    } else {
-      setDatasets([]);
-    }
-  }, [connection, loadDatasets]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadDatasets, isLoading);
-    }
-  }, [onRefreshReady, loadDatasets, isLoading]);
-
-  const toggleDataset = async (datasetId: string) => {
-    if (!window.electronAPI) return;
-
-    setDatasets((prev) =>
-      prev.map((ds) => {
-        if (ds.id === datasetId) {
-          if (ds.expanded) {
-            // Collapse
-            return { ...ds, expanded: false };
-          } else {
-            // Expand - load tables if not already loaded
-            if (!ds.tables) {
-              // Set loading state
-              const updated = { ...ds, expanded: true, loading: true };
-              
-              // Load tables
-              window.electronAPI.bigquery
-                .listTables(datasetId)
-                .then((tables) => {
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, tables, loading: false }
-                        : d
-                    )
-                  );
-                  // Also store in metadata store
-                  setDatasetTables(datasetId, tables);
-                })
-                .catch((err) => {
-                  console.error('Failed to load tables:', err);
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, loading: false }
-                        : d
-                    )
-                  );
-                });
-              
-              return updated;
-            }
-            return { ...ds, expanded: true };
-          }
-        }
-        return ds;
-      })
-    );
-  };
-
-  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    // Handle Ctrl/Cmd+click to insert SELECT statement
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
-      const selectStatement = `SELECT * FROM ${tableRef}`;
-      window.dispatchEvent(
-        new CustomEvent('insertTableReference', { detail: selectStatement })
-      );
-    }
-    // Regular left click does nothing (removed table insertion feature)
-  };
-
-  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
-    if (event.ctrlKey || event.metaKey) {
-      if (onShowSchema && connection?.projectId) {
-        onShowSchema(connection.projectId, dataset.id, table.id);
-      }
-      return;
-    }
-    
-    // Show context menu
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      dataset,
-      table,
-    });
-  };
-
-  const handleOpenInNewTab = () => {
-    if (!contextMenu || !connection) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const queryText = `SELECT * FROM ${tableRef}`;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, queryText);
-    updateTab(newTabId, {
-      title: `${dataset.name}.${table.name}`,
-    });
-    
-    setContextMenu(null);
-  };
-
-  const handleShowSchema = () => {
-    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
-    
-    const { dataset, table } = contextMenu;
-    onShowSchema(connection.projectId, dataset.id, table.id);
-    setContextMenu(null);
-  };
-
-  const handleViewSampleData = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setSampleDataModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
-
-  const handleViewDefinition = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setViewDefinitionModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
-
-  const handleAddWithJoin = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
-    
-    // Get the active tab's query
-    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
-    const currentQuery = activeTab?.queryText || '';
-    
-    let newQuery: string;
-    
-    if (!currentQuery.trim()) {
-      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
-      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
-    } else {
-      const trimmedQuery = currentQuery.trim();
-      const upperQuery = trimmedQuery.toUpperCase();
-      
-      // Check if there's already a FROM clause
-      const fromMatch = upperQuery.match(/\bFROM\b/i);
-      
-      if (fromMatch) {
-        // There's already a FROM clause, add JOIN
-        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
-        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
-        
-        if (clauseMatch && clauseMatch.index !== undefined) {
-          // Insert JOIN before the clause
-          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
-          const afterClause = trimmedQuery.substring(clauseMatch.index);
-          // Find the last table reference to use in JOIN condition
-          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
-          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
-            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
-            : 't1';
-          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        } else {
-          // No WHERE/ORDER/etc clause, append JOIN at the end
-          // Try to find the first table alias from FROM clause
-          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
-          const firstTableAlias = fromTableMatch?.[1] || 't1';
-          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        }
-      } else {
-        // No FROM clause found, add FROM (can't add JOIN without a first table)
-        // Check if it starts with SELECT
-        if (upperQuery.startsWith('SELECT')) {
-          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
-        } else {
-          // Not a SELECT query, prepend SELECT and add FROM
-          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
-        }
-      }
-    }
-    
-    // Update the active tab, or create a new one if none exists
-    if (activeTab) {
-      setTabQuery(activeTab.id, newQuery);
-    } else {
-      const newTabId = createTab();
-      setTabQuery(newTabId, newQuery);
-    }
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter datasets and tables based on search term
-  const filteredDatasets = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return datasets;
-    }
-
-    const searchLower = searchTerm.toLowerCase().trim();
-    
-    return datasets
-      .filter((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-        return datasetMatches || matchingTables.length > 0;
-      })
-      .map((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-
-        return {
-          ...dataset,
-          // Auto-expand if searching and there are matching tables or dataset matches
-          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
-          // Show all tables if dataset name matches, otherwise show only matching tables
-          // Prefer local tables if available, otherwise use metadata tables
-          tables: datasetMatches 
-            ? (localTables.length > 0 ? localTables : allTables)
-            : matchingTables.length > 0 
-              ? matchingTables 
-              : (localTables.length > 0 ? localTables : allTables),
-        };
-      });
-  }, [datasets, searchTerm, getDatasetTables]);
-
-  if (!connection) {
-    return (
-      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-        {!collapsed && (
-          <div className="dataset-tree-empty">Not connected</div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="dataset-tree-search">
-            <input
-              type="text"
-              className="dataset-tree-search-input"
-              placeholder="Search datasets and tables..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                // Prevent closing context menu when typing in search
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="dataset-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="dataset-tree-content">
-            {isLoading && datasets.length === 0 && (
-              <div className="dataset-tree-skeleton">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
-                  <div key={i} className="skeleton-item">
-                    <div className="skeleton-icon" />
-                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
-                  </div>
-                ))}
-              </div>
-            )}
-            {error && <div className="dataset-tree-error">{error}</div>}
-            {filteredDatasets.length === 0 && !isLoading && !error && (
-              <div className="dataset-tree-empty">
-                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
-              </div>
-            )}
-            {filteredDatasets.map((dataset) => (
-            <div key={dataset.id} className="dataset-item">
-              <div
-                className="dataset-header"
-                onClick={() => toggleDataset(dataset.id)}
-              >
-                <span className="dataset-icon">
-                  {dataset.expanded ? '▼' : '▶'}
-                </span>
-                <span className="dataset-name">{dataset.name}</span>
-              </div>
-              {dataset.expanded && (
-                <div className="dataset-tables">
-                  {dataset.loading ? (
-                    <div className="table-loading">Loading tables...</div>
-                  ) : (
-                    dataset.tables?.map((table) => (
-                      <div
-                        key={table.id}
-                        className="table-item"
-                        onClick={(e) => handleTableClick(e, dataset, table)}
-                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
-                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
-                      >
-                        <span className="table-icon">
-                          {table.type === 'VIEW' ? '📄' : '🗄'}
-                        </span>
-                        <span className="table-name">{table.name}</span>
-                      </div>
-                    ))
-                  )}
-                  {dataset.tables && dataset.tables.length === 0 && (
-                    <div className="table-empty">No tables</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleOpenInNewTab}>
-            Open in new tab
-          </div>
-          <div className="context-menu-item" onClick={handleAddWithJoin}>
-            Add with JOIN
-          </div>
-          <div className="context-menu-item" onClick={handleViewSampleData}>
-            View sample data
-          </div>
-          {contextMenu.table.type === 'VIEW' && (
-            <div className="context-menu-item" onClick={handleViewDefinition}>
-              Show view definition
-            </div>
-          )}
-          {onShowSchema && connection?.projectId && (
-            <div className="context-menu-item" onClick={handleShowSchema}>
-              Show schema
-            </div>
-          )}
-        </div>
-      )}
-      {sampleDataModal && (
-        <SampleDataModal
-          projectId={sampleDataModal.projectId}
-          datasetId={sampleDataModal.datasetId}
-          tableId={sampleDataModal.tableId}
-          onClose={() => setSampleDataModal(null)}
-        />
-      )}
-      {viewDefinitionModal && (
-        <ViewDefinitionModal
-          projectId={viewDefinitionModal.projectId}
-          datasetId={viewDefinitionModal.datasetId}
-          tableId={viewDefinitionModal.tableId}
-          onClose={() => setViewDefinitionModal(null)}
-        />
-      )}
-    </div>
-  );
-};
-
-export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
-  // Only re-render if these props change
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
-    prevProps.onShowSchema === nextProps.onShowSchema
-  );
-});
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -24730,6 +24730,475 @@ If you find QueryForge useful, please consider supporting its development:
 MIT
 ````
 
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
+import './App.css';
+
+type Theme = 'dark' | 'light';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor theme={theme} />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
+````
+
 ## File: tests/unit/renderer/utils/sql-validation.test.ts
 ````typescript
 import { parse } from 'sql-parser-cst';
@@ -25407,475 +25876,6 @@ describe('SQL Validation Utilities', () => {
     });
   });
 });
-````
-
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './themes.css';
-import './App.css';
-
-type Theme = 'dark' | 'light';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-      };
-    }
-  }, [handleToggleTheme]);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -31174,7 +31174,7 @@ export const validateGroupByColumns = async (
 ````json
 {
   "name": "query-forge",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
