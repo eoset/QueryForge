@@ -4,6 +4,7 @@
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
+    "postinstall": "electron-rebuild",
     "build": "tsc -p tsconfig.prod.json && NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
     "build:main": "tsc",
     "build:main:prod": "tsc -p tsconfig.prod.json",
@@ -34,13 +35,16 @@
   },
   "dependencies": {
     "@google-cloud/bigquery": "^7.0.0",
+    "better-sqlite3": "^12.5.0",
     "electron-store": "^10.0.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
     "@monaco-editor/react": "^4.6.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.48",

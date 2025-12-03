@@ -6,9 +6,9 @@ import { registerConnectionHandlers } from './ipc/connection';
 import { registerQueriesHandlers } from './ipc/queries';
 import { registerUISettingsHandlers } from './ipc/ui-settings';
 import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers } from './ipc/results-cache';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
 
 // Suppress error logging for "Table not found" errors from IPC handlers
 // These errors are handled in the UI and don't need console logging
@@ -381,8 +381,8 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Clear cache on app quit (for macOS)
+// Clear cache and close database on app quit (for macOS)
 app.on('will-quit', () => {
   clearAllResults();
+  closeCacheDatabase();
 });
-

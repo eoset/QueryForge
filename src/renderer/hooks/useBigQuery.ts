@@ -6,7 +6,7 @@ export function useBigQuery() {
   const connection = useConnectionStore((state) => state.connection);
 
   const executeQuery = useCallback(
-    async (queryText: string): Promise<QueryResult> => {
+    async (queryText: string, tabId?: string): Promise<QueryResult> => {
       if (!connection) {
         throw new Error('No active connection');
       }
@@ -15,7 +15,7 @@ export function useBigQuery() {
         throw new Error('Electron API not available');
       }
 
-      return await window.electronAPI.bigquery.execute(queryText, connection.projectId);
+      return await window.electronAPI.bigquery.execute(queryText, connection.projectId, tabId);
     },
     [connection]
   );

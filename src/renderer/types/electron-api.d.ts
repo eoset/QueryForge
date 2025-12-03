@@ -8,7 +8,7 @@ import type { Dataset, Table } from '../../shared/types/dataset';
 export interface ElectronAPI {
   // BigQuery operations
   bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
     cancel(jobId: string): Promise<void>;
     listDatasets(): Promise<Dataset[]>;
     listTables(datasetId: string): Promise<Table[]>;
@@ -22,6 +22,8 @@ export interface ElectronAPI {
       };
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
 
   // Connection management
@@ -62,7 +64,7 @@ export interface ElectronAPI {
     onBeforeClose(callback: () => void): () => void;
   };
 
-  // Results cache
+  // Results cache (SQLite-backed for performance with large datasets)
   resultsCache: {
     save(tabId: string, results: QueryResult): Promise<void>;
     get(tabId: string): Promise<QueryResult | null>;
@@ -76,8 +78,12 @@ export interface ElectronAPI {
       hasMore: boolean;
     } | null>;
     getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    /** Get a range of rows for virtual scrolling */
+    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
     delete(tabId: string): Promise<void>;
     clear(): Promise<void>;
+    /** Get cache statistics */
+    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
   };
 
   // Menu events

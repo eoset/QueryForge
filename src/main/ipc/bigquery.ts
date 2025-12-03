@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import { getBigQueryClient, getActiveConnection } from './connection';
 import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
 import { BigQueryErrorCode } from '../../shared/types/bigquery';
+import { saveResults, createStreamingSaver } from '../storage/results-cache-sqlite';
 
 /**
  * Serializes a value to ensure it can be cloned and sent through IPC.
@@ -599,8 +600,57 @@ function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), co
   return value;
 }
 
+// Helper function to transform raw BigQuery rows to our Row format
+function transformRows(rows: any[], columns: ColumnMetadata[]): Row[] {
+  return rows.map((row: any) => ({
+    values: columns.map((col) => {
+      const value = row[col.name];
+      
+      // Pass column type to serializeValue to help with date/time serialization
+      let serialized = serializeValue(value, new WeakSet(), col.type);
+      
+      // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
+      const colTypeUpper = (col.type || '').toUpperCase();
+      if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
+          colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
+        if (typeof serialized === 'object' && serialized !== null) {
+          const keys = Object.keys(serialized);
+          for (const key of keys) {
+            const propValue = serialized[key];
+            if (typeof propValue === 'string') {
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                serialized = propValue;
+                break;
+              }
+            }
+          }
+          if (typeof serialized === 'object' && serialized !== null) {
+            serialized = '[Invalid Date]';
+          }
+        }
+        if (typeof serialized === 'string' && serialized === '[object Object]') {
+          serialized = '[Invalid Date]';
+        }
+        if (typeof serialized !== 'string') {
+          if (serialized === null || serialized === undefined) {
+            serialized = '[Invalid Date]';
+          } else {
+            serialized = String(serialized);
+            if (serialized === '[object Object]') {
+              serialized = '[Invalid Date]';
+            }
+          }
+        }
+      }
+      
+      return serialized;
+    }),
+  }));
+}
+
 export function registerBigQueryHandlers(): void {
-  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string) => {
+  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string, tabId?: string) => {
     const client = getBigQueryClient();
     if (!client) {
       throw {
@@ -608,6 +658,9 @@ export function registerBigQueryHandlers(): void {
         message: 'No active BigQuery connection',
       };
     }
+
+    // Get the sender's webContents for streaming updates
+    const sender = _event.sender;
 
     try {
       const startTime = Date.now();
@@ -622,63 +675,50 @@ export function registerBigQueryHandlers(): void {
         location,
       });
 
-      console.log(`[BigQuery] Job created with ID: ${job.id}, location: ${location}`);
-
       // Wait for the job to complete first
-      console.log(`[BigQuery] Waiting for job to complete...`);
       const [jobResult] = await job.getMetadata();
       
       // Poll until job is done (getQueryResults should do this, but let's be explicit)
       if (jobResult.status?.state !== 'DONE') {
-        console.log(`[BigQuery] Job not done yet, waiting...`);
         await job.promise(); // This waits for the job to complete
-        console.log(`[BigQuery] Job completed after waiting`);
       }
 
-      // Now get the results - the job should be complete
-      // Use a large maxResults to get as many rows as possible per request
-      // For very large result sets, we'd need pagination, but for now get as many as possible
-      console.log(`[BigQuery] Fetching query results...`);
-      const [rows] = await job.getQueryResults({ maxResults: 100000 });
-      
-      // DEBUG: Log row count to help diagnose issues with large queries
-      console.log(`[BigQuery] Query returned ${rows?.length ?? 0} rows from getQueryResults`);
-      console.log(`[BigQuery] rows is array: ${Array.isArray(rows)}, rows type: ${typeof rows}`);
-      
-      // Get job metadata (now that job is complete)
+      // Get job metadata early to get schema and total row count
       const [jobMetadata] = await job.getMetadata();
       
-      // DEBUG: Log metadata stats
-      console.log(`[BigQuery] Job metadata - totalRowsReturned: ${jobMetadata.statistics?.query?.totalRowsReturned}, numDmlAffectedRows: ${jobMetadata.statistics?.query?.numDmlAffectedRows}`);
-      console.log(`[BigQuery] Job status: ${jobMetadata.status?.state}, errors: ${JSON.stringify(jobMetadata.status?.errors || [])}`);
-      console.log(`[BigQuery] Query stats - cacheHit: ${jobMetadata.statistics?.query?.cacheHit}, totalBytesProcessed: ${jobMetadata.statistics?.totalBytesProcessed}`);
-
-      const executionTimeMs = Date.now() - startTime;
-
-      // Transform schema to ColumnMetadata
-      // Get schema from job metadata - check multiple possible locations
+      // Get schema from job metadata
       let schema = jobMetadata.configuration?.query?.schema || 
                    jobMetadata.statistics?.query?.schema ||
                    jobMetadata.schema;
-      
+
+      // Build columns from schema
       let columns: ColumnMetadata[] = [];
-      
       if (schema?.fields && schema.fields.length > 0) {
-        // Use schema from metadata
-        columns = schema.fields.map((field: any) => {
-          return {
-            name: field.name,
-            type: field.type, // BigQuery returns types like 'DATE', 'TIME', 'DATETIME', 'TIMESTAMP'
-            mode: field.mode,
-          };
-        });
-      } else if (rows && rows.length > 0) {
-        // Fallback: extract column names and types from first row
-        // NOTE: This fallback should rarely be used if schema is available
-        const firstRow = rows[0];
+        columns = schema.fields.map((field: any) => ({
+          name: field.name,
+          type: field.type,
+          mode: field.mode,
+        }));
+      }
+
+      // Fetch first page of results
+      const [firstPageRows, firstNextQuery] = await job.getQueryResults({ maxResults: 10000 });
+      const hasMorePages = !!firstNextQuery?.pageToken;
+      
+      // Get total row count from the query response metadata
+      // This is available immediately without fetching all rows
+      // The BigQuery API returns totalRows but the TypeScript types don't include it
+      const queryMetadata = firstNextQuery as any;
+      const totalRowCount = queryMetadata?.totalRows 
+        ? parseInt(String(queryMetadata.totalRows), 10) 
+        : undefined;
+
+      // If no schema from metadata, extract from first row
+      if (columns.length === 0 && firstPageRows.length > 0) {
+        const firstRow = firstPageRows[0];
         columns = Object.keys(firstRow).map((key) => {
           const value = firstRow[key];
-          let type = 'STRING'; // Default type
+          let type = 'STRING';
           if (typeof value === 'number') {
             type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
           } else if (typeof value === 'boolean') {
@@ -688,193 +728,124 @@ export function registerBigQueryHandlers(): void {
           } else if (Array.isArray(value)) {
             type = 'ARRAY';
           } else if (value && typeof value === 'object') {
-            // CRITICAL: Check if it's a Date-like object before defaulting to RECORD
-            // BigQuery DATE/TIME objects might not be instanceof Date
-            const keyLower = key.toLowerCase();
-            let isDateLike = false;
-            let detectedType: string | null = null;
-            
-            // Check 1: Date instance or Date-like object with methods
-            if (value instanceof Date || typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-              isDateLike = true;
-              // Try to guess based on column name
-              if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
-                detectedType = 'DATE';
-              } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
-                detectedType = 'TIME';
-              } else if (keyLower.includes('datetime')) {
-                detectedType = 'DATETIME';
-              } else {
-                detectedType = 'TIMESTAMP';
-              }
-            }
-            
-            // Check 2: Object with 'value' property containing date-like string
-            if (!isDateLike && 'value' in value && typeof value.value === 'string') {
-              const valueStr = value.value;
-              if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-                isDateLike = true;
-                if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
-                  detectedType = 'DATE';
-                } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
-                  detectedType = 'TIME';
-                } else if (keyLower.includes('datetime')) {
-                  detectedType = 'DATETIME';
-                } else if (/^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-                  detectedType = 'TIMESTAMP';
-                } else if (/^\d{4}-\d{2}-\d{2}/.test(valueStr)) {
-                  detectedType = 'DATE';
-                } else if (/^\d{2}:\d{2}:\d{2}/.test(valueStr)) {
-                  detectedType = 'TIME';
-                } else {
-                  detectedType = 'TIMESTAMP';
-                }
-              }
-            }
-            
-            // Check 3: Object with year/month/day properties (DATE or DATETIME)
-            if (!isDateLike && ('year' in value || 'month' in value || 'day' in value)) {
-              isDateLike = true;
-              if (keyLower.includes('datetime') || ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-                detectedType = 'DATETIME';
-              } else {
-                detectedType = 'DATE';
-              }
-            }
-            
-            // Check 4: Object with hours/minutes/seconds but no year/month/day (TIME)
-            if (!isDateLike && ('hours' in value || 'minutes' in value || 'seconds' in value) &&
-                !('year' in value || 'month' in value || 'day' in value)) {
-              isDateLike = true;
-              detectedType = 'TIME';
-            }
-            
-            // Check 5: Column name suggests DATE/TIME even if object structure is unclear
-            if (!isDateLike && (keyLower.includes('date') || keyLower.includes('time') || 
-                                keyLower.includes('timestamp') || keyLower.includes('datetime'))) {
-              // Check if object has any string properties that look like dates
-              const keys = Object.keys(value);
-              for (const objKey of keys) {
-                const propValue = value[objKey];
-                if (typeof propValue === 'string') {
-                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                    isDateLike = true;
-                    if (keyLower.includes('date') && !keyLower.includes('time') && !keyLower.includes('timestamp')) {
-                      detectedType = 'DATE';
-                    } else if (keyLower.includes('time') && !keyLower.includes('date') && !keyLower.includes('timestamp')) {
-                      detectedType = 'TIME';
-                    } else if (keyLower.includes('datetime')) {
-                      detectedType = 'DATETIME';
-                    } else {
-                      detectedType = 'TIMESTAMP';
-                    }
-                    break;
-                  }
-                }
-              }
-            }
-            
-            if (isDateLike && detectedType) {
-              type = detectedType;
-            } else {
-              type = 'RECORD';
-            }
+            type = 'RECORD';
           }
-          return {
-            name: key,
-            type,
-            mode: 'NULLABLE',
-          };
+          return { name: key, type, mode: 'NULLABLE' };
         });
       }
 
-      // Transform rows to Row format
-      // BigQuery returns rows as objects with field names as keys
-      // Serialize all values to ensure they can be cloned and sent through IPC
-      
-      console.log(`[BigQuery] Starting row transformation for ${rows?.length ?? 0} rows with ${columns?.length ?? 0} columns`);
-      
-      const transformedRows: Row[] = rows.map((row: any) => ({
-        values: columns.map((col) => {
-          const value = row[col.name];
-          
-          // Pass column type to serializeValue to help with date/time serialization
-          let serialized = serializeValue(value, new WeakSet(), col.type);
-          
-          // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
-          // This prevents objects from being stored in cache and later displayed as "[object Object]"
-          const colTypeUpper = (col.type || '').toUpperCase();
-          if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
-              colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
-            // If serialized result is still an object, convert it to a string
-            if (typeof serialized === 'object' && serialized !== null) {
-              // Try to extract a date string from the object
-              const keys = Object.keys(serialized);
-              for (const key of keys) {
-                const propValue = serialized[key];
-                if (typeof propValue === 'string') {
-                  // Check if it looks like a date/time string
-                  if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                      /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                    serialized = propValue;
-                    break;
-                  }
-                }
-              }
-              
-              // If we still have an object, convert to placeholder string
-              if (typeof serialized === 'object' && serialized !== null) {
-                serialized = '[Invalid Date]';
-              }
-            }
-            
-            // CRITICAL: Check if serialized result is "[object Object]" string and fix it
-            if (typeof serialized === 'string' && serialized === '[object Object]') {
-              serialized = '[Invalid Date]';
-            }
-            
-            // Ensure final result is a string (not object, not null, not undefined)
-            if (typeof serialized !== 'string') {
-              if (serialized === null || serialized === undefined) {
-                serialized = '[Invalid Date]';
-              } else {
-                serialized = String(serialized);
-                // If string conversion produced "[object Object]", use placeholder
-                if (serialized === '[object Object]') {
-                  serialized = '[Invalid Date]';
-                }
-              }
-            }
-          }
-          
-          return serialized;
-        }),
-      }));
+      const executionTimeMs = Date.now() - startTime;
+      const bytesProcessed = parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10);
 
-      // Use the actual number of rows returned, or totalRowsReturned from metadata if available
-      const totalRowsReturned = parseInt(
-        jobMetadata.statistics?.query?.totalRowsReturned || 
-        jobMetadata.statistics?.totalRowsReturned || 
-        String(transformedRows.length), 
-        10
-      );
+      // Transform first page rows
+      const transformedFirstPage = transformRows(firstPageRows, columns);
 
-      const result: QueryResult = {
+      // Build initial result with first page
+      // Use totalRowCount from BigQuery metadata if available (gives accurate count immediately)
+      // Otherwise fall back to first page length (will be updated after fetching all pages)
+      const initialResult: QueryResult = {
         columns,
-        rows: transformedRows,
-        totalRows: totalRowsReturned,
-        rowsReturned: transformedRows.length,
+        rows: transformedFirstPage,
+        totalRows: totalRowCount ?? transformedFirstPage.length,
+        rowsReturned: transformedFirstPage.length,
         executionTimeMs,
-        bytesProcessed: parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10),
+        bytesProcessed,
         jobId: job.id || '',
-        hasMore: transformedRows.length < totalRowsReturned, // Indicate if there are more rows available
+        hasMore: hasMorePages,
       };
 
-      console.log(`[BigQuery] Final result: ${result.rowsReturned} rows returned, ${result.totalRows} total rows, hasMore: ${result.hasMore}`);
+      // If there are more pages, fetch them in background and send updates
+      // With SQLite-backed cache, we can handle much larger datasets
+      // 500,000 rows is a good balance between usefulness and fetch time (~1-2 min)
+      const MAX_ROWS = 500000;
+      
+      // Save first page to SQLite immediately if we have a tabId
+      if (tabId) {
+        saveResults(tabId, initialResult);
+      }
+      
+      if (hasMorePages) {
+        // Start background fetch - don't await, let it run async
+        (async () => {
+          try {
+            let pageToken = firstNextQuery?.pageToken;
+            let allRows = [...firstPageRows];
+            let pageCount = 1;
+            
+            // Fetch additional pages up to the max limit
+            while (pageToken && allRows.length < MAX_ROWS) {
+              const [rows, nextQuery] = await job.getQueryResults({ 
+                maxResults: 10000, 
+                pageToken 
+              });
+              allRows.push(...rows);
+              pageToken = nextQuery?.pageToken;
+              pageCount++;
+              
+              // Only send lightweight progress updates during fetching (no row data)
+              sender.send('bigquery:progress', {
+                jobId: job.id,
+                rowsFetched: allRows.length,
+                isComplete: false,
+                message: totalRowCount 
+                  ? `Loading... ${allRows.length.toLocaleString()} of ${Math.min(totalRowCount, MAX_ROWS).toLocaleString()} rows`
+                  : `Loading... ${allRows.length.toLocaleString()} rows`,
+              });
+              
+              // Stop if we've reached the max
+              if (allRows.length >= MAX_ROWS) {
+                break;
+              }
+            }
+            
+            // Transform all rows only once at the end
+            const transformedRows = transformRows(allRows, columns);
+            
+            // Determine if there are more rows than we fetched
+            const hitLimit = allRows.length >= MAX_ROWS && !!pageToken;
+            const actualTotalRows = totalRowCount ?? transformedRows.length;
+            
+            // Save complete results to SQLite cache (this is fast!)
+            if (tabId) {
+              const completeResult: QueryResult = {
+                columns,
+                rows: transformedRows,
+                totalRows: actualTotalRows,
+                rowsReturned: transformedRows.length,
+                executionTimeMs,
+                bytesProcessed,
+                jobId: job.id || '',
+                hasMore: hitLimit,
+              };
+              saveResults(tabId, completeResult);
+            }
+            
+            // Send lightweight notification that more rows are available
+            // No row data over IPC - renderer will read from SQLite cache
+            sender.send('bigquery:rows-update', {
+              jobId: job.id,
+              columns,
+              rows: [], // Don't send rows over IPC - they're in SQLite
+              totalRows: actualTotalRows,
+              rowsReturned: transformedRows.length,
+              executionTimeMs,
+              bytesProcessed,
+              hasMore: hitLimit, // True if we hit the limit
+              message: hitLimit 
+                ? `Showing ${transformedRows.length.toLocaleString()} of ${actualTotalRows.toLocaleString()} rows (limited to ${MAX_ROWS.toLocaleString()})`
+                : `Complete: ${transformedRows.length.toLocaleString()} rows`,
+            });
+          } catch (err) {
+            console.error('[BigQuery] Background fetch error:', err);
+            sender.send('bigquery:rows-error', {
+              jobId: job.id,
+              error: (err as Error).message || 'Failed to fetch additional rows',
+            });
+          }
+        })();
+      }
 
-      return result;
+      return initialResult;
     } catch (error: any) {
       console.error(`[BigQuery] Query execution error:`, error);
       

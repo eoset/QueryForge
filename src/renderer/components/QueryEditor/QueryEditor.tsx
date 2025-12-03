@@ -1997,14 +1997,11 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
 
     try {
-      const result = await executeQuery(queryTextToExecute);
+      const result = await executeQuery(queryTextToExecute, currentTab.id);
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
       
-      // Save results to cache for this tab BEFORE updating tab state
-      // This ensures cache is ready when QueryResults component reloads
-      if (window.electronAPI?.resultsCache) {
-        await window.electronAPI.resultsCache.save(currentTab.id, result);
-      }
+      // Results are already saved to SQLite cache by the main process
+      // No need to save again here - just update tab state
       
       // Update tab state after cache is saved
       setTabResults(currentTab.id, result);

@@ -9,7 +9,7 @@ import type { Dataset, Table } from '../shared/types/dataset';
 export interface ElectronAPI {
   // BigQuery operations
   bigquery: {
-    execute(queryText: string, projectId: string): Promise<QueryResult>;
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
     cancel(jobId: string): Promise<void>;
     listDatasets(): Promise<Dataset[]>;
     listTables(datasetId: string): Promise<Table[]>;
@@ -23,6 +23,8 @@ export interface ElectronAPI {
       };
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
 
   // Connection management
@@ -99,8 +101,8 @@ export interface ElectronAPI {
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
   bigquery: {
-    execute: (queryText: string, projectId: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId),
+    execute: (queryText: string, projectId: string, tabId?: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
     cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
     listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
     listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
@@ -108,6 +110,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
     getViewDefinition: (datasetId: string, tableId: string) =>
       ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:progress', handler);
+      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+    },
+    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:rows-update', handler);
+      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
+    },
   },
   connection: {
     configure: (config: ConnectionConfig) =>
@@ -153,8 +165,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
     getPage: (tabId: string, pageNumber: number) =>
       ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    getRange: (tabId: string, startIndex: number, count: number) =>
+      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
     delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
     clear: () => ipcRenderer.invoke('results-cache:clear'),
+    stats: () => ipcRenderer.invoke('results-cache:stats'),
   },
   menu: {
     onShowHelp: (callback: () => void) => {
