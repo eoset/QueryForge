@@ -9,6 +9,7 @@ import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import { validateGroupByColumns, buildTableAliasMapFromSelect as buildTableAliasMapFromSelectCST } from '../../utils/sql-validation';
+import { initTreeSitterParser, validateWithTreeSitter, isTreeSitterAvailable } from '../../utils/tree-sitter-validator';
 import './QueryEditor.css';
 
 interface SqlNodeLocation {
@@ -550,6 +551,17 @@ interface QueryEditorProps {
 }
 
 export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
+  // Initialize tree-sitter parser on component mount
+  const [treeSitterReady, setTreeSitterReady] = useState(false);
+  useEffect(() => {
+    initTreeSitterParser().then((success) => {
+      setTreeSitterReady(success);
+      if (success) {
+        console.log('[QueryEditor] Tree-sitter parser initialized successfully');
+      }
+    });
+  }, []);
+
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
@@ -1229,7 +1241,60 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // Validate the text (either selected or full query)
+      // === HYBRID VALIDATION: tree-sitter + sql-parser-cst ===
+      
+      // Step 1: Fast syntax validation with tree-sitter (if available)
+      // Tree-sitter excels at catching structural syntax errors
+      if (isTreeSitterAvailable()) {
+        const treeSitterErrors = validateWithTreeSitter(trimmedQuery);
+        if (treeSitterErrors.length > 0) {
+          // Tree-sitter found syntax errors - show the first one
+          const firstError = treeSitterErrors[0];
+          
+          // Set markers for all tree-sitter errors
+          const markers = treeSitterErrors.map(err => ({
+            severity: (window as any).monaco.MarkerSeverity.Error,
+            startLineNumber: err.line,
+            startColumn: err.column,
+            endLineNumber: err.line,
+            endColumn: err.column + err.length,
+            message: err.message,
+            source: 'tree-sitter',
+          }));
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+          
+          // Add error decoration in glyph margin
+          if (editorRef.current) {
+            const decorations = treeSitterErrors.map(err => ({
+              range: new (window as any).monaco.Range(err.line, 1, err.line, 1),
+              options: {
+                glyphMarginClassName: 'error-glyph-margin',
+                glyphMarginHoverMessage: { value: err.message },
+                minimap: { color: '#f48771' },
+                overviewRuler: {
+                  color: '#f48771',
+                  position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
+                },
+              },
+            }));
+            errorDecorationsRef.current = editorRef.current.deltaDecorations(
+              errorDecorationsRef.current,
+              decorations
+            );
+          }
+          
+          setSqlValidationStatus({
+            isValid: false,
+            errorMessage: firstError.message,
+            errorLine: firstError.line,
+          });
+          
+          // Still try sql-parser-cst for potentially better error messages
+          // but don't block on it - tree-sitter already found the error
+        }
+      }
+
+      // Step 2: Validate with sql-parser-cst (for detailed parsing and semantic validation)
       let parsedAst: any;
       try {
         // Try to parse the SQL using sql-parser-cst (returns CST directly)
