@@ -1,6 +1,6 @@
 {
   "name": "query-forge",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "QueryForge - Desktop application for browsing Google Cloud Platform BigQuery",
   "main": "dist/main/main.js",
   "scripts": {
