@@ -1241,17 +1241,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // === HYBRID VALIDATION: tree-sitter + sql-parser-cst ===
+      // === HYBRID VALIDATION: tree-sitter for immediate feedback, dry run for authoritative validation ===
       
       // Step 1: Fast syntax validation with tree-sitter (if available)
-      // Tree-sitter excels at catching structural syntax errors
+      // Tree-sitter provides IMMEDIATE feedback while typing
+      // But BigQuery dry run is the AUTHORITATIVE validation source when connected
       if (isTreeSitterAvailable()) {
         const treeSitterErrors = validateWithTreeSitter(trimmedQuery);
         if (treeSitterErrors.length > 0) {
-          // Tree-sitter found syntax errors - show the first one
+          // Tree-sitter found syntax errors - show immediate feedback
           const firstError = treeSitterErrors[0];
           
-          // Set markers for all tree-sitter errors
+          // Set markers for all tree-sitter errors (immediate visual feedback)
           const markers = treeSitterErrors.map(err => ({
             severity: (window as any).monaco.MarkerSeverity.Error,
             startLineNumber: err.line,
@@ -1283,11 +1284,14 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
             );
           }
           
-          setSqlValidationStatus({
-            isValid: false,
-            errorMessage: firstError.message,
-            errorLine: firstError.line,
-          });
+          // Only set status when disconnected - when connected, dry run is authoritative
+          if (!isConnected) {
+            setSqlValidationStatus({
+              isValid: false,
+              errorMessage: firstError.message,
+              errorLine: firstError.line,
+            });
+          }
           
           // Still try sql-parser-cst for potentially better error messages
           // but don't block on it - tree-sitter already found the error
@@ -1476,17 +1480,22 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           return;
         }
         
-        // Parsing succeeded - set valid status immediately
-        // (column validation may change this to invalid later if issues are found)
-        setSqlValidationStatus((prev) => {
-          // Don't overwrite table not found errors - those are handled by calculateExpectedQuerySize
-          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-            return prev;
-          }
-          return { isValid: true, errorMessage: null, errorLine: null };
-        });
+        // Parsing succeeded - provide immediate visual feedback
+        // When connected to BigQuery, dry run will be the authoritative validation source
+        // When disconnected, local validation is the only source
+        if (!isConnected) {
+          setSqlValidationStatus((prev) => {
+            // Don't overwrite table not found errors - those are handled by calculateExpectedQuerySize
+            if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+              return prev;
+            }
+            return { isValid: true, errorMessage: null, errorLine: null };
+          });
+        }
+        // When connected, don't set isValid=true here - let dry run handle it
+        // This prevents local validation from overwriting BigQuery errors
         
-        // Clear markers
+        // Clear markers (dry run may set them again if there are errors)
         (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
         
         // Clear error decorations in glyph margin
@@ -1811,8 +1820,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           );
         }
         
-        // Update status bar - invalid SQL syntax (this takes precedence over table not found)
-        setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
+        // Update status bar - only when disconnected (dry run is authoritative when connected)
+        if (!isConnected) {
+          setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
+        }
         return;
       }
 
@@ -1914,21 +1925,27 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           );
         }
 
-        setSqlValidationStatus({
-          isValid: false,
-          errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
-          errorLine: columnIssues[0]?.line ?? null,
-        });
+        // Only set validation status when disconnected - when connected, dry run is authoritative
+        if (!isConnected) {
+          setSqlValidationStatus({
+            isValid: false,
+            errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
+            errorLine: columnIssues[0]?.line ?? null,
+          });
+        }
         return;
       }
 
       // Update status bar - valid SQL syntax (no column issues)
-      setSqlValidationStatus((prev) => {
-        if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-          return prev;
-        }
-        return { isValid: true, errorMessage: null, errorLine: null };
-      });
+      // Only when disconnected - when connected, dry run handles validation status
+      if (!isConnected) {
+        setSqlValidationStatus((prev) => {
+          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
+            return prev;
+          }
+          return { isValid: true, errorMessage: null, errorLine: null };
+        });
+      }
     };
 
     // Store validation function in ref so it can be called from selection change listener
@@ -2566,8 +2583,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
-  // Calculate expected query size using BigQuery's native dry run feature
-  // This provides accurate cost estimates accounting for column selection, partitioning, and clustering
+  // Calculate expected query size AND validate syntax using BigQuery's native dry run feature
+  // Dry run is the PRIMARY validation source - it catches all syntax and semantic errors accurately
+  // Local validation (tree-sitter) is only used for immediate feedback while typing
   useEffect(() => {
     const calculateExpectedQuerySize = async () => {
       // Use selected text if available, otherwise use full query text
@@ -2578,41 +2596,31 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         return;
       }
 
-      // Skip dry run if SQL syntax is invalid from local parser (syntax errors take precedence)
-      // But still allow dry run if the error is from BigQuery (table/column not found, etc.)
-      // so we can clear those errors when fixed
-      const isBigQueryError = sqlValidationStatus.errorMessage && (
-        sqlValidationStatus.errorMessage.includes('Table not found') ||
-        sqlValidationStatus.errorMessage.includes('Unknown column') ||
-        sqlValidationStatus.errorMessage.includes('Unrecognized name')
-      );
-      const shouldSkipDryRun = sqlValidationStatus.isValid === false && !isBigQueryError;
-      
-      if (shouldSkipDryRun) {
-        setExpectedQuerySize(null);
-        return;
-      }
-
+      // ALWAYS run dry run - it's our primary validation source
+      // Don't skip based on local validation status
       setIsLoadingQuerySize(true);
       
       try {
-        // Use BigQuery's native dry run to get accurate byte estimate
+        // Use BigQuery's native dry run for BOTH validation and byte estimate
+        // This catches ALL errors: syntax, semantic, table not found, column not found, etc.
         const result = await window.electronAPI.bigquery.dryRun(textToAnalyze);
         
-        // Clear any previous BigQuery validation errors if dry run succeeded
-        setSqlValidationStatus((prev) => {
-          // Clear BigQuery errors (table/column not found, etc.) when query is now valid
-          const wasBigQueryError = prev.errorMessage && (
-            prev.errorMessage.includes('Table not found') ||
-            prev.errorMessage.includes('Unknown column') ||
-            prev.errorMessage.includes('Unrecognized name')
-          );
-          if (wasBigQueryError) {
-            return { isValid: true, errorMessage: null, errorLine: null };
+        // Dry run succeeded - query is VALID according to BigQuery
+        // Clear ALL previous errors (both local and BigQuery errors)
+        setSqlValidationStatus({ isValid: true, errorMessage: null, errorLine: null });
+        
+        // Clear Monaco editor markers since BigQuery says the query is valid
+        const model = editorRef.current?.getModel();
+        if (model && (window as any).monaco) {
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
+          // Clear error decorations in glyph margin
+          if (editorRef.current) {
+            errorDecorationsRef.current = editorRef.current.deltaDecorations(
+              errorDecorationsRef.current,
+              []
+            );
           }
-          // Keep local syntax errors
-          return prev;
-        });
+        }
         
         setExpectedQuerySize(result.totalBytesProcessed);
       } catch (err: any) {
@@ -2626,6 +2634,22 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           .replace(/^Error invoking remote method '[^']+': /, '')
           .replace(/^Error: /, '');
         
+        // Extract line and column from various error message formats
+        let errorLine: number | null = errorLocation?.line || null;
+        let errorColumn: number | null = errorLocation?.column || null;
+        
+        // Try to extract line:column from error message like "at [2:74]"
+        if (!errorLine) {
+          const lineColMatch = errorMessage.match(/at \[(\d+):(\d+)\]/);
+          if (lineColMatch) {
+            errorLine = parseInt(lineColMatch[1], 10);
+            errorColumn = parseInt(lineColMatch[2], 10);
+          }
+        }
+        
+        // Clean up error message for display
+        let displayMessage = errorMessage;
+        
         // Check for table not found errors
         const isTableNotFound = 
           errorMessage.includes('Table not found') ||
@@ -2636,24 +2660,17 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         // Check for column not found errors
         const isColumnNotFound = 
           errorMessage.includes('Unrecognized name') ||
-          errorMessage.includes('Name') && errorMessage.includes('not found');
+          (errorMessage.includes('Name') && errorMessage.includes('not found'));
         
-        // Determine the display message and line number
-        let displayMessage = errorMessage;
-        let errorLine: number | null = errorLocation?.line || null;
-        
-        // Try to extract line number from error message like "at [2:1]"
-        if (!errorLine) {
-          const lineMatch = errorMessage.match(/at \[(\d+):\d+\]/);
-          if (lineMatch) {
-            errorLine = parseInt(lineMatch[1], 10);
-          }
-        }
+        // Check for syntax errors
+        const isSyntaxError = 
+          errorMessage.includes('Syntax error') ||
+          errorMessage.includes('syntax error');
         
         if (isTableNotFound) {
           // Extract table reference from error message
-          const tableMatch = errorMessage.match(/Not found: Table ([^\s]+)/) ||
-                            errorDetails.match(/Not found: Table ([^\s]+)/);
+          const tableMatch = errorMessage.match(/Not found: Table ([^\s;]+)/) ||
+                            errorDetails.match(/Not found: Table ([^\s;]+)/);
           if (tableMatch) {
             displayMessage = `Table not found: ${tableMatch[1]}`;
           } else {
@@ -2665,28 +2682,77 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           if (columnMatch) {
             displayMessage = `Unknown column: ${columnMatch[1]}`;
           }
+        } else if (isSyntaxError) {
+          // Keep the original syntax error message - it's usually descriptive
+          // Just clean up the location part for the status bar
+          displayMessage = errorMessage.replace(/; reason:.*$/, '');
         }
         
-        // Show BigQuery validation errors in the status bar
-        // These are more accurate than local parsing as they validate against actual schema
-        if (displayMessage) {
-          setSqlValidationStatus((prev) => {
-            // Local syntax errors from tree-sitter take precedence
-            // But BigQuery errors (table/column not found, semantic errors) should be shown
-            const isLocalSyntaxError = prev.isValid === false && 
-              prev.errorMessage && 
-              !prev.errorMessage.includes('Table not found') &&
-              !prev.errorMessage.includes('Unknown column');
-            
-            if (!isLocalSyntaxError) {
-              return {
-                isValid: false,
-                errorMessage: displayMessage,
-                errorLine: errorLine,
-              };
+        // BigQuery dry run found an error - update status bar
+        setSqlValidationStatus({
+          isValid: false,
+          errorMessage: displayMessage,
+          errorLine: errorLine,
+        });
+        
+        // Add Monaco editor markers for the BigQuery error
+        const model = editorRef.current?.getModel();
+        if (model && (window as any).monaco && errorLine) {
+          // Ensure line and column are within bounds
+          const totalLines = model.getLineCount();
+          const actualLine = Math.max(1, Math.min(errorLine, totalLines));
+          const lineLength = model.getLineLength(actualLine);
+          const actualColumn = errorColumn ? Math.max(1, Math.min(errorColumn, lineLength + 1)) : 1;
+          
+          // Calculate end column - highlight a reasonable portion
+          let endColumn = actualColumn + 10;
+          if (isSyntaxError || isColumnNotFound) {
+            // For syntax/column errors, try to highlight the problematic token
+            const lineText = model.getLineContent(actualLine);
+            const wordMatch = lineText.substring(actualColumn - 1).match(/^\S+/);
+            if (wordMatch) {
+              endColumn = actualColumn + wordMatch[0].length;
             }
-            return prev;
-          });
+          }
+          endColumn = Math.min(endColumn, lineLength + 1);
+          
+          const markers: any[] = [
+            {
+              severity: (window as any).monaco.MarkerSeverity.Error,
+              startLineNumber: actualLine,
+              startColumn: actualColumn,
+              endLineNumber: actualLine,
+              endColumn: endColumn,
+              message: displayMessage,
+              source: 'BigQuery',
+            },
+          ];
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
+          
+          // Add error indicator in glyph margin
+          if (editorRef.current) {
+            const decorations: any[] = [
+              {
+                range: new (window as any).monaco.Range(actualLine, 1, actualLine, 1),
+                options: {
+                  glyphMarginClassName: 'error-glyph-margin',
+                  glyphMarginHoverMessage: { value: displayMessage },
+                  minimap: {
+                    color: '#f48771',
+                  },
+                  overviewRuler: {
+                    color: '#f48771',
+                    position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
+                  },
+                },
+              },
+            ];
+            
+            errorDecorationsRef.current = editorRef.current.deltaDecorations(
+              errorDecorationsRef.current,
+              decorations
+            );
+          }
         }
         
         setExpectedQuerySize(null);
@@ -2696,9 +2762,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     };
 
     // Debounce calculation to avoid excessive API calls
-    const timeoutId = setTimeout(calculateExpectedQuerySize, 500);
+    // Use 250ms delay - fast enough for good UX, slow enough to not spam BigQuery
+    const timeoutId = setTimeout(calculateExpectedQuerySize, 250);
     return () => clearTimeout(timeoutId);
-  }, [queryText, selectedText, isConnected, connection?.projectId, sqlValidationStatus.isValid]);
+  }, [queryText, selectedText, isConnected, connection?.projectId]);
 
   // Listen for table reference insertion from DatasetTree
   useEffect(() => {
@@ -2936,9 +3003,6 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 ) : (
                   <span className="status-text status-invalid">
                     <span className="status-indicator status-indicator-invalid"></span>
-                    {sqlValidationStatus.errorLine && (
-                      <span className="status-error-line">Line {sqlValidationStatus.errorLine}: </span>
-                    )}
                     <span className="status-error-message">{sqlValidationStatus.errorMessage || 'SQL syntax error'}</span>
                   </span>
                 )}
