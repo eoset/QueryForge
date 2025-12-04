@@ -1,0 +1,98 @@
+.export-menu {
+  position: fixed;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  box-shadow: var(--shadow-modal);
+  z-index: 1000;
+  min-width: 200px;
+  padding: 0.5rem 0;
+}
+
+.export-menu-section {
+  padding: 0.25rem 0;
+}
+
+.export-menu-header {
+  padding: 0.375rem 1rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.export-menu-item {
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.export-menu-item:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+}
+
+.export-menu-item:active:not(:disabled) {
+  background-color: var(--accent-primary);
+}
+
+.export-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-menu-icon {
+  font-size: 1rem;
+  width: 1.25rem;
+  text-align: center;
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+
+.export-menu-divider {
+  height: 1px;
+  background-color: var(--border-primary);
+  margin: 0.375rem 0;
+}
+
+/* Export button in results header */
+.export-button {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  background-color: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.export-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-primary);
+}
+
+.export-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-button-icon {
+  font-size: 0.875rem;
+}
+
+.export-button-text {
+  font-weight: 500;
+}
