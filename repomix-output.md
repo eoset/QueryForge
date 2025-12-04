@@ -7268,6 +7268,245 @@ export const SchemaSidebar: React.FC<SchemaSidebarProps> = ({
 };
 ````
 
+## File: src/renderer/components/SidebarHeader/SidebarHeader.tsx
+````typescript
+import React from 'react';
+import './SidebarHeader.css';
+
+interface SidebarHeaderProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefresh?: () => void;
+  isLoading?: boolean;
+}
+
+export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
+  collapsed = false,
+  onToggleCollapse,
+  onRefresh,
+  isLoading = false,
+}) => {
+  if (collapsed) {
+    return (
+      <div className="sidebar-header sidebar-header-collapsed">
+        <button
+          className="collapse-button"
+          onClick={onToggleCollapse}
+          title="Expand"
+        >
+          ▶
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sidebar-header">
+      <button
+        className="collapse-button"
+        onClick={onToggleCollapse}
+        title="Collapse"
+      >
+        ◀
+      </button>
+      {onRefresh && (
+        <button
+          className="refresh-button"
+          onClick={onRefresh}
+          title="Refresh"
+          disabled={isLoading}
+        >
+          ↻
+        </button>
+      )}
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
+````typescript
+import React from 'react';
+import './SidebarSwitcher.css';
+
+export type SidebarView = 'explorer' | 'saved-queries';
+
+interface SidebarSwitcherProps {
+  currentView: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+  collapsed?: boolean;
+}
+
+export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
+  currentView,
+  onViewChange,
+  collapsed = false,
+}) => {
+  if (collapsed) {
+    return null;
+  }
+
+  return (
+    <div className="sidebar-switcher">
+      <button
+        className={`sidebar-switcher-button ${currentView === 'explorer' ? 'active' : ''}`}
+        onClick={() => onViewChange('explorer')}
+        title="Explorer"
+      >
+        EXPLORER
+      </button>
+      <button
+        className={`sidebar-switcher-button ${currentView === 'saved-queries' ? 'active' : ''}`}
+        onClick={() => onViewChange('saved-queries')}
+        title="Saved Queries"
+      >
+        SAVED QUERIES
+      </button>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/TabBar/TabBar.tsx
+````typescript
+import React, { useState, useRef, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import './TabBar.css';
+
+export const TabBar: React.FC = () => {
+  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
+  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
+  const queryTabs = tabs.filter(tab => tab.type === 'query');
+  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Create a transparent drag image canvas once
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, 1, 1);
+    }
+    dragImageRef.current = canvas;
+  }, []);
+
+  const handleTabClick = (tabId: string) => {
+    setActiveTab(tabId);
+  };
+
+  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    
+    if (tab?.isModified) {
+      const confirmed = window.confirm(
+        'This tab has unsaved changes. Are you sure you want to close it?'
+      );
+      if (!confirmed) return;
+    }
+    closeTab(tabId);
+  };
+
+  const handleNewTab = () => {
+    createTab();
+  };
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    // Don't start drag if clicking on the close button
+    const target = e.target as HTMLElement;
+    if (target.closest('.tab-close')) {
+      e.preventDefault();
+      return;
+    }
+    
+    setDraggedTabIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
+    
+    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
+    if (dragImageRef.current) {
+      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedTabIndex !== null && draggedTabIndex !== index) {
+      setDragOverIndex(index);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    
+    // Map dropIndex from queryTabs array back to full tabs array
+    const dropTab = queryTabs[dropIndex];
+    if (!dropTab) {
+      setDraggedTabIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    
+    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
+    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
+    
+    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
+      reorderTabs(actualDragIndex, actualDropIndex);
+    }
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  return (
+    <div className="tab-bar">
+      <div className="tabs-container">
+        {queryTabs.map((tab, index) => (
+          <div
+            key={tab.id}
+            draggable
+            onDragStart={(e) => handleDragStart(e, index)}
+            onDragOver={(e) => handleDragOver(e, index)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, index)}
+            onDragEnd={handleDragEnd}
+            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
+              draggedTabIndex === index ? 'dragging' : ''
+            } ${dragOverIndex === index ? 'drag-over' : ''}`}
+            onClick={() => handleTabClick(tab.id)}
+          >
+            <span className="tab-title">{tab.title}</span>
+            {tab.isModified && <span className="modified-indicator">●</span>}
+            <button
+              className="tab-close"
+              onClick={(e) => handleCloseTab(e, tab.id)}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
+          +
+        </button>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/stores/bigquery-metadata-store.ts
 ````typescript
 import { create } from 'zustand';
@@ -7451,6 +7690,302 @@ export const useQueriesStore = create<QueriesState>((set, get) => ({
     );
   },
 }));
+````
+
+## File: src/renderer/stores/tabs-store.ts
+````typescript
+import { create } from 'zustand';
+import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
+
+interface TabsState {
+  tabs: QueryTab[];
+  activeTabId: string | null;
+  createTab: () => string;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  reorderTabs: (fromIndex: number, toIndex: number) => void;
+  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
+  setTabQuery: (tabId: string, queryText: string) => void;
+  setTabResults: (tabId: string, results: QueryResult) => void;
+  setTabError: (tabId: string, error: string) => void;
+  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
+  loadTabs: () => Promise<void>;
+  saveTabs: () => Promise<void>;
+}
+
+function generateTabId(): string {
+  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Debounce function for saving tabs
+let saveTimeout: NodeJS.Timeout | null = null;
+const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = setTimeout(() => {
+    saveFn().catch((error) => {
+      console.error('Failed to save tabs:', error);
+    });
+  }, delay);
+};
+
+// Filter out any legacy Explorer or Saved Queries tabs
+function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
+  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
+}
+
+export const useTabsStore = create<TabsState>((set, get) => {
+  return {
+    tabs: [
+      {
+        id: generateTabId(),
+        title: 'Query 1',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+      {
+        id: generateTabId(),
+        title: 'Query 2',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+    ],
+    activeTabId: null,
+
+    loadTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const savedTabs = await window.electronAPI.tabs.getTabs();
+        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
+        
+        // Filter out any legacy Explorer or Saved Queries tabs
+        let filteredTabs = filterStaticTabs(savedTabs || []);
+        
+        if (filteredTabs.length === 0) {
+          // No saved tabs, use default tabs
+          filteredTabs = get().tabs;
+        }
+        
+        // Ensure active tab ID is valid (not a static tab)
+        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
+        
+        if (filteredTabs.length > 0) {
+          set({
+            tabs: filteredTabs,
+            activeTabId: validActiveTabId,
+          });
+        } else {
+          // No tabs left, use default
+          const defaultTabId = get().tabs[0]?.id || null;
+          set({ activeTabId: defaultTabId });
+        }
+      } catch (error) {
+        console.error('Failed to load tabs:', error);
+        // Use default tab if loading fails
+        const defaultTabId = get().tabs[0]?.id || null;
+        set({ activeTabId: defaultTabId });
+      }
+    },
+
+    saveTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const { tabs, activeTabId } = get();
+        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
+      } catch (error) {
+        console.error('Failed to save tabs:', error);
+      }
+    },
+
+    createTab: () => {
+      const tabs = get().tabs;
+      const newTabId = generateTabId();
+      const newTab: QueryTab = {
+        id: newTabId,
+        title: `Query ${tabs.length + 1}`,
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      };
+      const updatedTabs = [...tabs, newTab];
+      set({
+        tabs: updatedTabs,
+        activeTabId: newTabId,
+      });
+      return newTabId;
+    },
+
+    closeTab: (tabId: string) => {
+      const { tabs, activeTabId } = get();
+      const tabIndex = tabs.findIndex((t) => t.id === tabId);
+      if (tabIndex === -1) return;
+
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      
+      // If closing the active tab, switch to another tab
+      let newActiveTabId = activeTabId;
+      if (activeTabId === tabId) {
+        if (newTabs.length > 0) {
+          // Switch to the tab that was before this one, or the first tab
+          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
+        } else {
+          // No tabs left
+          newActiveTabId = null;
+        }
+      }
+
+      set({
+        tabs: newTabs,
+        activeTabId: newActiveTabId,
+      });
+    },
+
+    setActiveTab: (tabId: string) => {
+      set({ activeTabId: tabId });
+    },
+
+    reorderTabs: (fromIndex: number, toIndex: number) => {
+      const { tabs } = get();
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
+        return;
+      }
+      
+      const newTabs = [...tabs];
+      const [movedTab] = newTabs.splice(fromIndex, 1);
+      newTabs.splice(toIndex, 0, movedTab);
+      
+      set({ tabs: newTabs });
+    },
+
+    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
+      set((state) => {
+        const updatedTabs = state.tabs.map((tab) =>
+          tab.id === tabId ? { ...tab, ...updates } : tab
+        );
+        return {
+          tabs: updatedTabs,
+        };
+      });
+    },
+
+    setTabQuery: (tabId: string, queryText: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab) {
+        get().updateTab(tabId, {
+          queryText,
+          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
+        });
+      }
+    },
+
+    setTabResults: (tabId: string, results: QueryResult) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        results,
+        executionStatus: 'completed',
+        error: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabError: (tabId: string, error: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        error,
+        executionStatus: 'error',
+        results: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
+      get().updateTab(tabId, { executionStatus: status });
+    },
+  };
+});
+
+// Subscribe to tab changes and auto-save (debounced)
+let previousTabs: QueryTab[] = [];
+let previousActiveTabId: string | null = null;
+
+useTabsStore.subscribe((state) => {
+  // Filter out any legacy static tabs that might have been loaded
+  const filteredTabs = filterStaticTabs(state.tabs);
+  if (filteredTabs.length !== state.tabs.length) {
+    // Found static tabs, remove them
+    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
+    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
+    return;
+  }
+  
+  // Check if tabs or activeTabId actually changed
+  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
+  
+  if (tabsChanged) {
+    previousTabs = state.tabs;
+    previousActiveTabId = state.activeTabId;
+    // Auto-save when tabs or activeTabId changes
+    debouncedSave(() => useTabsStore.getState().saveTabs());
+  }
+});
+
+// Track if initialization has been done to prevent multiple calls
+let isInitialized = false;
+
+// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
+// This function can be called multiple times safely (idempotent)
+export function initializeTabsStore(): void {
+  if (isInitialized) {
+    return; // Already initialized
+  }
+
+  if (window.electronAPI?.tabs) {
+    isInitialized = true;
+    
+    useTabsStore.getState().loadTabs().then(() => {
+      // Initialize active tab after loading
+      const state = useTabsStore.getState();
+      if (!state.activeTabId && state.tabs.length > 0) {
+        useTabsStore.setState({ activeTabId: state.tabs[0].id });
+      }
+    }).catch((error) => {
+      console.error('Failed to initialize tabs:', error);
+      // Fallback: Initialize active tab on first load if loading fails
+      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+    });
+
+    // Listen for before-close event to save tabs immediately
+    window.electronAPI.tabs.onBeforeClose(() => {
+      // Clear any pending debounced save and save immediately
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+      useTabsStore.getState().saveTabs();
+    });
+  } else {
+    // Fallback: Initialize active tab on first load if electronAPI is not available
+    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+  }
+}
+
+// Try to initialize immediately if electronAPI is already available
+// Otherwise, it will be initialized from App.tsx
+if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
+  initializeTabsStore();
+}
 ````
 
 ## File: src/renderer/utils/bigquery-formatter.ts
@@ -10291,6 +10826,557 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
 };
 ````
 
+## File: src/renderer/components/DatasetTree/DatasetTree.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
+import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
+import type { Dataset, Table } from '../../../shared/types/dataset';
+import './DatasetTree.css';
+
+interface DatasetWithTables extends Dataset {
+  tables?: Table[];
+  expanded?: boolean;
+  loading?: boolean;
+}
+
+interface DatasetTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
+  const connection = useConnectionStore((state) => state.connection);
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    dataset: Dataset;
+    table: Table;
+  } | null>(null);
+  const [sampleDataModal, setSampleDataModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+
+  const loadDatasets = useCallback(async () => {
+    if (!connection || !window.electronAPI) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const datasetList = await window.electronAPI.bigquery.listDatasets();
+      const datasetsWithState = datasetList.map((ds) => ({
+        ...ds,
+        expanded: false,
+        loading: false,
+      }));
+      setDatasets(datasetsWithState);
+      
+      // Also store in metadata store for completion provider
+      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
+      
+      // Preload tables for all datasets in the background
+      datasetList.forEach((dataset) => {
+        window.electronAPI!.bigquery
+          .listTables(dataset.id)
+          .then((tables) => {
+            setDatasetTables(dataset.id, tables);
+          })
+          .catch((err) => {
+            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
+          });
+      });
+    } catch (err: any) {
+      setError(err.message || 'Failed to load datasets');
+      console.error('Failed to load datasets:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connection, setMetadataDatasets, setDatasetTables]);
+
+  useEffect(() => {
+    if (connection) {
+      loadDatasets();
+    } else {
+      setDatasets([]);
+    }
+  }, [connection, loadDatasets]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadDatasets, isLoading);
+    }
+  }, [onRefreshReady, loadDatasets, isLoading]);
+
+  const toggleDataset = async (datasetId: string) => {
+    if (!window.electronAPI) return;
+
+    setDatasets((prev) =>
+      prev.map((ds) => {
+        if (ds.id === datasetId) {
+          if (ds.expanded) {
+            // Collapse
+            return { ...ds, expanded: false };
+          } else {
+            // Expand - load tables if not already loaded
+            if (!ds.tables) {
+              // Set loading state
+              const updated = { ...ds, expanded: true, loading: true };
+              
+              // Load tables
+              window.electronAPI.bigquery
+                .listTables(datasetId)
+                .then((tables) => {
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, tables, loading: false }
+                        : d
+                    )
+                  );
+                  // Also store in metadata store
+                  setDatasetTables(datasetId, tables);
+                })
+                .catch((err) => {
+                  console.error('Failed to load tables:', err);
+                  setDatasets((prevDatasets) =>
+                    prevDatasets.map((d) =>
+                      d.id === datasetId
+                        ? { ...d, loading: false }
+                        : d
+                    )
+                  );
+                });
+              
+              return updated;
+            }
+            return { ...ds, expanded: true };
+          }
+        }
+        return ds;
+      })
+    );
+  };
+
+  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    // Handle Ctrl/Cmd+click to insert SELECT statement
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
+      const selectStatement = `SELECT * FROM ${tableRef}`;
+      window.dispatchEvent(
+        new CustomEvent('insertTableReference', { detail: selectStatement })
+      );
+    }
+    // Regular left click does nothing (removed table insertion feature)
+  };
+
+  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
+    if (event.ctrlKey || event.metaKey) {
+      if (onShowSchema && connection?.projectId) {
+        onShowSchema(connection.projectId, dataset.id, table.id);
+      }
+      return;
+    }
+    
+    // Show context menu
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      dataset,
+      table,
+    });
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu || !connection) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const queryText = `SELECT * FROM ${tableRef}`;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, queryText);
+    updateTab(newTabId, {
+      title: `${dataset.name}.${table.name}`,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleShowSchema = () => {
+    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
+    
+    const { dataset, table } = contextMenu;
+    onShowSchema(connection.projectId, dataset.id, table.id);
+    setContextMenu(null);
+  };
+
+  const handleViewSampleData = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setSampleDataModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleViewDefinition = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    setViewDefinitionModal({
+      projectId: connection.projectId,
+      datasetId: dataset.id,
+      tableId: table.id,
+    });
+    setContextMenu(null);
+  };
+
+  const handleAddWithJoin = () => {
+    if (!contextMenu || !connection?.projectId) return;
+    
+    const { dataset, table } = contextMenu;
+    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
+    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
+    
+    // Get the active tab's query
+    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
+    const currentQuery = activeTab?.queryText || '';
+    
+    let newQuery: string;
+    
+    if (!currentQuery.trim()) {
+      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
+      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
+    } else {
+      const trimmedQuery = currentQuery.trim();
+      const upperQuery = trimmedQuery.toUpperCase();
+      
+      // Check if there's already a FROM clause
+      const fromMatch = upperQuery.match(/\bFROM\b/i);
+      
+      if (fromMatch) {
+        // There's already a FROM clause, add JOIN
+        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
+        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
+        
+        if (clauseMatch && clauseMatch.index !== undefined) {
+          // Insert JOIN before the clause
+          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
+          const afterClause = trimmedQuery.substring(clauseMatch.index);
+          // Find the last table reference to use in JOIN condition
+          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
+          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
+            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
+            : 't1';
+          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        } else {
+          // No WHERE/ORDER/etc clause, append JOIN at the end
+          // Try to find the first table alias from FROM clause
+          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
+          const firstTableAlias = fromTableMatch?.[1] || 't1';
+          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
+        }
+      } else {
+        // No FROM clause found, add FROM (can't add JOIN without a first table)
+        // Check if it starts with SELECT
+        if (upperQuery.startsWith('SELECT')) {
+          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
+        } else {
+          // Not a SELECT query, prepend SELECT and add FROM
+          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
+        }
+      }
+    }
+    
+    // Update the active tab, or create a new one if none exists
+    if (activeTab) {
+      setTabQuery(activeTab.id, newQuery);
+    } else {
+      const newTabId = createTab();
+      setTabQuery(newTabId, newQuery);
+    }
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter datasets and tables based on search term
+  const filteredDatasets = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return datasets;
+    }
+
+    const searchLower = searchTerm.toLowerCase().trim();
+    
+    return datasets
+      .filter((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+        return datasetMatches || matchingTables.length > 0;
+      })
+      .map((dataset) => {
+        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
+        // Check both local tables and metadata store tables
+        const localTables = dataset.tables || [];
+        const metadataTables = getDatasetTables(dataset.id) || [];
+        // Combine tables, preferring local if available, otherwise use metadata
+        // Deduplicate by table id
+        const tableMap = new Map<string, Table>();
+        metadataTables.forEach((table) => tableMap.set(table.id, table));
+        localTables.forEach((table) => tableMap.set(table.id, table));
+        const allTables = Array.from(tableMap.values());
+        
+        const matchingTables = allTables.filter((table) =>
+          table.name.toLowerCase().includes(searchLower)
+        );
+
+        return {
+          ...dataset,
+          // Auto-expand if searching and there are matching tables or dataset matches
+          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
+          // Show all tables if dataset name matches, otherwise show only matching tables
+          // Prefer local tables if available, otherwise use metadata tables
+          tables: datasetMatches 
+            ? (localTables.length > 0 ? localTables : allTables)
+            : matchingTables.length > 0 
+              ? matchingTables 
+              : (localTables.length > 0 ? localTables : allTables),
+        };
+      });
+  }, [datasets, searchTerm, getDatasetTables]);
+
+  if (!connection) {
+    return (
+      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <div className="dataset-tree-empty">Not connected</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="dataset-tree-search">
+            <input
+              type="text"
+              className="dataset-tree-search-input"
+              placeholder="Search datasets and tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                // Prevent closing context menu when typing in search
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="dataset-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="dataset-tree-content">
+            {isLoading && datasets.length === 0 && (
+              <div className="dataset-tree-skeleton">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
+                  <div key={i} className="skeleton-item">
+                    <div className="skeleton-icon" />
+                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {error && <div className="dataset-tree-error">{error}</div>}
+            {filteredDatasets.length === 0 && !isLoading && !error && (
+              <div className="dataset-tree-empty">
+                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
+              </div>
+            )}
+            {filteredDatasets.map((dataset) => (
+            <div key={dataset.id} className="dataset-item">
+              <div
+                className="dataset-header"
+                onClick={() => toggleDataset(dataset.id)}
+              >
+                <span className="dataset-icon">
+                  {dataset.expanded ? '▼' : '▶'}
+                </span>
+                <span className="dataset-name">{dataset.name}</span>
+              </div>
+              {dataset.expanded && (
+                <div className="dataset-tables">
+                  {dataset.loading ? (
+                    <div className="table-loading">Loading tables...</div>
+                  ) : (
+                    dataset.tables?.map((table) => (
+                      <div
+                        key={table.id}
+                        className="table-item"
+                        onClick={(e) => handleTableClick(e, dataset, table)}
+                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
+                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
+                      >
+                        <span className="table-icon">
+                          {table.type === 'VIEW' ? '📄' : '🗄'}
+                        </span>
+                        <span className="table-name">{table.name}</span>
+                      </div>
+                    ))
+                  )}
+                  {dataset.tables && dataset.tables.length === 0 && (
+                    <div className="table-empty">No tables</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleAddWithJoin}>
+            Add with JOIN
+          </div>
+          <div className="context-menu-item" onClick={handleViewSampleData}>
+            View sample data
+          </div>
+          {contextMenu.table.type === 'VIEW' && (
+            <div className="context-menu-item" onClick={handleViewDefinition}>
+              Show view definition
+            </div>
+          )}
+          {onShowSchema && connection?.projectId && (
+            <div className="context-menu-item" onClick={handleShowSchema}>
+              Show schema
+            </div>
+          )}
+        </div>
+      )}
+      {sampleDataModal && (
+        <SampleDataModal
+          projectId={sampleDataModal.projectId}
+          datasetId={sampleDataModal.datasetId}
+          tableId={sampleDataModal.tableId}
+          onClose={() => setSampleDataModal(null)}
+        />
+      )}
+      {viewDefinitionModal && (
+        <ViewDefinitionModal
+          projectId={viewDefinitionModal.projectId}
+          datasetId={viewDefinitionModal.datasetId}
+          tableId={viewDefinitionModal.tableId}
+          onClose={() => setViewDefinitionModal(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
+    prevProps.onShowSchema === nextProps.onShowSchema
+  );
+});
+````
+
 ## File: src/renderer/components/ErrorBoundary/ErrorBoundary.css
 ````css
 .error-boundary {
@@ -11048,6 +12134,263 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
 }
 ````
 
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
+````typescript
+import React, { useState, useEffect, useRef, memo } from 'react';
+import { useQueriesStore } from '../../stores/queries-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { SavedQuery } from '../../../shared/types/query';
+import './SavedQueriesTree.css';
+
+interface SavedQueriesTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
+  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    query: SavedQuery;
+  } | null>(null);
+  const [hoveredQuery, setHoveredQuery] = useState<{
+    query: SavedQuery;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    loadQueries();
+  }, [loadQueries]);
+
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadQueries, isLoading);
+    }
+  }, [onRefreshReady, loadQueries, isLoading]);
+
+  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      query,
+    });
+  };
+
+  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery({
+        query,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleQueryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredQuery(null);
+  };
+
+  const handleLoadToNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { query } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, query.sqlText);
+    updateTab(newTabId, {
+      title: query.name,
+      savedQueryId: query.id,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter queries based on search term
+  const filteredQueries = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return queries;
+    }
+    return getFilteredQueries();
+  }, [queries, searchTerm, getFilteredQueries]);
+
+  return (
+    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="saved-queries-tree-search">
+            <input
+              type="text"
+              className="saved-queries-tree-search-input"
+              placeholder="Search saved queries..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="saved-queries-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="saved-queries-tree-content">
+            {isLoading && queries.length === 0 && (
+              <div className="saved-queries-tree-loading">Loading saved queries...</div>
+            )}
+            {filteredQueries.length === 0 && !isLoading && (
+              <div className="saved-queries-tree-empty">
+                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
+              </div>
+            )}
+            {filteredQueries.map((query) => (
+              <div
+                key={query.id}
+                className="saved-query-item"
+                onContextMenu={(e) => handleQueryContextMenu(e, query)}
+                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
+                onMouseLeave={handleQueryMouseLeave}
+              >
+                <span className="saved-query-icon">📝</span>
+                <div className="saved-query-info">
+                  <span className="saved-query-name">{query.name}</span>
+                  {query.description && (
+                    <span className="saved-query-description">{query.description}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleLoadToNewTab}>
+            Open in new tab
+          </div>
+        </div>
+      )}
+      {hoveredQuery && (
+        <div
+          className="saved-query-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredQuery.x}px`,
+            top: `${hoveredQuery.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
+  );
+});
+````
+
 ## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
 ````css
 .schema-sidebar {
@@ -11261,243 +12604,107 @@ export const SampleDataModal: React.FC<SampleDataModalProps> = ({
 }
 ````
 
-## File: src/renderer/components/SidebarHeader/SidebarHeader.tsx
-````typescript
-import React from 'react';
-import './SidebarHeader.css';
-
-interface SidebarHeaderProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefresh?: () => void;
-  isLoading?: boolean;
+## File: src/renderer/components/SidebarHeader/SidebarHeader.css
+````css
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  gap: 0.5rem;
+  height: 35px;
 }
 
-export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
-  collapsed = false,
-  onToggleCollapse,
-  onRefresh,
-  isLoading = false,
-}) => {
-  if (collapsed) {
-    return (
-      <div className="sidebar-header sidebar-header-collapsed">
-        <button
-          className="collapse-button"
-          onClick={onToggleCollapse}
-          title="Expand"
-        >
-          ▶
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="sidebar-header">
-      <button
-        className="collapse-button"
-        onClick={onToggleCollapse}
-        title="Collapse"
-      >
-        ◀
-      </button>
-      {onRefresh && (
-        <button
-          className="refresh-button"
-          onClick={onRefresh}
-          title="Refresh"
-          disabled={isLoading}
-        >
-          ↻
-        </button>
-      )}
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
-````typescript
-import React from 'react';
-import './SidebarSwitcher.css';
-
-export type SidebarView = 'explorer' | 'saved-queries';
-
-interface SidebarSwitcherProps {
-  currentView: SidebarView;
-  onViewChange: (view: SidebarView) => void;
-  collapsed?: boolean;
+.sidebar-header-collapsed {
+  justify-content: center;
 }
 
-export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
-  currentView,
-  onViewChange,
-  collapsed = false,
-}) => {
-  if (collapsed) {
-    return null;
-  }
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 
-  return (
-    <div className="sidebar-switcher">
-      <button
-        className={`sidebar-switcher-button ${currentView === 'explorer' ? 'active' : ''}`}
-        onClick={() => onViewChange('explorer')}
-        title="Explorer"
-      >
-        EXPLORER
-      </button>
-      <button
-        className={`sidebar-switcher-button ${currentView === 'saved-queries' ? 'active' : ''}`}
-        onClick={() => onViewChange('saved-queries')}
-        title="Saved Queries"
-      >
-        SAVED QUERIES
-      </button>
-    </div>
-  );
-};
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 ````
 
-## File: src/renderer/components/TabBar/TabBar.tsx
-````typescript
-import React, { useState, useRef, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import './TabBar.css';
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
+````css
+.sidebar-switcher {
+  display: flex;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  padding: 0.25rem;
+  gap: 0.25rem;
+}
 
-export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
-  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
-  const queryTabs = tabs.filter(tab => tab.type === 'query');
-  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
+.sidebar-switcher-button {
+  flex: 1;
+  background-color: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  padding: 0.5rem 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 
-  // Create a transparent drag image canvas once
-  useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, 1, 1);
-    }
-    dragImageRef.current = canvas;
-  }, []);
+.sidebar-switcher-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-  const handleTabClick = (tabId: string) => {
-    setActiveTab(tabId);
-  };
-
-  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
-    e.stopPropagation();
-    const tab = queryTabs.find((t) => t.id === tabId);
-    
-    if (tab?.isModified) {
-      const confirmed = window.confirm(
-        'This tab has unsaved changes. Are you sure you want to close it?'
-      );
-      if (!confirmed) return;
-    }
-    closeTab(tabId);
-  };
-
-  const handleNewTab = () => {
-    createTab();
-  };
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    // Don't start drag if clicking on the close button
-    const target = e.target as HTMLElement;
-    if (target.closest('.tab-close')) {
-      e.preventDefault();
-      return;
-    }
-    
-    setDraggedTabIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
-    
-    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
-    if (dragImageRef.current) {
-      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (draggedTabIndex !== null && draggedTabIndex !== index) {
-      setDragOverIndex(index);
-    }
-  };
-
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    
-    // Map dropIndex from queryTabs array back to full tabs array
-    const dropTab = queryTabs[dropIndex];
-    if (!dropTab) {
-      setDraggedTabIndex(null);
-      setDragOverIndex(null);
-      return;
-    }
-    
-    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
-    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
-    
-    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
-      reorderTabs(actualDragIndex, actualDropIndex);
-    }
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  return (
-    <div className="tab-bar">
-      <div className="tabs-container">
-        {queryTabs.map((tab, index) => (
-          <div
-            key={tab.id}
-            draggable
-            onDragStart={(e) => handleDragStart(e, index)}
-            onDragOver={(e) => handleDragOver(e, index)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleDrop(e, index)}
-            onDragEnd={handleDragEnd}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
-              draggedTabIndex === index ? 'dragging' : ''
-            } ${dragOverIndex === index ? 'drag-over' : ''}`}
-            onClick={() => handleTabClick(tab.id)}
-          >
-            <span className="tab-title">{tab.title}</span>
-            {tab.isModified && <span className="modified-indicator">●</span>}
-            <button
-              className="tab-close"
-              onClick={(e) => handleCloseTab(e, tab.id)}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
-          +
-        </button>
-      </div>
-    </div>
-  );
-};
+.sidebar-switcher-button.active {
+  background-color: var(--bg-primary);
+  color: var(--text-active);
+  font-weight: 500;
+  border-bottom: 2px solid var(--accent-primary);
+}
 ````
 
 ## File: src/renderer/hooks/useBigQuery.ts
@@ -11540,302 +12747,6 @@ export function useBigQuery() {
     cancelQuery,
     isConnected: !!connection,
   };
-}
-````
-
-## File: src/renderer/stores/tabs-store.ts
-````typescript
-import { create } from 'zustand';
-import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
-
-interface TabsState {
-  tabs: QueryTab[];
-  activeTabId: string | null;
-  createTab: () => string;
-  closeTab: (tabId: string) => void;
-  setActiveTab: (tabId: string) => void;
-  reorderTabs: (fromIndex: number, toIndex: number) => void;
-  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
-  setTabQuery: (tabId: string, queryText: string) => void;
-  setTabResults: (tabId: string, results: QueryResult) => void;
-  setTabError: (tabId: string, error: string) => void;
-  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
-  loadTabs: () => Promise<void>;
-  saveTabs: () => Promise<void>;
-}
-
-function generateTabId(): string {
-  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
-
-// Debounce function for saving tabs
-let saveTimeout: NodeJS.Timeout | null = null;
-const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-  }
-  saveTimeout = setTimeout(() => {
-    saveFn().catch((error) => {
-      console.error('Failed to save tabs:', error);
-    });
-  }, delay);
-};
-
-// Filter out any legacy Explorer or Saved Queries tabs
-function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
-  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
-}
-
-export const useTabsStore = create<TabsState>((set, get) => {
-  return {
-    tabs: [
-      {
-        id: generateTabId(),
-        title: 'Query 1',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-      {
-        id: generateTabId(),
-        title: 'Query 2',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-    ],
-    activeTabId: null,
-
-    loadTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const savedTabs = await window.electronAPI.tabs.getTabs();
-        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
-        
-        // Filter out any legacy Explorer or Saved Queries tabs
-        let filteredTabs = filterStaticTabs(savedTabs || []);
-        
-        if (filteredTabs.length === 0) {
-          // No saved tabs, use default tabs
-          filteredTabs = get().tabs;
-        }
-        
-        // Ensure active tab ID is valid (not a static tab)
-        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
-        
-        if (filteredTabs.length > 0) {
-          set({
-            tabs: filteredTabs,
-            activeTabId: validActiveTabId,
-          });
-        } else {
-          // No tabs left, use default
-          const defaultTabId = get().tabs[0]?.id || null;
-          set({ activeTabId: defaultTabId });
-        }
-      } catch (error) {
-        console.error('Failed to load tabs:', error);
-        // Use default tab if loading fails
-        const defaultTabId = get().tabs[0]?.id || null;
-        set({ activeTabId: defaultTabId });
-      }
-    },
-
-    saveTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const { tabs, activeTabId } = get();
-        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
-      } catch (error) {
-        console.error('Failed to save tabs:', error);
-      }
-    },
-
-    createTab: () => {
-      const tabs = get().tabs;
-      const newTabId = generateTabId();
-      const newTab: QueryTab = {
-        id: newTabId,
-        title: `Query ${tabs.length + 1}`,
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      };
-      const updatedTabs = [...tabs, newTab];
-      set({
-        tabs: updatedTabs,
-        activeTabId: newTabId,
-      });
-      return newTabId;
-    },
-
-    closeTab: (tabId: string) => {
-      const { tabs, activeTabId } = get();
-      const tabIndex = tabs.findIndex((t) => t.id === tabId);
-      if (tabIndex === -1) return;
-
-      const newTabs = tabs.filter((t) => t.id !== tabId);
-      
-      // If closing the active tab, switch to another tab
-      let newActiveTabId = activeTabId;
-      if (activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          // Switch to the tab that was before this one, or the first tab
-          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
-        } else {
-          // No tabs left
-          newActiveTabId = null;
-        }
-      }
-
-      set({
-        tabs: newTabs,
-        activeTabId: newActiveTabId,
-      });
-    },
-
-    setActiveTab: (tabId: string) => {
-      set({ activeTabId: tabId });
-    },
-
-    reorderTabs: (fromIndex: number, toIndex: number) => {
-      const { tabs } = get();
-      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
-        return;
-      }
-      
-      const newTabs = [...tabs];
-      const [movedTab] = newTabs.splice(fromIndex, 1);
-      newTabs.splice(toIndex, 0, movedTab);
-      
-      set({ tabs: newTabs });
-    },
-
-    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
-      set((state) => {
-        const updatedTabs = state.tabs.map((tab) =>
-          tab.id === tabId ? { ...tab, ...updates } : tab
-        );
-        return {
-          tabs: updatedTabs,
-        };
-      });
-    },
-
-    setTabQuery: (tabId: string, queryText: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (tab) {
-        get().updateTab(tabId, {
-          queryText,
-          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
-        });
-      }
-    },
-
-    setTabResults: (tabId: string, results: QueryResult) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        results,
-        executionStatus: 'completed',
-        error: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabError: (tabId: string, error: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        error,
-        executionStatus: 'error',
-        results: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
-      get().updateTab(tabId, { executionStatus: status });
-    },
-  };
-});
-
-// Subscribe to tab changes and auto-save (debounced)
-let previousTabs: QueryTab[] = [];
-let previousActiveTabId: string | null = null;
-
-useTabsStore.subscribe((state) => {
-  // Filter out any legacy static tabs that might have been loaded
-  const filteredTabs = filterStaticTabs(state.tabs);
-  if (filteredTabs.length !== state.tabs.length) {
-    // Found static tabs, remove them
-    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
-    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
-    return;
-  }
-  
-  // Check if tabs or activeTabId actually changed
-  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
-  
-  if (tabsChanged) {
-    previousTabs = state.tabs;
-    previousActiveTabId = state.activeTabId;
-    // Auto-save when tabs or activeTabId changes
-    debouncedSave(() => useTabsStore.getState().saveTabs());
-  }
-});
-
-// Track if initialization has been done to prevent multiple calls
-let isInitialized = false;
-
-// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
-// This function can be called multiple times safely (idempotent)
-export function initializeTabsStore(): void {
-  if (isInitialized) {
-    return; // Already initialized
-  }
-
-  if (window.electronAPI?.tabs) {
-    isInitialized = true;
-    
-    useTabsStore.getState().loadTabs().then(() => {
-      // Initialize active tab after loading
-      const state = useTabsStore.getState();
-      if (!state.activeTabId && state.tabs.length > 0) {
-        useTabsStore.setState({ activeTabId: state.tabs[0].id });
-      }
-    }).catch((error) => {
-      console.error('Failed to initialize tabs:', error);
-      // Fallback: Initialize active tab on first load if loading fails
-      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-    });
-
-    // Listen for before-close event to save tabs immediately
-    window.electronAPI.tabs.onBeforeClose(() => {
-      // Clear any pending debounced save and save immediately
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-        saveTimeout = null;
-      }
-      useTabsStore.getState().saveTabs();
-    });
-  } else {
-    // Fallback: Initialize active tab on first load if electronAPI is not available
-    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-  }
-}
-
-// Try to initialize immediately if electronAPI is already available
-// Otherwise, it will be initialized from App.tsx
-if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
-  initializeTabsStore();
 }
 ````
 
@@ -17365,555 +18276,319 @@ module.exports = (env, argv) => {
 }
 ````
 
-## File: src/renderer/components/DatasetTree/DatasetTree.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import { SampleDataModal } from '../SampleDataModal/SampleDataModal';
-import { ViewDefinitionModal } from '../ViewDefinitionModal/ViewDefinitionModal';
-import type { Dataset, Table } from '../../../shared/types/dataset';
-import './DatasetTree.css';
-
-interface DatasetWithTables extends Dataset {
-  tables?: Table[];
-  expanded?: boolean;
-  loading?: boolean;
+## File: src/renderer/components/DatasetTree/DatasetTree.css
+````css
+.dataset-tree {
+  width: 100%;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
 }
 
-interface DatasetTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+.dataset-tree.collapsed {
+  min-width: 30px;
+  max-width: 30px;
 }
 
-const DatasetTreeComponent: React.FC<DatasetTreeProps> = ({ collapsed = false, onToggleCollapse, onShowSchema, onRefreshReady }) => {
-  const connection = useConnectionStore((state) => state.connection);
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [datasets, setDatasets] = useState<DatasetWithTables[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    dataset: Dataset;
-    table: Table;
-  } | null>(null);
-  const [sampleDataModal, setSampleDataModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const [viewDefinitionModal, setViewDefinitionModal] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
+.dataset-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  height: 35px;
+  gap: 0.5rem;
+}
 
-  const { setDatasets: setMetadataDatasets, setDatasetTables, getDatasetTables } = useBigQueryMetadataStore();
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 
-  const loadDatasets = useCallback(async () => {
-    if (!connection || !window.electronAPI) {
-      return;
-    }
+.collapse-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-    setIsLoading(true);
-    setError(null);
+.dataset-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
-    try {
-      const datasetList = await window.electronAPI.bigquery.listDatasets();
-      const datasetsWithState = datasetList.map((ds) => ({
-        ...ds,
-        expanded: false,
-        loading: false,
-      }));
-      setDatasets(datasetsWithState);
-      
-      // Also store in metadata store for completion provider
-      setMetadataDatasets(datasetList.map((ds) => ({ ...ds })));
-      
-      // Preload tables for all datasets in the background
-      datasetList.forEach((dataset) => {
-        window.electronAPI!.bigquery
-          .listTables(dataset.id)
-          .then((tables) => {
-            setDatasetTables(dataset.id, tables);
-          })
-          .catch((err) => {
-            console.warn(`Failed to preload tables for dataset ${dataset.id}:`, err);
-          });
-      });
-    } catch (err: any) {
-      setError(err.message || 'Failed to load datasets');
-      console.error('Failed to load datasets:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [connection, setMetadataDatasets, setDatasetTables]);
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
 
-  useEffect(() => {
-    if (connection) {
-      loadDatasets();
-    } else {
-      setDatasets([]);
-    }
-  }, [connection, loadDatasets]);
+.refresh-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadDatasets, isLoading);
-    }
-  }, [onRefreshReady, loadDatasets, isLoading]);
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-  const toggleDataset = async (datasetId: string) => {
-    if (!window.electronAPI) return;
+.dataset-tree-search {
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
 
-    setDatasets((prev) =>
-      prev.map((ds) => {
-        if (ds.id === datasetId) {
-          if (ds.expanded) {
-            // Collapse
-            return { ...ds, expanded: false };
-          } else {
-            // Expand - load tables if not already loaded
-            if (!ds.tables) {
-              // Set loading state
-              const updated = { ...ds, expanded: true, loading: true };
-              
-              // Load tables
-              window.electronAPI.bigquery
-                .listTables(datasetId)
-                .then((tables) => {
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, tables, loading: false }
-                        : d
-                    )
-                  );
-                  // Also store in metadata store
-                  setDatasetTables(datasetId, tables);
-                })
-                .catch((err) => {
-                  console.error('Failed to load tables:', err);
-                  setDatasets((prevDatasets) =>
-                    prevDatasets.map((d) =>
-                      d.id === datasetId
-                        ? { ...d, loading: false }
-                        : d
-                    )
-                  );
-                });
-              
-              return updated;
-            }
-            return { ...ds, expanded: true };
-          }
-        }
-        return ds;
-      })
-    );
-  };
+.dataset-tree-search-input {
+  flex: 1;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  padding: 0.375rem 0.5rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
 
-  const handleTableClick = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    // Handle Ctrl/Cmd+click to insert SELECT statement
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      const tableRef = `\`${connection?.projectId}.${dataset.id}.${table.id}\``;
-      const selectStatement = `SELECT * FROM ${tableRef}`;
-      window.dispatchEvent(
-        new CustomEvent('insertTableReference', { detail: selectStatement })
-      );
-    }
-    // Regular left click does nothing (removed table insertion feature)
-  };
+.dataset-tree-search-input:focus {
+  border-color: var(--accent-primary);
+}
 
-  const handleTableContextMenu = (event: React.MouseEvent, dataset: Dataset, table: Table) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is pressed for schema view
-    if (event.ctrlKey || event.metaKey) {
-      if (onShowSchema && connection?.projectId) {
-        onShowSchema(connection.projectId, dataset.id, table.id);
-      }
-      return;
-    }
-    
-    // Show context menu
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      dataset,
-      table,
-    });
-  };
+.dataset-tree-search-input::placeholder {
+  color: var(--text-secondary);
+}
 
-  const handleOpenInNewTab = () => {
-    if (!contextMenu || !connection) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const queryText = `SELECT * FROM ${tableRef}`;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, queryText);
-    updateTab(newTabId, {
-      title: `${dataset.name}.${table.name}`,
-    });
-    
-    setContextMenu(null);
-  };
+.dataset-tree-search-clear {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
 
-  const handleShowSchema = () => {
-    if (!contextMenu || !connection?.projectId || !onShowSchema) return;
-    
-    const { dataset, table } = contextMenu;
-    onShowSchema(connection.projectId, dataset.id, table.id);
-    setContextMenu(null);
-  };
+.dataset-tree-search-clear:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-  const handleViewSampleData = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setSampleDataModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
+.dataset-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
 
-  const handleViewDefinition = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    setViewDefinitionModal({
-      projectId: connection.projectId,
-      datasetId: dataset.id,
-      tableId: table.id,
-    });
-    setContextMenu(null);
-  };
+.dataset-tree-loading,
+.dataset-tree-error,
+.dataset-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
 
-  const handleAddWithJoin = () => {
-    if (!contextMenu || !connection?.projectId) return;
-    
-    const { dataset, table } = contextMenu;
-    const tableRef = `\`${connection.projectId}.${dataset.id}.${table.id}\``;
-    const tableAlias = table.id.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize table name for alias
-    
-    // Get the active tab's query
-    const activeTab = activeTabId ? tabs.find((t) => t.id === activeTabId) : null;
-    const currentQuery = activeTab?.queryText || '';
-    
-    let newQuery: string;
-    
-    if (!currentQuery.trim()) {
-      // If no query exists, just insert a SELECT FROM (can't JOIN without a first table)
-      newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}`;
-    } else {
-      const trimmedQuery = currentQuery.trim();
-      const upperQuery = trimmedQuery.toUpperCase();
-      
-      // Check if there's already a FROM clause
-      const fromMatch = upperQuery.match(/\bFROM\b/i);
-      
-      if (fromMatch) {
-        // There's already a FROM clause, add JOIN
-        // Find position before WHERE/ORDER/GROUP/HAVING/LIMIT
-        const clauseMatch = upperQuery.match(/\b(WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT)\b/i);
-        
-        if (clauseMatch && clauseMatch.index !== undefined) {
-          // Insert JOIN before the clause
-          const beforeClause = trimmedQuery.substring(0, clauseMatch.index).trim();
-          const afterClause = trimmedQuery.substring(clauseMatch.index);
-          // Find the last table reference to use in JOIN condition
-          const lastTableMatch = beforeClause.match(/(?:FROM|JOIN)\s+[^\s]+(?:\s+AS\s+)?(\w+)?/gi);
-          const firstTableAlias = lastTableMatch && lastTableMatch.length > 0 
-            ? (lastTableMatch[lastTableMatch.length - 1].match(/\b(?:AS\s+)?(\w+)$/i)?.[1] || 't1')
-            : 't1';
-          newQuery = `${beforeClause}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        } else {
-          // No WHERE/ORDER/etc clause, append JOIN at the end
-          // Try to find the first table alias from FROM clause
-          const fromTableMatch = trimmedQuery.match(/FROM\s+[^\s]+(?:\s+AS\s+(\w+))?/i);
-          const firstTableAlias = fromTableMatch?.[1] || 't1';
-          newQuery = `${trimmedQuery}\nJOIN ${tableRef} AS ${tableAlias} ON `;
-        }
-      } else {
-        // No FROM clause found, add FROM (can't add JOIN without a first table)
-        // Check if it starts with SELECT
-        if (upperQuery.startsWith('SELECT')) {
-          newQuery = `${trimmedQuery}\nFROM ${tableRef} AS ${tableAlias}`;
-        } else {
-          // Not a SELECT query, prepend SELECT and add FROM
-          newQuery = `SELECT *\nFROM ${tableRef} AS ${tableAlias}\n\n${trimmedQuery}`;
-        }
-      }
-    }
-    
-    // Update the active tab, or create a new one if none exists
-    if (activeTab) {
-      setTabQuery(activeTab.id, newQuery);
-    } else {
-      const newTabId = createTab();
-      setTabQuery(newTabId, newQuery);
-    }
-    
-    setContextMenu(null);
-  };
+.dataset-tree-error {
+  color: var(--text-error);
+}
 
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
+/* Skeleton loading styles */
+.dataset-tree-skeleton {
+  padding: 0.25rem 0;
+}
 
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
+.skeleton-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  gap: 0.375rem;
+}
 
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
+.skeleton-icon {
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
 
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
+.skeleton-text {
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 3px;
+}
 
-  // Filter datasets and tables based on search term
-  const filteredDatasets = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return datasets;
-    }
-
-    const searchLower = searchTerm.toLowerCase().trim();
-    
-    return datasets
-      .filter((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-        return datasetMatches || matchingTables.length > 0;
-      })
-      .map((dataset) => {
-        const datasetMatches = dataset.name.toLowerCase().includes(searchLower);
-        // Check both local tables and metadata store tables
-        const localTables = dataset.tables || [];
-        const metadataTables = getDatasetTables(dataset.id) || [];
-        // Combine tables, preferring local if available, otherwise use metadata
-        // Deduplicate by table id
-        const tableMap = new Map<string, Table>();
-        metadataTables.forEach((table) => tableMap.set(table.id, table));
-        localTables.forEach((table) => tableMap.set(table.id, table));
-        const allTables = Array.from(tableMap.values());
-        
-        const matchingTables = allTables.filter((table) =>
-          table.name.toLowerCase().includes(searchLower)
-        );
-
-        return {
-          ...dataset,
-          // Auto-expand if searching and there are matching tables or dataset matches
-          expanded: (matchingTables.length > 0 || datasetMatches) ? true : dataset.expanded,
-          // Show all tables if dataset name matches, otherwise show only matching tables
-          // Prefer local tables if available, otherwise use metadata tables
-          tables: datasetMatches 
-            ? (localTables.length > 0 ? localTables : allTables)
-            : matchingTables.length > 0 
-              ? matchingTables 
-              : (localTables.length > 0 ? localTables : allTables),
-        };
-      });
-  }, [datasets, searchTerm, getDatasetTables]);
-
-  if (!connection) {
-    return (
-      <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-        {!collapsed && (
-          <div className="dataset-tree-empty">Not connected</div>
-        )}
-      </div>
-    );
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
   }
+  100% {
+    background-position: -200% 0;
+  }
+}
 
-  return (
-    <div className={`dataset-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="dataset-tree-search">
-            <input
-              type="text"
-              className="dataset-tree-search-input"
-              placeholder="Search datasets and tables..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                // Prevent closing context menu when typing in search
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="dataset-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="dataset-tree-content">
-            {isLoading && datasets.length === 0 && (
-              <div className="dataset-tree-skeleton">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => (
-                  <div key={i} className="skeleton-item">
-                    <div className="skeleton-icon" />
-                    <div className="skeleton-text" style={{ width: `${60 + Math.random() * 30}%` }} />
-                  </div>
-                ))}
-              </div>
-            )}
-            {error && <div className="dataset-tree-error">{error}</div>}
-            {filteredDatasets.length === 0 && !isLoading && !error && (
-              <div className="dataset-tree-empty">
-                {searchTerm ? 'No matching datasets or tables found' : 'No datasets found'}
-              </div>
-            )}
-            {filteredDatasets.map((dataset) => (
-            <div key={dataset.id} className="dataset-item">
-              <div
-                className="dataset-header"
-                onClick={() => toggleDataset(dataset.id)}
-              >
-                <span className="dataset-icon">
-                  {dataset.expanded ? '▼' : '▶'}
-                </span>
-                <span className="dataset-name">{dataset.name}</span>
-              </div>
-              {dataset.expanded && (
-                <div className="dataset-tables">
-                  {dataset.loading ? (
-                    <div className="table-loading">Loading tables...</div>
-                  ) : (
-                    dataset.tables?.map((table) => (
-                      <div
-                        key={table.id}
-                        className="table-item"
-                        onClick={(e) => handleTableClick(e, dataset, table)}
-                        onContextMenu={(e) => handleTableContextMenu(e, dataset, table)}
-                        title={`${dataset.name}.${table.name} (Ctrl+Click for SELECT, Right-click for menu)`}
-                      >
-                        <span className="table-icon">
-                          {table.type === 'VIEW' ? '📄' : '🗄'}
-                        </span>
-                        <span className="table-name">{table.name}</span>
-                      </div>
-                    ))
-                  )}
-                  {dataset.tables && dataset.tables.length === 0 && (
-                    <div className="table-empty">No tables</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleOpenInNewTab}>
-            Open in new tab
-          </div>
-          <div className="context-menu-item" onClick={handleAddWithJoin}>
-            Add with JOIN
-          </div>
-          <div className="context-menu-item" onClick={handleViewSampleData}>
-            View sample data
-          </div>
-          {contextMenu.table.type === 'VIEW' && (
-            <div className="context-menu-item" onClick={handleViewDefinition}>
-              Show view definition
-            </div>
-          )}
-          {onShowSchema && connection?.projectId && (
-            <div className="context-menu-item" onClick={handleShowSchema}>
-              Show schema
-            </div>
-          )}
-        </div>
-      )}
-      {sampleDataModal && (
-        <SampleDataModal
-          projectId={sampleDataModal.projectId}
-          datasetId={sampleDataModal.datasetId}
-          tableId={sampleDataModal.tableId}
-          onClose={() => setSampleDataModal(null)}
-        />
-      )}
-      {viewDefinitionModal && (
-        <ViewDefinitionModal
-          projectId={viewDefinitionModal.projectId}
-          datasetId={viewDefinitionModal.datasetId}
-          tableId={viewDefinitionModal.tableId}
-          onClose={() => setViewDefinitionModal(null)}
-        />
-      )}
-    </div>
-  );
-};
+.dataset-item {
+  user-select: none;
+}
 
-export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => {
-  // Only re-render if these props change
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse &&
-    prevProps.onShowSchema === nextProps.onShowSchema
-  );
-});
+.dataset-header {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.dataset-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.dataset-icon {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+.dataset-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataset-tables {
+  padding-left: 1rem;
+}
+
+.table-item {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  padding-left: 1.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+  gap: 0.375rem;
+}
+
+.table-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.table-icon {
+  font-size: 0.75rem;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+.table-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-loading,
+.table-empty {
+  padding: 0.5rem 1rem;
+  padding-left: 2rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.context-menu {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  min-width: 180px;
+  padding: 0.25rem 0;
+  z-index: 1000;
+  user-select: none;
+}
+
+.context-menu-item {
+  padding: 0.5rem 1rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-active);
+}
+
+.context-menu-item:first-child {
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.context-menu-item:last-child {
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
 ````
 
 ## File: src/renderer/components/QueryResults/QueryResults.css
@@ -19010,299 +19685,58 @@ export const QueryResults: React.FC = () => {
 }
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
-````typescript
-import React, { useState, useEffect, useRef, memo } from 'react';
-import { useQueriesStore } from '../../stores/queries-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import type { SavedQuery } from '../../../shared/types/query';
-import './SavedQueriesTree.css';
-
-interface SavedQueriesTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+````css
+.saved-queries-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-primary);
+  overflow: hidden;
+  min-height: 0;
 }
 
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
-  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    query: SavedQuery;
-  } | null>(null);
-  const [hoveredQuery, setHoveredQuery] = useState<{
-    query: SavedQuery;
-    x: number;
-    y: number;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+.saved-queries-tree.collapsed {
+  width: 30px;
+}
 
-  useEffect(() => {
-    loadQueries();
-  }, [loadQueries]);
-
-  useEffect(() => {
-    setStoreSearchTerm(searchTerm);
-  }, [searchTerm, setStoreSearchTerm]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadQueries, isLoading);
-    }
-  }, [onRefreshReady, loadQueries, isLoading]);
-
-  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      query,
-    });
-  };
-
-  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    
-    // Clear any existing timeouts
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-    
-    // Add a small delay before showing tooltip
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery({
-        query,
-        x: rect.right + 8,
-        y: rect.top,
-      });
-    }, 300);
-  };
-
-  const handleQueryMouseLeave = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    // Delay hiding to allow cursor to move into tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery(null);
-    }, 100);
-  };
-
-  const handleTooltipMouseEnter = () => {
-    // Cancel the hide timeout when entering tooltip
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  };
-
-  const handleTooltipMouseLeave = () => {
-    // Hide tooltip when leaving it
-    setHoveredQuery(null);
-  };
-
-  const handleLoadToNewTab = () => {
-    if (!contextMenu) return;
-    
-    const { query } = contextMenu;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, query.sqlText);
-    updateTab(newTabId, {
-      title: query.name,
-      savedQueryId: query.id,
-      isModified: false,
-    });
-    
-    setContextMenu(null);
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter queries based on search term
-  const filteredQueries = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return queries;
-    }
-    return getFilteredQueries();
-  }, [queries, searchTerm, getFilteredQueries]);
-
-  return (
-    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="saved-queries-tree-search">
-            <input
-              type="text"
-              className="saved-queries-tree-search-input"
-              placeholder="Search saved queries..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="saved-queries-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="saved-queries-tree-content">
-            {isLoading && queries.length === 0 && (
-              <div className="saved-queries-tree-loading">Loading saved queries...</div>
-            )}
-            {filteredQueries.length === 0 && !isLoading && (
-              <div className="saved-queries-tree-empty">
-                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
-              </div>
-            )}
-            {filteredQueries.map((query) => (
-              <div
-                key={query.id}
-                className="saved-query-item"
-                onContextMenu={(e) => handleQueryContextMenu(e, query)}
-                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
-                onMouseLeave={handleQueryMouseLeave}
-              >
-                <span className="saved-query-icon">📝</span>
-                <div className="saved-query-info">
-                  <span className="saved-query-name">{query.name}</span>
-                  {query.description && (
-                    <span className="saved-query-description">{query.description}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleLoadToNewTab}>
-            Open in new tab
-          </div>
-        </div>
-      )}
-      {hoveredQuery && (
-        <div
-          className="saved-query-tooltip"
-          style={{
-            position: 'fixed',
-            left: `${hoveredQuery.x}px`,
-            top: `${hoveredQuery.y}px`,
-          }}
-          onMouseEnter={handleTooltipMouseEnter}
-          onMouseLeave={handleTooltipMouseLeave}
-        >
-          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse
-  );
-});
-````
-
-## File: src/renderer/components/SidebarHeader/SidebarHeader.css
-````css
-.sidebar-header {
+.saved-queries-tree-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   padding: 0.5rem;
   background-color: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-primary);
-  gap: 0.5rem;
-  height: 35px;
-}
-
-.sidebar-header-collapsed {
-  justify-content: center;
+  min-height: 35px;
 }
 
 .collapse-button {
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 0.75rem;
   padding: 0.25rem;
+  margin-right: 0.5rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  transition: background-color 0.15s ease;
   border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .collapse-button:hover {
-  background-color: var(--bg-hover);
+  background-color: var(--border-primary);
+}
+
+.saved-queries-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  font-weight: 400;
   color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .refresh-button {
@@ -19310,63 +19744,313 @@ export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, next
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  transition: color 0.15s ease, background-color 0.15s ease;
   border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .refresh-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
   color: var(--text-primary);
+  background-color: var(--border-primary);
 }
 
 .refresh-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
-````
 
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.css
-````css
-.sidebar-switcher {
-  display: flex;
-  background-color: var(--bg-tertiary);
+.saved-queries-tree-search {
+  padding: 0.5rem;
   border-bottom: 1px solid var(--border-primary);
-  padding: 0.25rem;
-  gap: 0.25rem;
+  position: relative;
 }
 
-.sidebar-switcher-button {
-  flex: 1;
-  background-color: transparent;
+.saved-queries-tree-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: var(--border-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
+
+.saved-queries-tree-search-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background-color: var(--bg-primary);
+}
+
+.saved-queries-tree-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.saved-queries-tree-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.saved-queries-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
+
+.saved-queries-tree-loading,
+.saved-queries-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.saved-query-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.saved-query-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.saved-query-icon {
+  margin-right: 0.5rem;
+  font-size: 1rem;
+}
+
+.saved-query-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-query-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-query-description {
   font-size: 0.75rem;
-  font-weight: 400;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
   padding: 0.5rem 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Query preview tooltip */
+.saved-query-tooltip {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-tooltip);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.saved-query-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
+````
+
+## File: src/renderer/components/TabBar/TabBar.css
+````css
+.tab-bar {
+  display: flex;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+}
+
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background-color: var(--bg-tertiary);
+  border-right: 1px solid var(--border-primary);
+  cursor: pointer;
+  user-select: none;
+  min-width: 120px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: var(--bg-hover);
+}
+
+.tab.active {
+  background-color: var(--bg-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  color: var(--text-active);
+  font-weight: 500;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid var(--accent-primary);
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: var(--accent-primary);
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.tab-close {
+  margin-left: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 3px;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.sidebar-switcher-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
+.tab-close:hover {
+  background-color: var(--accent-close-hover);
+  color: white;
 }
 
-.sidebar-switcher-button.active {
-  background-color: var(--bg-primary);
-  color: var(--text-active);
-  font-weight: 500;
-  border-bottom: 2px solid var(--accent-primary);
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: var(--text-secondary);
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid var(--border-primary);
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 ````
 
@@ -19852,6 +20536,475 @@ body {
   overflow: hidden;
   background-color: var(--bg-primary);
 }
+````
+
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
+import './App.css';
+
+type Theme = 'dark' | 'light';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor theme={theme} />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
 ````
 
 ## File: tests/unit/renderer/hooks/useBigQuery.test.ts
@@ -20812,321 +21965,6 @@ declare global {
 }
 ````
 
-## File: src/renderer/components/DatasetTree/DatasetTree.css
-````css
-.dataset-tree {
-  width: 100%;
-  flex: 1;
-  background-color: var(--bg-secondary);
-  border-right: 1px solid var(--border-primary);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.dataset-tree.collapsed {
-  min-width: 30px;
-  max-width: 30px;
-}
-
-.dataset-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  height: 35px;
-  gap: 0.5rem;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.collapse-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.dataset-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.refresh-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.dataset-tree-search {
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.dataset-tree-search-input {
-  flex: 1;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.dataset-tree-search-input:focus {
-  border-color: var(--accent-primary);
-}
-
-.dataset-tree-search-input::placeholder {
-  color: var(--text-secondary);
-}
-
-.dataset-tree-search-clear {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.dataset-tree-search-clear:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.dataset-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
-
-.dataset-tree-loading,
-.dataset-tree-error,
-.dataset-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.dataset-tree-error {
-  color: var(--text-error);
-}
-
-/* Skeleton loading styles */
-.dataset-tree-skeleton {
-  padding: 0.25rem 0;
-}
-
-.skeleton-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  gap: 0.375rem;
-}
-
-.skeleton-icon {
-  width: 12px;
-  height: 12px;
-  background: linear-gradient(
-    90deg,
-    var(--bg-tertiary) 25%,
-    var(--bg-hover) 50%,
-    var(--bg-tertiary) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.skeleton-text {
-  height: 14px;
-  background: linear-gradient(
-    90deg,
-    var(--bg-tertiary) 25%,
-    var(--bg-hover) 50%,
-    var(--bg-tertiary) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
-  border-radius: 3px;
-}
-
-@keyframes skeleton-shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-
-.dataset-item {
-  user-select: none;
-}
-
-.dataset-header {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.dataset-header:hover {
-  background-color: var(--bg-hover);
-}
-
-.dataset-icon {
-  font-size: 0.625rem;
-  color: var(--text-secondary);
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-}
-
-.dataset-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dataset-tables {
-  padding-left: 1rem;
-}
-
-.table-item {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  padding-left: 1.5rem;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.table-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.table-icon {
-  font-size: 0.75rem;
-  width: 16px;
-  display: inline-block;
-  text-align: center;
-}
-
-.table-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-loading,
-.table-empty {
-  padding: 0.5rem 1rem;
-  padding-left: 2rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  font-style: italic;
-}
-
-.context-menu {
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  box-shadow: var(--shadow-dropdown);
-  min-width: 180px;
-  padding: 0.25rem 0;
-  z-index: 1000;
-  user-select: none;
-}
-
-.context-menu-item {
-  padding: 0.5rem 1rem;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover {
-  background-color: var(--bg-active);
-}
-
-.context-menu-item:first-child {
-  border-top-left-radius: 3px;
-  border-top-right-radius: 3px;
-}
-
-.context-menu-item:last-child {
-  border-bottom-left-radius: 3px;
-  border-bottom-right-radius: 3px;
-}
-````
-
 ## File: src/renderer/components/QueryEditor/QueryEditor.css
 ````css
 .query-editor {
@@ -21491,844 +22329,6 @@ declare global {
   cursor: not-allowed;
   color: var(--text-disabled);
 }
-````
-
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
-````css
-.saved-queries-tree {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  background-color: var(--bg-secondary);
-  color: var(--text-primary);
-  border-right: 1px solid var(--border-primary);
-  overflow: hidden;
-  min-height: 0;
-}
-
-.saved-queries-tree.collapsed {
-  width: 30px;
-}
-
-.saved-queries-tree-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  min-height: 35px;
-}
-
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  margin-right: 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.collapse-button:hover {
-  background-color: var(--border-primary);
-}
-
-.saved-queries-tree-title {
-  flex: 1;
-  font-size: 0.8125rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.refresh-button:hover:not(:disabled) {
-  color: var(--text-primary);
-  background-color: var(--border-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.saved-queries-tree-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  position: relative;
-}
-
-.saved-queries-tree-search-input {
-  width: 100%;
-  padding: 0.375rem 0.5rem;
-  background-color: var(--border-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-}
-
-.saved-queries-tree-search-input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-  background-color: var(--bg-primary);
-}
-
-.saved-queries-tree-search-clear {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease;
-}
-
-.saved-queries-tree-search-clear:hover {
-  color: var(--text-primary);
-}
-
-.saved-queries-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem;
-}
-
-.saved-queries-tree-loading,
-.saved-queries-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.saved-query-item {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  cursor: pointer;
-  border-radius: 3px;
-  margin-bottom: 0.25rem;
-  transition: background-color 0.15s ease;
-}
-
-.saved-query-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.saved-query-icon {
-  margin-right: 0.5rem;
-  font-size: 1rem;
-}
-
-.saved-query-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.saved-query-name {
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.saved-query-description {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.context-menu {
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  box-shadow: var(--shadow-dropdown);
-  z-index: 1000;
-  min-width: 150px;
-}
-
-.context-menu-item {
-  padding: 0.5rem 0.75rem;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.context-menu-item:hover:not(.disabled) {
-  background-color: var(--bg-hover);
-}
-
-.context-menu-item.disabled {
-  color: var(--text-secondary);
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* Query preview tooltip */
-.saved-query-tooltip {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  box-shadow: var(--shadow-tooltip);
-  z-index: 1000;
-  max-width: 400px;
-  min-width: 200px;
-  max-height: 300px;
-  overflow: hidden;
-}
-
-.saved-query-tooltip-code {
-  margin: 0;
-  padding: 0.75rem;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  max-height: 284px;
-}
-````
-
-## File: src/renderer/components/TabBar/TabBar.css
-````css
-.tab-bar {
-  display: flex;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-}
-
-.tabs-container {
-  display: flex;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  align-items: center;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  background-color: var(--bg-tertiary);
-  border-right: 1px solid var(--border-primary);
-  cursor: pointer;
-  user-select: none;
-  min-width: 120px;
-  max-width: 200px;
-  position: relative;
-  height: 35px;
-  color: var(--text-primary);
-  transition: background-color 0.15s ease;
-}
-
-.tab[draggable='true'] {
-  cursor: grab;
-}
-
-.tab[draggable='true']:active {
-  cursor: grabbing;
-}
-
-.tab:hover {
-  background-color: var(--bg-hover);
-}
-
-.tab.active {
-  background-color: var(--bg-primary);
-  border-bottom: 2px solid var(--accent-primary);
-  color: var(--text-active);
-  font-weight: 500;
-}
-
-.tab.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.tab.drag-over {
-  border-left: 2px solid var(--accent-primary);
-  padding-left: calc(0.75rem - 2px);
-}
-
-.tab.modified .tab-title::after {
-  content: '';
-}
-
-.tab-title {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
-}
-
-.modified-indicator {
-  color: var(--accent-primary);
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-}
-
-.tab-close {
-  margin-left: 0.5rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  color: var(--text-secondary);
-  padding: 0;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.tab-close:hover {
-  background-color: var(--accent-close-hover);
-  color: white;
-}
-
-.tab-close:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.tab-close:disabled:hover {
-  background-color: transparent;
-  color: var(--text-secondary);
-}
-
-.new-tab-button {
-  padding: 0 0.75rem;
-  background: none;
-  border: none;
-  border-left: 1px solid var(--border-primary);
-  cursor: pointer;
-  font-size: 1.25rem;
-  color: var(--text-secondary);
-  font-weight: 300;
-  height: 35px;
-  display: flex;
-  align-items: center;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
-
-.new-tab-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
-````
-
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './themes.css';
-import './App.css';
-
-type Theme = 'dark' | 'light';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-      };
-    }
-  }, [handleToggleTheme]);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
 ````
 
 ## File: tests/setup.ts
@@ -31265,7 +31265,7 @@ export const validateGroupByColumns = async (
   "main": "dist/main/main.js",
   "scripts": {
     "postinstall": "electron-rebuild",
-    "build": "tsc -p tsconfig.prod.json && NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
+    "build": "tsc -p tsconfig.prod.json && cross-env NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
     "build:main": "tsc",
     "build:main:prod": "tsc -p tsconfig.prod.json",
     "build:renderer": "webpack --config webpack.renderer.config.js",
@@ -31314,6 +31314,7 @@ export const validateGroupByColumns = async (
     "@typescript-eslint/parser": "^6.19.0",
     "chokidar-cli": "^3.0.0",
     "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
     "css-loader": "^7.1.2",
     "electron": "^35.7.5",
     "electron-builder": "^24.9.1",
