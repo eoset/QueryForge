@@ -551,9 +551,17 @@ interface QueryEditorProps {
 }
 
 export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
+  // Set this to true to disable tree-sitter and sql-parser-cst validation
+  // and rely solely on BigQuery's dry run for validation feedback
+  const SKIP_LOCAL_VALIDATION = true;
+  
   // Initialize tree-sitter parser on component mount
   const [treeSitterReady, setTreeSitterReady] = useState(false);
   useEffect(() => {
+    if (SKIP_LOCAL_VALIDATION) {
+      console.log('[QueryEditor] Local validation DISABLED - using BigQuery dry run only');
+      return;
+    }
     initTreeSitterParser().then((success) => {
       setTreeSitterReady(success);
       if (success) {
@@ -1124,6 +1132,16 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
 
     const validateSQL = async () => {
+      // === EXPERIMENT: Skip local validation entirely ===
+      if (SKIP_LOCAL_VALIDATION) {
+        // When skipping local validation, do nothing here
+        // BigQuery dry run (in calculateExpectedQuerySize) will handle all validation
+        // IMPORTANT: Don't clear markers or reset validation status here!
+        // The dry run sets these, and we don't want to overwrite them on every
+        // keystroke/navigation event
+        return;
+      }
+      
       const model = editorRef.current?.getModel();
       if (!model || !(window as any).monaco) return;
 
@@ -2591,7 +2609,14 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       // Use selected text if available, otherwise use full query text
       const textToAnalyze = selectedText.trim() || queryText.trim();
       
-      if (!textToAnalyze || !isConnected || !connection?.projectId || !window.electronAPI) {
+      if (!textToAnalyze) {
+        // Query is empty - reset validation status and byte estimate
+        setExpectedQuerySize(null);
+        setSqlValidationStatus({ isValid: null, errorMessage: null, errorLine: null });
+        return;
+      }
+      
+      if (!isConnected || !connection?.projectId || !window.electronAPI) {
         setExpectedQuerySize(null);
         return;
       }
@@ -2998,7 +3023,11 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 ) : sqlValidationStatus.isValid ? (
                   <span className="status-text status-valid">
                     <span className="status-indicator status-indicator-valid"></span>
-                    SQL Syntax is valid
+                    {expectedQuerySize !== null 
+                      ? `This query will process ${formatBytes(expectedQuerySize)} when run`
+                      : isLoadingQuerySize 
+                        ? 'Validating query...'
+                        : 'Query is valid'}
                   </span>
                 ) : (
                   <span className="status-text status-invalid">
@@ -3007,18 +3036,6 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                   </span>
                 )}
               </div>
-              {expectedQuerySize !== null && (
-                <div className="status-right">
-                  <span className="status-text">
-                    Estimated query size: {formatBytes(expectedQuerySize)}
-                  </span>
-                </div>
-              )}
-              {isLoadingQuerySize && expectedQuerySize === null && (
-                <div className="status-right">
-                  <span className="status-text">Calculating query size...</span>
-                </div>
-              )}
             </div>
           </>
         ) : (
