@@ -5,7 +5,7 @@
   "main": "dist/main/main.js",
   "scripts": {
     "postinstall": "electron-rebuild",
-    "build": "tsc -p tsconfig.prod.json && NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
+    "build": "tsc -p tsconfig.prod.json && cross-env NODE_ENV=production webpack --config webpack.renderer.config.js --mode production",
     "build:main": "tsc",
     "build:main:prod": "tsc -p tsconfig.prod.json",
     "build:renderer": "webpack --config webpack.renderer.config.js",
@@ -54,6 +54,7 @@
     "@typescript-eslint/parser": "^6.19.0",
     "chokidar-cli": "^3.0.0",
     "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
     "css-loader": "^7.1.2",
     "electron": "^35.7.5",
     "electron-builder": "^24.9.1",
