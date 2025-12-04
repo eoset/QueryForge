@@ -86,6 +86,7 @@ src/
     ipc/
       bigquery.ts
       connection.ts
+      export.ts
       queries.ts
       results-cache.ts
       tabs.ts
@@ -123,6 +124,8 @@ src/
         CanvasTable.tsx
         ColumnSortMenu.css
         ColumnSortMenu.tsx
+        ExportMenu.css
+        ExportMenu.tsx
         QueryResults.css
         QueryResults.tsx
         RowContextMenu.css
@@ -163,6 +166,7 @@ src/
     utils/
       bigquery-completions.ts
       bigquery-formatter.ts
+      export-utils.ts
       sql-validation.ts
       tree-sitter-validator.ts
     App.css
@@ -203,6 +207,7 @@ tests/
         tabs-store.test.ts
       utils/
         bigquery-completions-subquery.test.ts
+        export-utils.test.ts
         sql-validation.test.ts
         tree-sitter-validator.test.ts
       App.test.tsx
@@ -9843,6 +9848,84 @@ export function getActiveConnection(): ConnectionConfiguration | null {
 }
 ````
 
+## File: src/main/ipc/export.ts
+````typescript
+import { ipcMain, dialog, BrowserWindow } from 'electron';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface ExportOptions {
+  format: 'csv' | 'json';
+  defaultFilename?: string;
+}
+
+export interface ExportResult {
+  success: boolean;
+  filePath?: string;
+  error?: string;
+}
+
+/**
+ * Register IPC handlers for file export operations
+ */
+export function registerExportHandlers(): void {
+  // Handler for showing save dialog and writing file
+  ipcMain.handle(
+    'export:saveFile',
+    async (
+      _event,
+      content: string,
+      options: ExportOptions
+    ): Promise<ExportResult> => {
+      try {
+        const focusedWindow = BrowserWindow.getFocusedWindow();
+
+        const filters =
+          options.format === 'csv'
+            ? [{ name: 'CSV Files', extensions: ['csv'] }]
+            : [{ name: 'JSON Files', extensions: ['json'] }];
+
+        const defaultPath = options.defaultFilename
+          ? `${options.defaultFilename}.${options.format}`
+          : `query-results.${options.format}`;
+
+        const dialogOptions: Electron.SaveDialogOptions = {
+          title: `Export as ${options.format.toUpperCase()}`,
+          defaultPath,
+          filters,
+          properties: ['createDirectory', 'showOverwriteConfirmation'],
+        };
+
+        const result = focusedWindow
+          ? await dialog.showSaveDialog(focusedWindow, dialogOptions)
+          : await dialog.showSaveDialog(dialogOptions);
+
+        if (result.canceled || !result.filePath) {
+          return { success: false };
+        }
+
+        // Ensure the file has the correct extension
+        let filePath = result.filePath;
+        const expectedExtension = `.${options.format}`;
+        if (!filePath.toLowerCase().endsWith(expectedExtension)) {
+          filePath += expectedExtension;
+        }
+
+        // Write the file
+        await fs.promises.writeFile(filePath, content, 'utf-8');
+
+        return { success: true, filePath };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error occurred';
+        console.error('Failed to export file:', errorMessage);
+        return { success: false, error: errorMessage };
+      }
+    }
+  );
+}
+````
+
 ## File: src/main/ipc/results-cache.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -11652,6 +11735,232 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
 }
 ````
 
+## File: src/renderer/components/QueryResults/ExportMenu.css
+````css
+.export-menu {
+  position: fixed;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  box-shadow: var(--shadow-modal);
+  z-index: 1000;
+  min-width: 200px;
+  padding: 0.5rem 0;
+}
+
+.export-menu-section {
+  padding: 0.25rem 0;
+}
+
+.export-menu-header {
+  padding: 0.375rem 1rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.export-menu-item {
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.export-menu-item:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+}
+
+.export-menu-item:active:not(:disabled) {
+  background-color: var(--accent-primary);
+}
+
+.export-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-menu-icon {
+  font-size: 1rem;
+  width: 1.25rem;
+  text-align: center;
+  filter: grayscale(1);
+  opacity: 0.7;
+}
+
+.export-menu-divider {
+  height: 1px;
+  background-color: var(--border-primary);
+  margin: 0.375rem 0;
+}
+
+/* Export button in results header */
+.export-button {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  background-color: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.export-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-primary);
+}
+
+.export-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-button-icon {
+  font-size: 0.875rem;
+}
+
+.export-button-text {
+  font-weight: 500;
+}
+````
+
+## File: src/renderer/components/QueryResults/ExportMenu.tsx
+````typescript
+import React, { useEffect, useRef } from 'react';
+import './ExportMenu.css';
+
+export type ExportFormat = 'csv' | 'json' | 'clipboard-csv' | 'clipboard-json';
+
+interface ExportMenuProps {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onExport: (format: ExportFormat) => void;
+  isExporting?: boolean;
+}
+
+export const ExportMenu: React.FC<ExportMenuProps> = ({
+  x,
+  y,
+  onClose,
+  onExport,
+  isExporting = false,
+}) => {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    // Position menu to stay within viewport
+    if (menuRef.current) {
+      const rect = menuRef.current.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      let adjustedX = x;
+      let adjustedY = y;
+
+      if (x + rect.width > viewportWidth) {
+        adjustedX = viewportWidth - rect.width - 10;
+      }
+      if (y + rect.height > viewportHeight) {
+        adjustedY = viewportHeight - rect.height - 10;
+      }
+
+      menuRef.current.style.left = `${adjustedX}px`;
+      menuRef.current.style.top = `${adjustedY}px`;
+    }
+  }, [x, y]);
+
+  const handleExport = (format: ExportFormat) => {
+    if (!isExporting) {
+      onExport(format);
+    }
+  };
+
+  return (
+    <div
+      ref={menuRef}
+      className="export-menu"
+      style={{ left: `${x}px`, top: `${y}px` }}
+    >
+      <div className="export-menu-section">
+        <div className="export-menu-header">Export to File</div>
+        <button
+          className="export-menu-item"
+          onClick={() => handleExport('csv')}
+          disabled={isExporting}
+        >
+          <span className="export-menu-icon">📄</span>
+          Export as CSV
+        </button>
+        <button
+          className="export-menu-item"
+          onClick={() => handleExport('json')}
+          disabled={isExporting}
+        >
+          <span className="export-menu-icon">📋</span>
+          Export as JSON
+        </button>
+      </div>
+      <div className="export-menu-divider" />
+      <div className="export-menu-section">
+        <div className="export-menu-header">Copy to Clipboard</div>
+        <button
+          className="export-menu-item"
+          onClick={() => handleExport('clipboard-csv')}
+          disabled={isExporting}
+        >
+          <span className="export-menu-icon">📝</span>
+          Copy all as CSV
+        </button>
+        <button
+          className="export-menu-item"
+          onClick={() => handleExport('clipboard-json')}
+          disabled={isExporting}
+        >
+          <span className="export-menu-icon">📝</span>
+          Copy all as JSON
+        </button>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/QueryResults/RowContextMenu.css
 ````css
 .row-context-menu {
@@ -12882,6 +13191,123 @@ export function useBigQuery() {
     cancelQuery,
     isConnected: !!connection,
   };
+}
+````
+
+## File: src/renderer/utils/export-utils.ts
+````typescript
+import type { ColumnMetadata, Row } from '../../shared/types/query';
+
+/**
+ * Format a value for CSV export, handling special characters and types
+ */
+function formatCSVValue(value: unknown, columnType?: string): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  // Handle different types
+  if (typeof value === 'object') {
+    // Arrays and objects - convert to JSON string
+    const jsonStr = JSON.stringify(value);
+    // Escape quotes and wrap in quotes if contains special chars
+    if (jsonStr.includes(',') || jsonStr.includes('"') || jsonStr.includes('\n') || jsonStr.includes('\r')) {
+      return `"${jsonStr.replace(/"/g, '""')}"`;
+    }
+    return jsonStr;
+  }
+
+  const strValue = String(value);
+
+  // Check if value needs quoting (contains comma, quote, or newline)
+  if (strValue.includes(',') || strValue.includes('"') || strValue.includes('\n') || strValue.includes('\r')) {
+    // Escape double quotes by doubling them
+    return `"${strValue.replace(/"/g, '""')}"`;
+  }
+
+  return strValue;
+}
+
+/**
+ * Convert query results to CSV format
+ */
+export function resultsToCSV(columns: ColumnMetadata[], rows: Row[]): string {
+  // Header row
+  const headers = columns.map(col => formatCSVValue(col.name)).join(',');
+
+  // Data rows
+  const dataRows = rows.map(row => {
+    return row.values.map((value: unknown, idx: number) => {
+      const column = columns[idx];
+      return formatCSVValue(value, column?.type);
+    }).join(',');
+  });
+
+  return [headers, ...dataRows].join('\n');
+}
+
+/**
+ * Convert query results to JSON format
+ * Returns an array of objects with column names as keys
+ */
+export function resultsToJSON(columns: ColumnMetadata[], rows: Row[]): string {
+  const data = rows.map(row => {
+    const obj: Record<string, unknown> = {};
+    row.values.forEach((value: unknown, idx: number) => {
+      const columnName = columns[idx]?.name || `column_${idx}`;
+      obj[columnName] = value;
+    });
+    return obj;
+  });
+
+  return JSON.stringify(data, null, 2);
+}
+
+/**
+ * Export results to a file via Electron's save dialog
+ */
+export async function exportResultsToFile(
+  columns: ColumnMetadata[],
+  rows: Row[],
+  format: 'csv' | 'json',
+  defaultFilename?: string
+): Promise<{ success: boolean; filePath?: string; error?: string }> {
+  try {
+    const content = format === 'csv' 
+      ? resultsToCSV(columns, rows)
+      : resultsToJSON(columns, rows);
+
+    const result = await window.electronAPI.export.saveFile(content, {
+      format,
+      defaultFilename,
+    });
+
+    return result;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Copy results to clipboard in the specified format
+ */
+export async function copyResultsToClipboard(
+  columns: ColumnMetadata[],
+  rows: Row[],
+  format: 'csv' | 'json'
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const content = format === 'csv'
+      ? resultsToCSV(columns, rows)
+      : resultsToJSON(columns, rows);
+
+    await navigator.clipboard.writeText(content);
+    return { success: true };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Failed to copy to clipboard';
+    return { success: false, error: errorMessage };
+  }
 }
 ````
 
@@ -17039,6 +17465,165 @@ describe('BigQuery Completions - Subquery Context Detection', () => {
 });
 ````
 
+## File: tests/unit/renderer/utils/export-utils.test.ts
+````typescript
+import { resultsToCSV, resultsToJSON } from '../../../../src/renderer/utils/export-utils';
+import type { ColumnMetadata, Row } from '../../../../src/shared/types/query';
+
+describe('Export Utilities', () => {
+  const mockColumns: ColumnMetadata[] = [
+    { name: 'id', type: 'INTEGER' },
+    { name: 'name', type: 'STRING' },
+    { name: 'value', type: 'FLOAT' },
+    { name: 'active', type: 'BOOLEAN' },
+  ];
+
+  const mockRows: Row[] = [
+    { values: [1, 'Alice', 100.5, true] },
+    { values: [2, 'Bob', 200.75, false] },
+    { values: [3, 'Charlie', 300.25, true] },
+  ];
+
+  describe('resultsToCSV', () => {
+    it('should convert results to CSV format', () => {
+      const csv = resultsToCSV(mockColumns, mockRows);
+      const lines = csv.split('\n');
+
+      expect(lines[0]).toBe('id,name,value,active');
+      expect(lines[1]).toBe('1,Alice,100.5,true');
+      expect(lines[2]).toBe('2,Bob,200.75,false');
+      expect(lines[3]).toBe('3,Charlie,300.25,true');
+    });
+
+    it('should handle empty rows', () => {
+      const csv = resultsToCSV(mockColumns, []);
+      expect(csv).toBe('id,name,value,active');
+    });
+
+    it('should escape values with commas', () => {
+      const rows: Row[] = [{ values: [1, 'Hello, World', 100, true] }];
+      const csv = resultsToCSV(mockColumns, rows);
+      const lines = csv.split('\n');
+
+      expect(lines[1]).toBe('1,"Hello, World",100,true');
+    });
+
+    it('should escape values with quotes', () => {
+      const rows: Row[] = [{ values: [1, 'He said "Hello"', 100, true] }];
+      const csv = resultsToCSV(mockColumns, rows);
+      const lines = csv.split('\n');
+
+      expect(lines[1]).toBe('1,"He said ""Hello""",100,true');
+    });
+
+    it('should escape values with newlines', () => {
+      const rows: Row[] = [{ values: [1, 'Line1\nLine2', 100, true] }];
+      const csv = resultsToCSV(mockColumns, rows);
+      const lines = csv.split('\n');
+
+      // The value with newline should be wrapped in quotes
+      expect(lines[1]).toContain('"Line1');
+    });
+
+    it('should handle null values', () => {
+      const rows: Row[] = [{ values: [1, null, undefined, true] }];
+      const csv = resultsToCSV(mockColumns, rows);
+      const lines = csv.split('\n');
+
+      expect(lines[1]).toBe('1,,,true');
+    });
+
+    it('should handle object values (JSON)', () => {
+      const rows: Row[] = [{ values: [1, { nested: 'value' }, 100, true] }];
+      const csv = resultsToCSV(mockColumns, rows);
+      const lines = csv.split('\n');
+
+      // Objects are JSON-stringified and quotes are escaped for CSV
+      expect(lines[1]).toContain('nested');
+      expect(lines[1]).toContain('value');
+    });
+
+    it('should handle array values', () => {
+      const rows: Row[] = [{ values: [1, [1, 2, 3], 100, true] }];
+      const csv = resultsToCSV(mockColumns, rows);
+      const lines = csv.split('\n');
+
+      expect(lines[1]).toContain('[1,2,3]');
+    });
+  });
+
+  describe('resultsToJSON', () => {
+    it('should convert results to JSON format', () => {
+      const json = resultsToJSON(mockColumns, mockRows);
+      const parsed = JSON.parse(json);
+
+      expect(parsed).toHaveLength(3);
+      expect(parsed[0]).toEqual({ id: 1, name: 'Alice', value: 100.5, active: true });
+      expect(parsed[1]).toEqual({ id: 2, name: 'Bob', value: 200.75, active: false });
+      expect(parsed[2]).toEqual({ id: 3, name: 'Charlie', value: 300.25, active: true });
+    });
+
+    it('should handle empty rows', () => {
+      const json = resultsToJSON(mockColumns, []);
+      const parsed = JSON.parse(json);
+
+      expect(parsed).toEqual([]);
+    });
+
+    it('should preserve null values', () => {
+      const rows: Row[] = [{ values: [1, null, undefined, true] }];
+      const json = resultsToJSON(mockColumns, rows);
+      const parsed = JSON.parse(json);
+
+      expect(parsed[0].id).toBe(1);
+      expect(parsed[0].name).toBeNull();
+      expect(parsed[0].value).toBeUndefined();
+      expect(parsed[0].active).toBe(true);
+    });
+
+    it('should preserve nested objects', () => {
+      const rows: Row[] = [{ values: [1, { nested: { deep: 'value' } }, 100, true] }];
+      const json = resultsToJSON(mockColumns, rows);
+      const parsed = JSON.parse(json);
+
+      expect(parsed[0].name).toEqual({ nested: { deep: 'value' } });
+    });
+
+    it('should preserve arrays', () => {
+      const rows: Row[] = [{ values: [1, ['a', 'b', 'c'], 100, true] }];
+      const json = resultsToJSON(mockColumns, rows);
+      const parsed = JSON.parse(json);
+
+      expect(parsed[0].name).toEqual(['a', 'b', 'c']);
+    });
+
+    it('should use column names as keys', () => {
+      const columns: ColumnMetadata[] = [
+        { name: 'user_id', type: 'INTEGER' },
+        { name: 'full_name', type: 'STRING' },
+      ];
+      const rows: Row[] = [{ values: [123, 'John Doe'] }];
+      const json = resultsToJSON(columns, rows);
+      const parsed = JSON.parse(json);
+
+      expect(parsed[0]).toHaveProperty('user_id', 123);
+      expect(parsed[0]).toHaveProperty('full_name', 'John Doe');
+    });
+
+    it('should generate fallback column names for missing columns', () => {
+      const columns: ColumnMetadata[] = [{ name: 'id', type: 'INTEGER' }];
+      const rows: Row[] = [{ values: [1, 'extra_value', 100] }];
+      const json = resultsToJSON(columns, rows);
+      const parsed = JSON.parse(json);
+
+      expect(parsed[0]).toHaveProperty('id', 1);
+      expect(parsed[0]).toHaveProperty('column_1', 'extra_value');
+      expect(parsed[0]).toHaveProperty('column_2', 100);
+    });
+  });
+});
+````
+
 ## File: tests/unit/renderer/utils/tree-sitter-validator.test.ts
 ````typescript
 /**
@@ -19195,910 +19780,6 @@ module.exports = (env, argv) => {
 }
 ````
 
-## File: src/renderer/components/QueryResults/QueryResults.css
-````css
-.query-results {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-}
-
-.results-header {
-  padding: 0.5rem 1rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.results-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.results-info span {
-  margin-right: 0.5rem;
-}
-
-.results-info span.loading-indicator {
-  color: var(--text-secondary);
-  animation: loading-pulse 1s ease-in-out infinite;
-}
-
-@keyframes loading-pulse {
-  0%, 100% { 
-    opacity: 1; 
-  }
-  50% { 
-    opacity: 0.4; 
-  }
-}
-
-.results-table-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-  position: relative;
-}
-
-.canvas-table-container {
-  width: 100%;
-  height: 100%;
-  overflow-x: scroll;
-  overflow-y: scroll;
-  background-color: var(--bg-primary);
-  /* Ensure scrollbars are always visible when content overflows */
-  scrollbar-width: thin;
-  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
-  /* Force scrollbars to be visible on macOS and Windows */
-  -webkit-overflow-scrolling: touch;
-  /* Force scrollbars to always be visible (not auto-hide on macOS) */
-  overflow: -moz-scrollbars-vertical;
-  overflow: -moz-scrollbars-horizontal;
-}
-
-.canvas-table-container::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-  -webkit-appearance: none;
-  /* Force scrollbars to always be visible on macOS */
-  display: block;
-}
-
-.canvas-table-container::-webkit-scrollbar-track {
-  background: var(--bg-primary);
-  border: 1px solid var(--bg-tertiary);
-  /* Ensure track is always visible */
-  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb {
-  background: var(--bg-scrollbar-thumb);
-  border-radius: 6px;
-  border: 2px solid var(--bg-primary);
-  min-height: 20px;
-  min-width: 20px;
-  /* Make thumb more visible */
-  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-scrollbar-thumb-hover);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:active {
-  background: var(--bg-scrollbar-thumb-active);
-}
-
-.canvas-table-container::-webkit-scrollbar-corner {
-  background: var(--bg-primary);
-}
-
-.no-rows-message {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.results-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  color: var(--text-primary);
-}
-
-.results-table thead {
-  position: sticky;
-  top: 0;
-  background-color: var(--bg-secondary);
-  z-index: 1;
-}
-
-.results-table th {
-  padding: 0;
-  text-align: left;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-primary);
-  border-right: 1px solid var(--border-primary);
-  background-color: var(--bg-secondary);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  position: relative;
-  min-width: 50px;
-}
-
-.results-table th:last-child {
-  border-right: none;
-}
-
-.results-table th .th-content {
-  padding: 0.375rem 0.5rem;
-  display: flex;
-  align-items: center;
-  position: relative;
-  height: 100%;
-}
-
-.results-table th .resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-  background-color: transparent;
-  z-index: 2;
-  transition: background-color 0.15s ease;
-}
-
-.results-table th .resize-handle:hover {
-  background-color: var(--accent-primary);
-}
-
-.results-table th:last-child .resize-handle {
-  display: none;
-}
-
-.results-table td {
-  padding: 0.375rem 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  border-right: 1px solid var(--border-primary);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-}
-
-.results-table td:last-child {
-  border-right: none;
-}
-
-.results-table tbody tr:nth-child(even) {
-  background-color: var(--bg-secondary);
-}
-
-.results-table tbody tr:nth-child(odd) {
-  background-color: var(--bg-primary);
-}
-
-.results-table tbody tr:hover {
-  background-color: var(--bg-hover);
-}
-
-.no-results {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  min-height: 200px;
-}
-
-.query-spinner-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 0.5rem;
-}
-
-.query-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-primary);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: query-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes query-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.error-results {
-  padding: 2rem;
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  border-radius: 3px;
-  margin: 1rem;
-  border: 1px solid var(--border-error);
-}
-
-.results-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 200px;
-  gap: 1rem;
-  padding: 2rem;
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 6px;
-  background-color: var(--border-primary);
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: var(--accent-primary);
-  border-radius: 3px;
-  width: 0%;
-  animation: progress-bar-animation 1.5s ease-in-out infinite;
-  display: block;
-}
-
-@keyframes progress-bar-animation {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.results-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.pagination-button {
-  background: transparent;
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 1rem;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  padding: 0;
-  line-height: 1;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  border-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.pagination-button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  min-width: 100px;
-  text-align: center;
-}
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.tsx
-````typescript
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import { RowContextMenu } from './RowContextMenu';
-import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import './QueryResults.css';
-
-const ROWS_PER_PAGE = 200;
-
-export const QueryResults: React.FC = () => {
-  // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
-  const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
-  });
-  
-  // All hooks must be called before any conditional returns
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [currentPage, setCurrentPage] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    rowIndex?: number;
-    columnIndex?: number;
-    isRowNumberColumn?: boolean;
-  } | null>(null);
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
-  
-  // Store metadata and current page separately for efficient cache access
-  const [resultsMetadata, setResultsMetadata] = useState<{
-    columns: any[];
-    totalRows: number;
-    rowsReturned: number;
-    executionTimeMs: number;
-    bytesProcessed?: number;
-    jobId: string;
-    hasMore: boolean;
-  } | null>(null);
-  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
-  const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isLoadingPage, setIsLoadingPage] = useState(false);
-  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  const jobId = activeTab?.jobId;
-  
-  // Listen for progress events during query execution AND background fetching
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onProgress) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
-      // Show progress during initial execution or background page fetching
-      if (data.jobId === jobId) {
-        setProgressMessage(data.message);
-        setIsBackgroundFetching(!data.isComplete);
-      }
-    });
-    
-    return unsubscribe;
-  }, [jobId]);
-  
-  // Clear progress when execution status changes to idle or error
-  useEffect(() => {
-    if (executionStatus === 'idle' || executionStatus === 'error') {
-      setProgressMessage(null);
-      setIsBackgroundFetching(false);
-    }
-  }, [executionStatus]);
-  
-  // Listen for rows updates (background fetching of additional pages)
-  // Data is saved directly to SQLite by the main process - we just reload from cache
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
-      // Only process updates for the current job
-      if (data.jobId !== jobId) return;
-      
-      // Data is already in SQLite cache - just reload metadata and current page
-      if (window.electronAPI?.resultsCache) {
-        // Reload metadata to reflect final row count
-        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
-        if (metadata) {
-          setResultsMetadata(metadata);
-        }
-        
-        // Reload current page to ensure we have latest data
-        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        }
-        
-        // Clear loading indicators
-        setProgressMessage(null);
-        setIsBackgroundFetching(false);
-      }
-    });
-    
-    return unsubscribe;
-  }, [activeTabId, jobId, currentPage]);
-  
-  // Load metadata from cache when tab changes or when execution completes
-  useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // If query is running, don't load from cache (wait for new results)
-    if (executionStatus === 'running') {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // Load metadata from cache
-    setIsLoadingCache(true);
-    window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
-      .then((metadata: {
-        columns: ColumnMetadata[];
-        totalRows: number;
-        rowsReturned: number;
-        executionTimeMs: number;
-        bytesProcessed?: number;
-        jobId: string;
-        hasMore: boolean;
-      } | null) => {
-        if (metadata) {
-          setResultsMetadata(metadata);
-          setIsLoadingCache(false);
-        } else {
-          setResultsMetadata(null);
-          setCurrentPageRows([]);
-          setIsLoadingCache(false);
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load results metadata from cache:', err);
-        setResultsMetadata(null);
-        setCurrentPageRows([]);
-        setIsLoadingCache(false);
-      });
-  }, [activeTabId, executionStatus]);
-  
-  // Load current page from cache when metadata or page changes
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    setIsLoadingPage(true);
-    window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
-      .then((pageRows: Row[] | null) => {
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        } else {
-          setCurrentPageRows([]);
-        }
-        setIsLoadingPage(false);
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load page from cache:', err);
-        setCurrentPageRows([]);
-        setIsLoadingPage(false);
-      });
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Prefetch adjacent pages for smoother navigation
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      return;
-    }
-    
-    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
-    
-    // Prefetch next page if available
-    if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-    
-    // Prefetch previous page if available
-    if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = resultsMetadata?.jobId;
-  const resultsColumnCount = resultsMetadata?.columns?.length;
-  
-  useEffect(() => {
-    if (resultsJobId !== undefined) {
-      setColumnWidths({});
-      setCurrentPage(1); // Reset to first page when results change
-      setSortColumn(null); // Reset sorting when results change
-      setSortDirection(null);
-    }
-  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = React.useMemo(() => {
-    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
-      return currentPageRows;
-    }
-
-    const sorted = [...currentPageRows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = resultsMetadata?.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
-
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: sortedRows, // Use sorted rows instead of currentPageRows
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      rowIndex,
-      isRowNumberColumn,
-    });
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    // Pass both type and name to formatter for better date detection
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
-    const formatted = formatValue(val, columnType, columnName);
-    // Escape commas, quotes, and newlines in values
-    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
-      return `"${formatted.replace(/"/g, '""')}"`;
-    }
-    return formatted;
-  }, [formatValue]);
-
-  const handleCopyRowValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
-
-    // Use sorted rows from results (which matches what's displayed)
-    const rowIndex = contextMenu.rowIndex;
-    const row = results.rows[rowIndex];
-    
-    if (!row) return;
-
-    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => {
-      const col = results.columns[idx];
-      return formatCSVValue(val, col?.type, col?.name);
-    });
-
-    // Format: header1,header2,header3\nvalue1,value2,value3
-    const csvText = [headers.join(','), values.join(',')].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleCopyColumnValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
-
-    const columnIndex = contextMenu.columnIndex;
-    const column = results.columns[columnIndex];
-    
-    if (!column) return;
-
-    // Get header
-    const header = formatCSVValue(column.name);
-    
-    // Get all values for this column from sorted rows (matches what's displayed)
-    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
-
-    // Format: header\nvalue1\nvalue2\nvalue3...
-    const csvText = [header, ...values].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      columnIndex,
-    });
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  // Pagination calculations - use metadata for total rows, current page rows are already loaded
-  const totalRows = resultsMetadata?.rowsReturned || 0;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Now we can do conditional returns after all hooks
-  if (error) {
-    return (
-      <div className="query-results">
-        <div className="error-results">
-          <strong>Error:</strong> {error}
-        </div>
-      </div>
-    );
-  }
-
-  if (!resultsMetadata) {
-    // Show progress message if available, otherwise show default messages
-    const message = executionStatus === 'running' 
-      ? (progressMessage || 'Executing query...')
-      : isLoadingCache
-      ? 'Loading results...'
-      : 'Execute a query to see results here.';
-    
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>{message}</div>
-          {(executionStatus === 'running' || isLoadingCache) && (
-            <div className="query-spinner-container">
-              <div className="query-spinner"></div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-  
-  // Show loading indicator while page is loading
-  if (isLoadingPage && currentPageRows.length === 0) {
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>Loading page {currentPage}...</div>
-          <div className="query-spinner-container">
-            <div className="query-spinner"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if we have columns and rows to display
-  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
-  const hasRows = currentPageRows && currentPageRows.length > 0;
-
-  // Determine how to display row count
-  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
-  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
-  // - hasMore indicates if there are more rows beyond our limit
-  const displayRowCount = () => {
-    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
-      // We hit the limit - show how many we have of the total
-      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else if (resultsMetadata.hasMore) {
-      // Still loading more rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else {
-      // We have all rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    }
-  };
-
-  if (!hasColumns && !hasRows) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">No data to display (empty result set).</div>
-      </div>
-    );
-  }
-
-  if (!hasColumns) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">Error: No column information available.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="query-results">
-      <div className="results-header">
-        <div className="results-info">
-          <span>{displayRowCount()}</span>
-          <span> • {resultsMetadata.executionTimeMs}ms</span>
-          {resultsMetadata.bytesProcessed && (
-            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-          )}
-          {progressMessage && (
-            <span className="loading-indicator"> • {progressMessage}</span>
-          )}
-        </div>
-      </div>
-      <div className="results-table-container">
-        {hasRows && results ? (
-          <CanvasTable
-            results={results}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-            onRowContextMenu={handleRowContextMenu}
-            onColumnContextMenu={handleColumnContextMenu}
-            formatValue={formatValue}
-            currentPage={currentPage}
-            rowsPerPage={ROWS_PER_PAGE}
-            sortColumn={sortColumn}
-            sortDirection={sortDirection}
-            onSortColumn={handleSortColumn}
-          />
-        ) : (
-          <div className="no-rows-message">No rows returned</div>
-        )}
-      </div>
-      {hasRows && totalPages > 1 && (
-        <div className="results-pagination">
-          <button
-            className="pagination-button"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
-          <span className="pagination-info">
-            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      {contextMenu && (
-        <RowContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={
-            contextMenu.columnIndex !== undefined 
-              ? 'Copy column values (with header)' 
-              : contextMenu.isRowNumberColumn 
-                ? 'Copy row as CSV' 
-                : 'Copy values (with headers)'
-          }
-        />
-      )}
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/components/SampleDataModal/SampleDataModal.css
 ````css
 .sample-data-modal-overlay {
@@ -21361,610 +21042,6 @@ app/dist/
 release/
 ````
 
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-});
-````
-
-## File: src/main/preload.ts
-````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-  };
-
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
-}
-
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string, tabId?: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:progress', handler);
-      return () => ipcRenderer.removeListener('bigquery:progress', handler);
-    },
-    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:rows-update', handler);
-      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
-    },
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
-    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    getRange: (tabId: string, startIndex: number, count: number) =>
-      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-    stats: () => ipcRenderer.invoke('results-cache:stats'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-    onToggleTheme: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:toggle-theme', handler);
-      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-} as ElectronAPI);
-
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
 ## File: src/renderer/components/QueryEditor/QueryEditor.css
 ````css
 .query-editor {
@@ -22329,6 +21406,996 @@ declare global {
   cursor: not-allowed;
   color: var(--text-disabled);
 }
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.css
+````css
+.query-results {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.results-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.results-info span {
+  margin-right: 0.5rem;
+}
+
+.results-info span.loading-indicator {
+  color: var(--text-secondary);
+  animation: loading-pulse 1s ease-in-out infinite;
+}
+
+@keyframes loading-pulse {
+  0%, 100% { 
+    opacity: 1; 
+  }
+  50% { 
+    opacity: 0.4; 
+  }
+}
+
+.results-table-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  position: relative;
+}
+
+.canvas-table-container {
+  width: 100%;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: scroll;
+  background-color: var(--bg-primary);
+  /* Ensure scrollbars are always visible when content overflows */
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
+  /* Force scrollbars to be visible on macOS and Windows */
+  -webkit-overflow-scrolling: touch;
+  /* Force scrollbars to always be visible (not auto-hide on macOS) */
+  overflow: -moz-scrollbars-vertical;
+  overflow: -moz-scrollbars-horizontal;
+}
+
+.canvas-table-container::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  -webkit-appearance: none;
+  /* Force scrollbars to always be visible on macOS */
+  display: block;
+}
+
+.canvas-table-container::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+  border: 1px solid var(--bg-tertiary);
+  /* Ensure track is always visible */
+  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--bg-primary);
+  min-height: 20px;
+  min-width: 20px;
+  /* Make thumb more visible */
+  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:active {
+  background: var(--bg-scrollbar-thumb-active);
+}
+
+.canvas-table-container::-webkit-scrollbar-corner {
+  background: var(--bg-primary);
+}
+
+.no-rows-message {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  color: var(--text-primary);
+}
+
+.results-table thead {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-secondary);
+  z-index: 1;
+}
+
+.results-table th {
+  padding: 0;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  position: relative;
+  min-width: 50px;
+}
+
+.results-table th:last-child {
+  border-right: none;
+}
+
+.results-table th .th-content {
+  padding: 0.375rem 0.5rem;
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 100%;
+}
+
+.results-table th .resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background-color: transparent;
+  z-index: 2;
+  transition: background-color 0.15s ease;
+}
+
+.results-table th .resize-handle:hover {
+  background-color: var(--accent-primary);
+}
+
+.results-table th:last-child .resize-handle {
+  display: none;
+}
+
+.results-table td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.results-table td:last-child {
+  border-right: none;
+}
+
+.results-table tbody tr:nth-child(even) {
+  background-color: var(--bg-secondary);
+}
+
+.results-table tbody tr:nth-child(odd) {
+  background-color: var(--bg-primary);
+}
+
+.results-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.no-results {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 200px;
+}
+
+.query-spinner-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.query-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: query-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes query-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.error-results {
+  padding: 2rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  margin: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.results-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 200px;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 6px;
+  background-color: var(--border-primary);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: var(--accent-primary);
+  border-radius: 3px;
+  width: 0%;
+  animation: progress-bar-animation 1.5s ease-in-out infinite;
+  display: block;
+}
+
+@keyframes progress-bar-animation {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.results-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.pagination-button {
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.pagination-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  min-width: 100px;
+  text-align: center;
+}
+````
+
+## File: src/renderer/components/QueryResults/QueryResults.tsx
+````typescript
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { RowContextMenu } from './RowContextMenu';
+import { ExportMenu, type ExportFormat } from './ExportMenu';
+import { CanvasTable } from './CanvasTable';
+import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
+import './QueryResults.css';
+import './ExportMenu.css';
+
+const ROWS_PER_PAGE = 200;
+
+export const QueryResults: React.FC = () => {
+  // Use separate selectors to ensure reactivity for each property
+  const activeTabId = useTabsStore((state) => state.activeTabId);
+  const activeTab = useTabsStore((state) => {
+    if (!activeTabId) return null;
+    return state.tabs.find((t) => t.id === activeTabId) || null;
+  });
+  
+  // All hooks must be called before any conditional returns
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rowIndex?: number;
+    columnIndex?: number;
+    isRowNumberColumn?: boolean;
+  } | null>(null);
+  const [exportMenu, setExportMenu] = useState<{ x: number; y: number } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
+  const error = activeTab?.error;
+  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  const jobId = activeTab?.jobId;
+  
+  // Listen for progress events during query execution AND background fetching
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onProgress) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
+      // Show progress during initial execution or background page fetching
+      if (data.jobId === jobId) {
+        setProgressMessage(data.message);
+        setIsBackgroundFetching(!data.isComplete);
+      }
+    });
+    
+    return unsubscribe;
+  }, [jobId]);
+  
+  // Clear progress when execution status changes to idle or error
+  useEffect(() => {
+    if (executionStatus === 'idle' || executionStatus === 'error') {
+      setProgressMessage(null);
+      setIsBackgroundFetching(false);
+    }
+  }, [executionStatus]);
+  
+  // Listen for rows updates (background fetching of additional pages)
+  // Data is saved directly to SQLite by the main process - we just reload from cache
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
+      // Only process updates for the current job
+      if (data.jobId !== jobId) return;
+      
+      // Data is already in SQLite cache - just reload metadata and current page
+      if (window.electronAPI?.resultsCache) {
+        // Reload metadata to reflect final row count
+        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
+        if (metadata) {
+          setResultsMetadata(metadata);
+        }
+        
+        // Reload current page to ensure we have latest data
+        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        }
+        
+        // Clear loading indicators
+        setProgressMessage(null);
+        setIsBackgroundFetching(false);
+      }
+    });
+    
+    return unsubscribe;
+  }, [activeTabId, jobId, currentPage]);
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!activeTabId || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(activeTabId)
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [activeTabId, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(activeTabId, currentPage)
+      .then((pageRows: Row[] | null) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Reset column widths when results change (use jobId as stable identifier)
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
+  
+  useEffect(() => {
+    if (resultsJobId !== undefined) {
+      setColumnWidths({});
+      setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
+    }
+  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
+
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      rowIndex,
+      isRowNumberColumn,
+    });
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
+    // Escape commas, quotes, and newlines in values
+    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
+      return `"${formatted.replace(/"/g, '""')}"`;
+    }
+    return formatted;
+  }, [formatValue]);
+
+  const handleCopyRowValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
+
+    // Use sorted rows from results (which matches what's displayed)
+    const rowIndex = contextMenu.rowIndex;
+    const row = results.rows[rowIndex];
+    
+    if (!row) return;
+
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
+
+    // Format: header1,header2,header3\nvalue1,value2,value3
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleCopyColumnValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
+
+    const columnIndex = contextMenu.columnIndex;
+    const column = results.columns[columnIndex];
+    
+    if (!column) return;
+
+    // Get header
+    const header = formatCSVValue(column.name);
+    
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+
+    // Format: header\nvalue1\nvalue2\nvalue3...
+    const csvText = [header, ...values].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      columnIndex,
+    });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  // Export button click handler
+  const handleExportClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setExportMenu({
+      x: rect.left,
+      y: rect.bottom + 4,
+    });
+  }, []);
+
+  // Handle export action - fetches all rows from cache
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    if (!activeTabId || !resultsMetadata || isExporting) return;
+
+    setIsExporting(true);
+    setExportMenu(null);
+
+    try {
+      // Fetch all rows from cache for export
+      const allResults = await window.electronAPI?.resultsCache?.get(activeTabId);
+      
+      if (!allResults) {
+        console.error('Failed to fetch results for export');
+        return;
+      }
+
+      const columns = allResults.columns;
+      const rows = allResults.rows;
+
+      if (format === 'csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        const result = await window.electronAPI.export.saveFile(csvContent, {
+          format: 'csv',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        const result = await window.electronAPI.export.saveFile(jsonContent, {
+          format: 'json',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'clipboard-csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        await navigator.clipboard.writeText(csvContent);
+      } else if (format === 'clipboard-json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        await navigator.clipboard.writeText(jsonContent);
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [activeTabId, resultsMetadata, isExporting]);
+
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Now we can do conditional returns after all hooks
+  if (error) {
+    return (
+      <div className="query-results">
+        <div className="error-results">
+          <strong>Error:</strong> {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!resultsMetadata) {
+    // Show progress message if available, otherwise show default messages
+    const message = executionStatus === 'running' 
+      ? (progressMessage || 'Executing query...')
+      : isLoadingCache
+      ? 'Loading results...'
+      : 'Execute a query to see results here.';
+    
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>{message}</div>
+          {(executionStatus === 'running' || isLoadingCache) && (
+            <div className="query-spinner-container">
+              <div className="query-spinner"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if we have columns and rows to display
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
+
+  // Determine how to display row count
+  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
+  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
+  // - hasMore indicates if there are more rows beyond our limit
+  const displayRowCount = () => {
+    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
+      // We hit the limit - show how many we have of the total
+      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else if (resultsMetadata.hasMore) {
+      // Still loading more rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else {
+      // We have all rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    }
+  };
+
+  if (!hasColumns && !hasRows) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">No data to display (empty result set).</div>
+      </div>
+    );
+  }
+
+  if (!hasColumns) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">Error: No column information available.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="query-results">
+      <div className="results-header">
+        <div className="results-info">
+          <span>{displayRowCount()}</span>
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+          {progressMessage && (
+            <span className="loading-indicator"> • {progressMessage}</span>
+          )}
+        </div>
+        <button
+          className="export-button"
+          onClick={handleExportClick}
+          disabled={isExporting || !hasRows}
+          title="Export results"
+        >
+          <span className="export-button-icon">⬇</span>
+          <span className="export-button-text">Export</span>
+        </button>
+      </div>
+      <div className="results-table-container">
+        {hasRows && results ? (
+          <CanvasTable
+            results={results}
+            columnWidths={columnWidths}
+            onColumnResize={handleColumnResize}
+            onRowContextMenu={handleRowContextMenu}
+            onColumnContextMenu={handleColumnContextMenu}
+            formatValue={formatValue}
+            currentPage={currentPage}
+            rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
+          />
+        ) : (
+          <div className="no-rows-message">No rows returned</div>
+        )}
+      </div>
+      {hasRows && totalPages > 1 && (
+        <div className="results-pagination">
+          <button
+            className="pagination-button"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+            title="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+          </span>
+          <button
+            className="pagination-button"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+            title="Next page"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {contextMenu && (
+        <RowContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
+        />
+      )}
+      {exportMenu && (
+        <ExportMenu
+          x={exportMenu.x}
+          y={exportMenu.y}
+          onClose={() => setExportMenu(null)}
+          onExport={handleExport}
+          isExporting={isExporting}
+        />
+      )}
+    </div>
+  );
+};
 ````
 
 ## File: tests/setup.ts
@@ -23647,6 +23714,621 @@ export function registerBigQueryHandlers(): void {
 }
 ````
 
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerExportHandlers } from './ipc/export';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerExportHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+});
+````
+
+## File: src/main/preload.ts
+````typescript
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
+  };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+}
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string, tabId?: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:progress', handler);
+      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+    },
+    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:rows-update', handler);
+      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
+    },
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    getRange: (tabId: string, startIndex: number, count: number) =>
+      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+    stats: () => ipcRenderer.invoke('results-cache:stats'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+  export: {
+    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
+      ipcRenderer.invoke('export:saveFile', content, options),
+  },
+} as ElectronAPI);
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
 ````typescript
 import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
@@ -24881,119 +25563,6 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 };
 ````
 
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache (SQLite-backed for performance with large datasets)
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    /** Get a range of rows for virtual scrolling */
-    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-    /** Get cache statistics */
-    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
 ## File: README.md
 ````markdown
 # QueryForge
@@ -25283,6 +25852,124 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
+````
+
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache (SQLite-backed for performance with large datasets)
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    /** Get a range of rows for virtual scrolling */
+    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+    /** Get cache statistics */
+    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
 ````
 
 ## File: tests/unit/renderer/utils/sql-validation.test.ts
