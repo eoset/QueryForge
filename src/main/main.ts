@@ -7,6 +7,7 @@ import { registerQueriesHandlers } from './ipc/queries';
 import { registerUISettingsHandlers } from './ipc/ui-settings';
 import { registerTabsHandlers } from './ipc/tabs';
 import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerExportHandlers } from './ipc/export';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
 import { clearAllResults } from './storage/results-cache-sqlite';
 
@@ -45,6 +46,7 @@ registerQueriesHandlers();
 registerUISettingsHandlers();
 registerTabsHandlers();
 registerResultsCacheHandlers();
+registerExportHandlers();
 
 // Register app version handler
 ipcMain.handle('app:getVersion', () => {

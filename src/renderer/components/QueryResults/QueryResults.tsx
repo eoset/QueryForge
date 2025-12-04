@@ -1,10 +1,13 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useTabsStore } from '../../stores/tabs-store';
 import { RowContextMenu } from './RowContextMenu';
+import { ExportMenu, type ExportFormat } from './ExportMenu';
 import { CanvasTable } from './CanvasTable';
 import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
 import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
 import './QueryResults.css';
+import './ExportMenu.css';
 
 const ROWS_PER_PAGE = 200;
 
@@ -26,6 +29,8 @@ export const QueryResults: React.FC = () => {
     columnIndex?: number;
     isRowNumberColumn?: boolean;
   } | null>(null);
+  const [exportMenu, setExportMenu] = useState<{ x: number; y: number } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -363,6 +368,66 @@ export const QueryResults: React.FC = () => {
     setSortDirection(direction);
   }, []);
 
+  // Export button click handler
+  const handleExportClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setExportMenu({
+      x: rect.left,
+      y: rect.bottom + 4,
+    });
+  }, []);
+
+  // Handle export action - fetches all rows from cache
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    if (!activeTabId || !resultsMetadata || isExporting) return;
+
+    setIsExporting(true);
+    setExportMenu(null);
+
+    try {
+      // Fetch all rows from cache for export
+      const allResults = await window.electronAPI?.resultsCache?.get(activeTabId);
+      
+      if (!allResults) {
+        console.error('Failed to fetch results for export');
+        return;
+      }
+
+      const columns = allResults.columns;
+      const rows = allResults.rows;
+
+      if (format === 'csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        const result = await window.electronAPI.export.saveFile(csvContent, {
+          format: 'csv',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        const result = await window.electronAPI.export.saveFile(jsonContent, {
+          format: 'json',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'clipboard-csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        await navigator.clipboard.writeText(csvContent);
+      } else if (format === 'clipboard-json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        await navigator.clipboard.writeText(jsonContent);
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [activeTabId, resultsMetadata, isExporting]);
+
   // Pagination calculations - use metadata for total rows, current page rows are already loaded
   const totalRows = resultsMetadata?.rowsReturned || 0;
   const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
@@ -502,6 +567,15 @@ export const QueryResults: React.FC = () => {
             <span className="loading-indicator"> • {progressMessage}</span>
           )}
         </div>
+        <button
+          className="export-button"
+          onClick={handleExportClick}
+          disabled={isExporting || !hasRows}
+          title="Export results"
+        >
+          <span className="export-button-icon">⬇</span>
+          <span className="export-button-text">Export</span>
+        </button>
       </div>
       <div className="results-table-container">
         {hasRows && results ? (
@@ -558,6 +632,15 @@ export const QueryResults: React.FC = () => {
                 ? 'Copy row as CSV' 
                 : 'Copy values (with headers)'
           }
+        />
+      )}
+      {exportMenu && (
+        <ExportMenu
+          x={exportMenu.x}
+          y={exportMenu.y}
+          onClose={() => setExportMenu(null)}
+          onExport={handleExport}
+          isExporting={isExporting}
         />
       )}
     </div>

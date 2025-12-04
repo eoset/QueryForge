@@ -96,6 +96,11 @@ export interface ElectronAPI {
   app: {
     getVersion(): Promise<string>;
   };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
 }
 
 // Expose protected methods that allow the renderer process to use
@@ -197,6 +202,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+  export: {
+    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
+      ipcRenderer.invoke('export:saveFile', content, options),
   },
 } as ElectronAPI);
 

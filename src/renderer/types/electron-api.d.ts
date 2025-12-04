@@ -100,6 +100,11 @@ export interface ElectronAPI {
     onDisconnect(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
   };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
 }
 
 declare global {
