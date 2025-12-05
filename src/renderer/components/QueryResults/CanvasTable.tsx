@@ -265,10 +265,13 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       y: number,
       width: number,
       color: string = '#cccccc',
-      align: 'left' | 'right' = 'left'
+      align: 'left' | 'right' = 'left',
+      isNull: boolean = false
     ) => {
-      ctx.fillStyle = color;
-      ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.fillStyle = isNull ? '#888888' : color;
+      ctx.font = isNull 
+        ? 'italic 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        : '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
       const maxWidth = width - CELL_PADDING * 2;
       const ellipsis = '...';
       const ellipsisWidth = measureText(ellipsis, ctx);
@@ -469,12 +472,13 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           // Draw cell content - use pre-formatted value
           const column = results.columns[colIdx];
           const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
+          const isNullValue = value === null || value === undefined;
           ctx.fillStyle = textColor;
           // Check if column is INTEGER type for right alignment
           const columnType = (column?.type || '').toUpperCase();
           const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
           const textAlign = isIntegerColumn ? 'right' : 'left';
-          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign);
+          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign, isNullValue);
         }
       });
 

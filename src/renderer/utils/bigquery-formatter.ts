@@ -85,7 +85,7 @@ function toDate(value: any): Date | null {
 export function formatBigQueryValue(value: any, columnType?: string, columnName?: string): string {
   // Handle NULL values - early return for common case
   if (value === null || value === undefined) {
-    return 'NULL';
+    return 'null';
   }
 
   // Normalize column type early so we can use it for object detection
