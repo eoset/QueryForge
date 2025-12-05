@@ -42,6 +42,56 @@
   color: var(--text-disabled);
 }
 
+.tools-dropdown {
+  position: relative;
+}
+
+.query-editor-toolbar .tools-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar .tools-button.open {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
+  min-width: 170px;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 5;
+}
+
+.tools-menu .tools-menu-item {
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0.5rem 0.75rem;
+}
+
+.tools-menu .tools-menu-item:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu .tools-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+
 .query-editor-toolbar .run-button {
   background-color: var(--accent-primary);
 }

@@ -370,7 +370,6 @@ const App: React.FC = () => {
               <span>{connection.projectId}</span>
             </div>
           )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
           <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
         </div>
       </header>
