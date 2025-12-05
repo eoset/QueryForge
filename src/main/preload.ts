@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
 import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
+import type { JobDetails } from '../shared/types/bigquery';
 
 /**
  * Electron API exposed to renderer process
@@ -24,6 +25,7 @@ export interface ElectronAPI {
       };
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    getJobInfo(jobId: string): Promise<JobDetails>;
     onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
     onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
@@ -130,6 +132,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
     getViewDefinition: (datasetId: string, tableId: string) =>
       ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    getJobInfo: (jobId: string) => ipcRenderer.invoke('bigquery:getJobInfo', jobId),
     onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
       const handler = (_event: any, data: any) => callback(data);
       ipcRenderer.on('bigquery:progress', handler);

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
 import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useTabsStore } from '../../stores/tabs-store';
+import { JobInfoModal } from '../JobInfoModal/JobInfoModal';
 import type { QueryHistoryEntry } from '../../../shared/types/query';
 import './QueryHistory.css';
 
@@ -99,6 +100,7 @@ const QueryHistoryComponent: React.FC<QueryHistoryProps> = ({
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [jobInfoModal, setJobInfoModal] = useState<{ jobId: string } | null>(null);
 
   useEffect(() => {
     loadHistory();
@@ -197,6 +199,12 @@ const QueryHistoryComponent: React.FC<QueryHistoryProps> = ({
   const handleDeleteEntry = () => {
     if (!contextMenu) return;
     deleteEntry(contextMenu.entry.id);
+    setContextMenu(null);
+  };
+
+  const handleViewJobDetails = () => {
+    if (!contextMenu || !contextMenu.entry.jobId) return;
+    setJobInfoModal({ jobId: contextMenu.entry.jobId });
     setContextMenu(null);
   };
 
@@ -392,11 +400,22 @@ const QueryHistoryComponent: React.FC<QueryHistoryProps> = ({
           <div className="context-menu-item" onClick={handleCopyQuery}>
             Copy query
           </div>
+          {contextMenu.entry.jobId && (
+            <div className="context-menu-item" onClick={handleViewJobDetails}>
+              View job details
+            </div>
+          )}
           <div className="context-menu-separator" />
           <div className="context-menu-item danger" onClick={handleDeleteEntry}>
             Delete
           </div>
         </div>
+      )}
+      {jobInfoModal && (
+        <JobInfoModal
+          jobId={jobInfoModal.jobId}
+          onClose={() => setJobInfoModal(null)}
+        />
       )}
       {hoveredEntry && (
         <div

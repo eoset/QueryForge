@@ -1213,4 +1213,100 @@ export function registerBigQueryHandlers(): void {
       throw err;
     }
   });
+
+  /**
+   * Get job information by job ID.
+   * Returns detailed metadata about a BigQuery job including timing, bytes processed,
+   * cache hit status, billing tier, and referenced tables.
+   */
+  ipcMain.handle('bigquery:getJobInfo', async (_event, jobId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const job = client.job(jobId);
+      const [metadata] = await job.getMetadata();
+
+      // Extract statistics
+      const stats = metadata.statistics || {};
+      const queryStats = stats.query || {};
+
+      // Parse timestamps - BigQuery returns timestamps as string milliseconds
+      const parseTimestamp = (ts: string | undefined): string => {
+        if (!ts) return '';
+        const ms = parseInt(ts, 10);
+        return new Date(ms).toISOString();
+      };
+
+      // Parse bytes/numbers
+      const parseNumber = (val: string | number | undefined): number => {
+        if (val === undefined || val === null) return 0;
+        if (typeof val === 'number') return val;
+        return parseInt(val, 10) || 0;
+      };
+
+      // Extract referenced tables
+      const referencedTables = (queryStats.referencedTables || []).map((table: any) => ({
+        projectId: table.projectId,
+        datasetId: table.datasetId,
+        tableId: table.tableId,
+      }));
+
+      return {
+        // Basic job info
+        jobId: metadata.jobReference?.jobId || jobId,
+        projectId: metadata.jobReference?.projectId || '',
+        location: metadata.jobReference?.location || '',
+        user: metadata.user_email || '',
+
+        // Timing info
+        creationTime: parseTimestamp(stats.creationTime),
+        startTime: parseTimestamp(stats.startTime),
+        endTime: parseTimestamp(stats.endTime),
+        totalSlotMs: parseNumber(stats.totalSlotMs),
+
+        // Query statistics
+        totalBytesProcessed: parseNumber(stats.totalBytesProcessed),
+        totalBytesBilled: parseNumber(queryStats.totalBytesBilled),
+        cacheHit: queryStats.cacheHit === true,
+        statementType: queryStats.statementType || 'UNKNOWN',
+
+        // Row counts
+        numDmlAffectedRows: queryStats.numDmlAffectedRows ? parseNumber(queryStats.numDmlAffectedRows) : undefined,
+        outputRows: queryStats.outputRows ? parseNumber(queryStats.outputRows) : undefined,
+
+        // Performance details
+        billingTier: queryStats.billingTier ? parseNumber(queryStats.billingTier) : undefined,
+        estimatedBytesProcessed: queryStats.estimatedBytesProcessed ? parseNumber(queryStats.estimatedBytesProcessed) : undefined,
+
+        // Referenced tables
+        referencedTables: referencedTables.length > 0 ? referencedTables : undefined,
+
+        // Status
+        state: metadata.status?.state || 'UNKNOWN',
+        errorResult: metadata.status?.errorResult ? {
+          reason: metadata.status.errorResult.reason || '',
+          location: metadata.status.errorResult.location || '',
+          message: metadata.status.errorResult.message || '',
+        } : undefined,
+      };
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.JOB_NOT_FOUND,
+          message: 'Job not found. It may have expired or been deleted.',
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to get job information',
+        details: error.errors || error,
+      };
+    }
+  });
 }
