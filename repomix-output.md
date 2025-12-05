@@ -13584,475 +13584,6 @@ function hasErrorsInTree(node: TreeSitterNode): boolean {
 }
 ````
 
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './themes.css';
-import './App.css';
-
-type Theme = 'dark' | 'light';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-      };
-    }
-  }, [handleToggleTheme]);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowSavedQueries(true)}>Saved Queries</button>
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
-````
-
 ## File: src/renderer/index.html
 ````html
 <!DOCTYPE html>
@@ -20688,6 +20219,474 @@ body {
 }
 ````
 
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
+import './App.css';
+
+type Theme = 'dark' | 'light';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor theme={theme} />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
+````
+
 ## File: tests/unit/renderer/hooks/useBigQuery.test.ts
 ````typescript
 import { renderHook, act, waitFor } from '@testing-library/react';
@@ -21040,372 +21039,6 @@ Desktop.ini
 # Electron specific
 app/dist/
 release/
-````
-
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: var(--bg-primary);
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background-color: var(--button-secondary);
-  color: var(--text-disabled);
-}
-
-.query-editor-toolbar .run-button {
-  background-color: var(--accent-primary);
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: var(--accent-orange);
-  color: var(--text-white);
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: var(--accent-orange-hover);
-}
-
-.query-editor-toolbar .save-button {
-  background-color: var(--accent-success);
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: var(--accent-success-hover);
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: var(--accent-danger);
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: var(--accent-danger-hover);
-}
-
-.connection-warning {
-  color: var(--text-warning);
-  background-color: var(--button-secondary);
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: var(--text-success);
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: var(--text-error);
-}
-
-.editor-status-bar .status-valid {
-  color: var(--text-success);
-}
-
-.editor-status-bar .status-invalid {
-  color: var(--text-error);
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: var(--text-white);
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
 ````
 
 ## File: src/renderer/components/QueryResults/QueryResults.css
@@ -24326,6 +23959,422 @@ declare global {
   interface Window {
     electronAPI: ElectronAPI;
   }
+}
+````
+
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-primary);
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
+}
+
+.tools-dropdown {
+  position: relative;
+}
+
+.query-editor-toolbar .tools-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar .tools-button.open {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
+  min-width: 170px;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 5;
+}
+
+.tools-menu .tools-menu-item {
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0.5rem 0.75rem;
+}
+
+.tools-menu .tools-menu-item:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu .tools-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+
+.query-editor-toolbar .run-button {
+  background-color: var(--accent-primary);
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: var(--accent-orange);
+  color: var(--text-white);
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: var(--accent-orange-hover);
+}
+
+.query-editor-toolbar .save-button {
+  background-color: var(--accent-success);
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: var(--accent-success-hover);
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: var(--accent-danger);
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.connection-warning {
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: var(--text-success);
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: var(--text-error);
+}
+
+.editor-status-bar .status-valid {
+  color: var(--text-success);
+}
+
+.editor-status-bar .status-invalid {
+  color: var(--text-error);
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-white);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
 }
 ````
 
@@ -32663,6 +32712,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
     errorMessage: string | null;
@@ -32675,6 +32725,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [completedQueryExecutionTime, setCompletedQueryExecutionTime] = useState<number | null>(null);
   const editorRef = useRef<any>(null);
   const editorWrapperRef = useRef<HTMLDivElement>(null);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
   const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
@@ -32709,6 +32760,24 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
     return tab || null;
   });
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (toolsMenuRef.current && target && !toolsMenuRef.current.contains(target)) {
+        setIsToolsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsToolsMenuOpen(false);
+  }, [activeTab?.id]);
   
   const queryText = activeTab?.queryText || '';
   const isExecuting = activeTab?.executionStatus === 'running';
@@ -34690,6 +34759,11 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
+  const handleToolAction = (action: () => void) => {
+    action();
+    setIsToolsMenuOpen(false);
+  };
+
   // Calculate expected query size AND validate syntax using BigQuery's native dry run feature
   // Dry run is the PRIMARY validation source - it catches all syntax and semantic errors accurately
   // Local validation (tree-sitter) is only used for immediate feedback while typing
@@ -34920,32 +34994,46 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           )}
         </button>
         {isExecuting && <button onClick={handleCancel} className="cancel-button">Cancel</button>}
-        <button
-          onClick={handleFormat}
-          disabled={!activeTab || !queryText.trim()}
-          className="format-button"
-          title="Format SQL query"
-        >
-          Format
-        </button>
-        <button
-          onClick={handleExpandSelectStar}
-          disabled={!activeTab || !queryText.trim() || !isConnected}
-          className="expand-button"
-          title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
-        >
-          Expand *
-        </button>
-        {connection?.enableDbtSupport && (
+        <div className="tools-dropdown" ref={toolsMenuRef}>
           <button
-            onClick={handleDbtify}
-            disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
-            className="dbtify-button"
-            title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
+            onClick={() => setIsToolsMenuOpen((prev) => !prev)}
+            className={`tools-button${isToolsMenuOpen ? ' open' : ''}`}
+            aria-haspopup="true"
+            aria-expanded={isToolsMenuOpen}
           >
-            {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+            Tools <span className="arrow-icon">▾</span>
           </button>
-        )}
+          {isToolsMenuOpen && (
+            <div className="tools-menu">
+              <button
+                onClick={() => handleToolAction(handleFormat)}
+                disabled={!activeTab || !queryText.trim()}
+                className="tools-menu-item"
+                title="Format SQL query"
+              >
+                Format
+              </button>
+              <button
+                onClick={() => handleToolAction(handleExpandSelectStar)}
+                disabled={!activeTab || !queryText.trim() || !isConnected}
+                className="tools-menu-item"
+                title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
+              >
+                Expand *
+              </button>
+              {connection?.enableDbtSupport && (
+                <button
+                  onClick={() => handleToolAction(handleDbtify)}
+                  disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
+                  className="tools-menu-item"
+                  title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
+                >
+                  {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         <button onClick={handleOpenSaveDialog} disabled={!activeTab || !queryText.trim()} className="save-button">
           {activeTab?.savedQueryId ? 'Update' : 'Save'}
         </button>
