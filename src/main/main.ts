@@ -8,6 +8,7 @@ import { registerUISettingsHandlers } from './ipc/ui-settings';
 import { registerTabsHandlers } from './ipc/tabs';
 import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
 import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
 import { clearAllResults } from './storage/results-cache-sqlite';
 
@@ -47,6 +48,7 @@ registerUISettingsHandlers();
 registerTabsHandlers();
 registerResultsCacheHandlers();
 registerExportHandlers();
+registerQueryHistoryHandlers();
 
 // Register app version handler
 ipcMain.handle('app:getVersion', () => {
@@ -63,6 +65,13 @@ function createMenu(): void {
           accelerator: 'CmdOrCtrl+T',
           click: () => {
             mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
           },
         },
         { type: 'separator' },
@@ -387,4 +396,5 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   clearAllResults();
   closeCacheDatabase();
+  closeHistoryDatabase();
 });

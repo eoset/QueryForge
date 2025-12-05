@@ -64,3 +64,19 @@ export interface Row {
   values: any[]; // Values matching column order
 }
 
+/**
+ * Query history entry - tracks executed queries with metadata
+ */
+export interface QueryHistoryEntry {
+  id: string;
+  queryText: string;
+  executedAt: string; // ISO timestamp
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  totalRows?: number;
+  status: 'completed' | 'error' | 'cancelled';
+  errorMessage?: string;
+  projectId: string;
+  jobId?: string;
+}
+

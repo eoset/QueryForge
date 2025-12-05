@@ -10,6 +10,7 @@ import { QueryEditor } from './components/QueryEditor/QueryEditor';
 import { QueryResults } from './components/QueryResults/QueryResults';
 import { DatasetTree } from './components/DatasetTree/DatasetTree';
 import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { QueryHistory } from './components/QueryHistory/QueryHistory';
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
 import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
@@ -390,6 +391,15 @@ const App: React.FC = () => {
             />
             {sidebarView === 'saved-queries' ? (
               <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : sidebarView === 'history' ? (
+              <QueryHistory 
                 collapsed={leftSidebarCollapsed}
                 onToggleCollapse={handleLeftSidebarToggle}
                 onRefreshReady={(refreshFn, isLoading) => {

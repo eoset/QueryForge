@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 
 /**
@@ -90,6 +90,7 @@ export interface ElectronAPI {
     onNewTab(callback: () => void): () => void;
     onShowAbout(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
   };
 
   // App info
@@ -100,6 +101,18 @@ export interface ElectronAPI {
   // Export operations
   export: {
     saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
   };
 }
 
@@ -199,6 +212,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('menu:toggle-theme', handler);
       return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
     },
+    onSaveQuery: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:save-query', handler);
+      return () => ipcRenderer.removeListener('menu:save-query', handler);
+    },
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -206,6 +224,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   export: {
     saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
       ipcRenderer.invoke('export:saveFile', content, options),
+  },
+  queryHistory: {
+    add: (entry: QueryHistoryEntry) => ipcRenderer.invoke('query-history:add', entry),
+    list: (limit?: number, offset?: number) => ipcRenderer.invoke('query-history:list', limit, offset),
+    search: (searchTerm: string, limit?: number) => ipcRenderer.invoke('query-history:search', searchTerm, limit),
+    get: (id: string) => ipcRenderer.invoke('query-history:get', id),
+    delete: (id: string) => ipcRenderer.invoke('query-history:delete', id),
+    updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
+    clear: () => ipcRenderer.invoke('query-history:clear'),
+    count: () => ipcRenderer.invoke('query-history:count'),
   },
 } as ElectronAPI);
 
