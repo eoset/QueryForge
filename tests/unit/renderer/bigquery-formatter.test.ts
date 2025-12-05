@@ -3,15 +3,15 @@ import { formatBigQueryValue } from '../../../src/renderer/utils/bigquery-format
 describe('bigquery-formatter', () => {
   describe('formatBigQueryValue', () => {
     describe('NULL handling', () => {
-      it('should return "NULL" for null values', () => {
-        expect(formatBigQueryValue(null)).toBe('NULL');
-        expect(formatBigQueryValue(null, 'STRING')).toBe('NULL');
-        expect(formatBigQueryValue(null, 'INTEGER')).toBe('NULL');
+      it('should return "null" for null values', () => {
+        expect(formatBigQueryValue(null)).toBe('null');
+        expect(formatBigQueryValue(null, 'STRING')).toBe('null');
+        expect(formatBigQueryValue(null, 'INTEGER')).toBe('null');
       });
 
-      it('should return "NULL" for undefined values', () => {
-        expect(formatBigQueryValue(undefined)).toBe('NULL');
-        expect(formatBigQueryValue(undefined, 'STRING')).toBe('NULL');
+      it('should return "null" for undefined values', () => {
+        expect(formatBigQueryValue(undefined)).toBe('null');
+        expect(formatBigQueryValue(undefined, 'STRING')).toBe('null');
       });
     });
 
