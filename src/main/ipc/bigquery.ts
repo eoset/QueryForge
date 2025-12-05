@@ -705,13 +705,18 @@ export function registerBigQueryHandlers(): void {
       const [firstPageRows, firstNextQuery] = await job.getQueryResults({ maxResults: 10000 });
       const hasMorePages = !!firstNextQuery?.pageToken;
       
-      // Get total row count from the query response metadata
-      // This is available immediately without fetching all rows
-      // The BigQuery API returns totalRows but the TypeScript types don't include it
+      // Get total row count from multiple possible sources:
+      // 1. Query results metadata (firstNextQuery.totalRows) - most reliable for SELECT queries
+      // 2. Job statistics (query.numDmlAffectedRows) - for DML queries
+      // 3. Fall back to first page length if neither available (will be updated after fetching all pages)
       const queryMetadata = firstNextQuery as any;
+      const jobStats = jobMetadata.statistics as any;
+      
       const totalRowCount = queryMetadata?.totalRows 
         ? parseInt(String(queryMetadata.totalRows), 10) 
-        : undefined;
+        : (jobStats?.query?.numDmlAffectedRows 
+          ? parseInt(String(jobStats.query.numDmlAffectedRows), 10)
+          : undefined);
 
       // If no schema from metadata, extract from first row
       if (columns.length === 0 && firstPageRows.length > 0) {

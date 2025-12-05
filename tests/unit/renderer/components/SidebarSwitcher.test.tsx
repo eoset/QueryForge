@@ -9,13 +9,14 @@ describe('SidebarSwitcher', () => {
     jest.clearAllMocks();
   });
 
-  it('should render both buttons', () => {
+  it('should render all three buttons', () => {
     render(
       <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
     );
 
     expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /saved queries/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /saved/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /history/i })).toBeInTheDocument();
   });
 
   it('should highlight explorer button when current view is explorer', () => {
@@ -24,10 +25,12 @@ describe('SidebarSwitcher', () => {
     );
 
     const explorerButton = screen.getByRole('button', { name: /explorer/i });
-    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    const historyButton = screen.getByRole('button', { name: /history/i });
 
     expect(explorerButton).toHaveClass('active');
     expect(savedQueriesButton).not.toHaveClass('active');
+    expect(historyButton).not.toHaveClass('active');
   });
 
   it('should highlight saved queries button when current view is saved-queries', () => {
@@ -36,10 +39,26 @@ describe('SidebarSwitcher', () => {
     );
 
     const explorerButton = screen.getByRole('button', { name: /explorer/i });
-    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    const historyButton = screen.getByRole('button', { name: /history/i });
 
     expect(explorerButton).not.toHaveClass('active');
     expect(savedQueriesButton).toHaveClass('active');
+    expect(historyButton).not.toHaveClass('active');
+  });
+
+  it('should highlight history button when current view is history', () => {
+    render(
+      <SidebarSwitcher currentView="history" onViewChange={mockOnViewChange} />
+    );
+
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    const historyButton = screen.getByRole('button', { name: /history/i });
+
+    expect(explorerButton).not.toHaveClass('active');
+    expect(savedQueriesButton).not.toHaveClass('active');
+    expect(historyButton).toHaveClass('active');
   });
 
   it('should call onViewChange with "explorer" when explorer button is clicked', () => {
@@ -58,10 +77,21 @@ describe('SidebarSwitcher', () => {
       <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
     );
 
-    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
     fireEvent.click(savedQueriesButton);
 
     expect(mockOnViewChange).toHaveBeenCalledWith('saved-queries');
+  });
+
+  it('should call onViewChange with "history" when history button is clicked', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
+
+    const historyButton = screen.getByRole('button', { name: /history/i });
+    fireEvent.click(historyButton);
+
+    expect(mockOnViewChange).toHaveBeenCalledWith('history');
   });
 
   it('should not render when collapsed is true', () => {
@@ -74,7 +104,8 @@ describe('SidebarSwitcher', () => {
     );
 
     expect(screen.queryByRole('button', { name: /explorer/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /saved queries/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /saved/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /history/i })).not.toBeInTheDocument();
   });
 
   it('should render when collapsed is false', () => {
@@ -87,7 +118,8 @@ describe('SidebarSwitcher', () => {
     );
 
     expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /saved queries/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /saved/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /history/i })).toBeInTheDocument();
   });
 
   it('should render when collapsed is not provided', () => {
@@ -105,5 +137,6 @@ describe('SidebarSwitcher', () => {
 
     expect(screen.getByTitle('Explorer')).toBeInTheDocument();
     expect(screen.getByTitle('Saved Queries')).toBeInTheDocument();
+    expect(screen.getByTitle('Query History')).toBeInTheDocument();
   });
 });

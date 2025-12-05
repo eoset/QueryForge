@@ -1,5 +1,5 @@
 import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../../shared/types/query';
 import type { Dataset, Table } from '../../shared/types/dataset';
 
 /**
@@ -104,6 +104,18 @@ export interface ElectronAPI {
   // Export operations
   export: {
     saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
   };
 }
 

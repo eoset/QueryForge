@@ -5,6 +5,7 @@ import { parse } from 'sql-parser-cst';
 import { useBigQuery } from '../../hooks/useBigQuery';
 import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
+import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
@@ -574,6 +575,19 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+
+  // Handle ESC key to close save dialog
+  useEffect(() => {
+    if (!showSaveDialog) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowSaveDialog(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [showSaveDialog]);
+
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
@@ -640,11 +654,40 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   useEffect(() => {
     setIsToolsMenuOpen(false);
   }, [activeTab?.id]);
-  
+
   const queryText = activeTab?.queryText || '';
+
+  // Listen for save query menu shortcut (Cmd+S)
+  useEffect(() => {
+    if (window.electronAPI?.menu?.onSaveQuery) {
+      const removeListener = window.electronAPI.menu.onSaveQuery(() => {
+        if (activeTab && queryText.trim()) {
+          setSaveName(activeTab.savedQueryId ? activeTab.title : '');
+          setSaveDescription('');
+          setShowSaveDialog(true);
+        }
+      });
+      return () => removeListener();
+    }
+  }, [activeTab, queryText]);
+  
   const isExecuting = activeTab?.executionStatus === 'running';
   const error = activeTab?.error || null;
   const jobId = activeTab?.jobId || null;
+
+  // Listen for rows-update events to update query history with final row count
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate((data) => {
+      // Update the history entry with the final row count
+      if (data.jobId && data.rowsReturned > 0) {
+        useQueryHistoryStore.getState().updateEntryByJobId(data.jobId, data.rowsReturned);
+      }
+    });
+    
+    return unsubscribe;
+  }, []);
   
   const { setTabQuery, setTabResults, setTabError, setTabStatus, updateTab } = useTabsStore();
   const { saveQuery, updateQuery } = useQueriesStore();
@@ -2002,7 +2045,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const currentTab = useTabsStore.getState().tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
     if (!currentTab) return;
 
-    const currentIsConnected = useConnectionStore.getState().connection !== null;
+    const currentConnection = useConnectionStore.getState().connection;
+    const currentIsConnected = currentConnection !== null;
 
     if (!currentIsConnected) {
       setTabError(currentTab.id, 'Not connected to BigQuery. Please configure a connection first.');
@@ -2051,6 +2095,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       });
     }
 
+    // Track execution start time for history
+    const executionStartTime = Date.now();
+
     try {
       const result = await executeQuery(queryTextToExecute, currentTab.id);
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
@@ -2064,6 +2111,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       // Mark query as completed successfully - store the executed query text and execution time
       setCompletedQueryText(queryTextToExecute);
       setCompletedQueryExecutionTime(result.executionTimeMs);
+
+      // Add to query history
+      useQueryHistoryStore.getState().addEntry({
+        queryText: queryTextToExecute,
+        executedAt: new Date().toISOString(),
+        executionTimeMs: result.executionTimeMs,
+        bytesProcessed: result.bytesProcessed,
+        totalRows: result.totalRows,
+        status: 'completed',
+        projectId: currentConnection?.projectId || '',
+        jobId: result.jobId,
+      });
     } catch (err: any) {
       // Extract error message from various possible error formats
       let errorMessage = 'Query execution failed';
@@ -2124,6 +2183,16 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       errorMessage = errorMessage.replace(electronPrefix, '');
       
       setTabError(currentTab.id, errorMessage);
+
+      // Add to query history (error case)
+      useQueryHistoryStore.getState().addEntry({
+        queryText: queryTextToExecute,
+        executedAt: new Date().toISOString(),
+        executionTimeMs: Date.now() - executionStartTime,
+        status: 'error',
+        errorMessage: errorMessage,
+        projectId: currentConnection?.projectId || '',
+      });
     }
   };
 

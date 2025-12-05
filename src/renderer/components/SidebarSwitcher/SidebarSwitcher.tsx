@@ -1,7 +1,7 @@
 import React from 'react';
 import './SidebarSwitcher.css';
 
-export type SidebarView = 'explorer' | 'saved-queries';
+export type SidebarView = 'explorer' | 'saved-queries' | 'history';
 
 interface SidebarSwitcherProps {
   currentView: SidebarView;
@@ -32,7 +32,14 @@ export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
         onClick={() => onViewChange('saved-queries')}
         title="Saved Queries"
       >
-        SAVED QUERIES
+        SAVED
+      </button>
+      <button
+        className={`sidebar-switcher-button ${currentView === 'history' ? 'active' : ''}`}
+        onClick={() => onViewChange('history')}
+        title="Query History"
+      >
+        HISTORY
       </button>
     </div>
   );

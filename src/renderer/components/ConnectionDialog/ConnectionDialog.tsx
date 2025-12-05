@@ -22,6 +22,17 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
 
   const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
 
+  // Handle ESC key to close dialog
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   // Load saved connection settings when dialog opens
   useEffect(() => {
     if (window.electronAPI) {
