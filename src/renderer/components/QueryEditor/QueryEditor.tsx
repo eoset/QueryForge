@@ -574,6 +574,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
     errorMessage: string | null;
@@ -586,6 +587,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [completedQueryExecutionTime, setCompletedQueryExecutionTime] = useState<number | null>(null);
   const editorRef = useRef<any>(null);
   const editorWrapperRef = useRef<HTMLDivElement>(null);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
   const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
@@ -620,6 +622,24 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
     return tab || null;
   });
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (toolsMenuRef.current && target && !toolsMenuRef.current.contains(target)) {
+        setIsToolsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  useEffect(() => {
+    setIsToolsMenuOpen(false);
+  }, [activeTab?.id]);
   
   const queryText = activeTab?.queryText || '';
   const isExecuting = activeTab?.executionStatus === 'running';
@@ -2601,6 +2621,11 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
+  const handleToolAction = (action: () => void) => {
+    action();
+    setIsToolsMenuOpen(false);
+  };
+
   // Calculate expected query size AND validate syntax using BigQuery's native dry run feature
   // Dry run is the PRIMARY validation source - it catches all syntax and semantic errors accurately
   // Local validation (tree-sitter) is only used for immediate feedback while typing
@@ -2831,32 +2856,46 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           )}
         </button>
         {isExecuting && <button onClick={handleCancel} className="cancel-button">Cancel</button>}
-        <button
-          onClick={handleFormat}
-          disabled={!activeTab || !queryText.trim()}
-          className="format-button"
-          title="Format SQL query"
-        >
-          Format
-        </button>
-        <button
-          onClick={handleExpandSelectStar}
-          disabled={!activeTab || !queryText.trim() || !isConnected}
-          className="expand-button"
-          title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
-        >
-          Expand *
-        </button>
-        {connection?.enableDbtSupport && (
+        <div className="tools-dropdown" ref={toolsMenuRef}>
           <button
-            onClick={handleDbtify}
-            disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
-            className="dbtify-button"
-            title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
+            onClick={() => setIsToolsMenuOpen((prev) => !prev)}
+            className={`tools-button${isToolsMenuOpen ? ' open' : ''}`}
+            aria-haspopup="true"
+            aria-expanded={isToolsMenuOpen}
           >
-            {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+            Tools <span className="arrow-icon">▾</span>
           </button>
-        )}
+          {isToolsMenuOpen && (
+            <div className="tools-menu">
+              <button
+                onClick={() => handleToolAction(handleFormat)}
+                disabled={!activeTab || !queryText.trim()}
+                className="tools-menu-item"
+                title="Format SQL query"
+              >
+                Format
+              </button>
+              <button
+                onClick={() => handleToolAction(handleExpandSelectStar)}
+                disabled={!activeTab || !queryText.trim() || !isConnected}
+                className="tools-menu-item"
+                title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
+              >
+                Expand *
+              </button>
+              {connection?.enableDbtSupport && (
+                <button
+                  onClick={() => handleToolAction(handleDbtify)}
+                  disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
+                  className="tools-menu-item"
+                  title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
+                >
+                  {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         <button onClick={handleOpenSaveDialog} disabled={!activeTab || !queryText.trim()} className="save-button">
           {activeTab?.savedQueryId ? 'Update' : 'Save'}
         </button>
