@@ -119,6 +119,9 @@ src/
       HelpDialog/
         HelpDialog.css
         HelpDialog.tsx
+      JobInfoModal/
+        JobInfoModal.css
+        JobInfoModal.tsx
       QueryEditor/
         EditorStatusBar.tsx
         EditorToolbar.tsx
@@ -207,6 +210,7 @@ tests/
       components/
         ConnectionDialog.test.tsx
         ErrorBoundary.test.tsx
+        JobInfoModal.test.tsx
         SidebarHeader.test.tsx
         SidebarSwitcher.test.tsx
         TabBar.test.tsx
@@ -5968,6 +5972,207 @@ With a single developer or small team:
 **MVP Scope**: Phases 1, 2, and 3 (40 tasks total) deliver a working MVP where users can connect to BigQuery and execute queries.
 ````
 
+## File: src/main/ipc/connection.ts
+````typescript
+import { ipcMain, safeStorage } from 'electron';
+import { BigQuery } from '@google-cloud/bigquery';
+import { validateConnectionConfig } from '../../shared/utils/connection-validation';
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+import {
+  saveConnection,
+  getSavedConnection,
+  getDecryptedServiceAccountKey,
+  clearConnection,
+} from '../storage/connection-store';
+
+let bigqueryClient: BigQuery | null = null;
+let activeConnection: ConnectionConfiguration | null = null;
+
+function createBigQueryClient(config: ConnectionConfig): BigQuery {
+  const options: { projectId: string; keyFilename?: string; credentials?: any } = {
+    projectId: config.projectId,
+  };
+
+  if (config.authType === 'service-account') {
+    if (config.serviceAccountKeyPath) {
+      options.keyFilename = config.serviceAccountKeyPath;
+    } else if (config.serviceAccountKey) {
+      try {
+        options.credentials = JSON.parse(config.serviceAccountKey);
+      } catch (e) {
+        throw new Error('Invalid service account key JSON');
+      }
+    }
+  }
+
+  return new BigQuery(options);
+}
+
+export function registerConnectionHandlers(): void {
+  ipcMain.handle('connection:configure', async (_event, config: ConnectionConfig) => {
+    try {
+      // Validate configuration
+      const validation = validateConnectionConfig(config);
+      if (!validation.valid) {
+        throw {
+          code: BigQueryErrorCode.INVALID_PROJECT_ID,
+          message: validation.error || 'Invalid configuration',
+        };
+      }
+
+      // Create BigQuery client
+      bigqueryClient = createBigQueryClient(config);
+
+      // Test connection by listing datasets
+      await bigqueryClient.getDatasets({ maxResults: 1 });
+
+      // Store connection configuration (encrypt sensitive data)
+      const connectionConfig: ConnectionConfiguration = {
+        projectId: config.projectId,
+        authType: config.authType,
+        serviceAccountKeyPath: config.serviceAccountKeyPath,
+        location: config.location || 'EU', // Default to EU if not specified
+        lastConnected: new Date().toISOString(),
+        isActive: true,
+        enableDbtSupport: config.enableDbtSupport || false,
+      };
+
+      // Save connection to persistent storage
+      saveConnection(config, connectionConfig);
+
+      activeConnection = connectionConfig;
+
+      return;
+    } catch (error: any) {
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        throw {
+          code: BigQueryErrorCode.NETWORK_ERROR,
+          message: 'Network error: Unable to connect to BigQuery',
+          details: error.message,
+        };
+      }
+      if (error.code === 403 || error.code === 401) {
+        throw {
+          code: BigQueryErrorCode.AUTH_ERROR,
+          message: 'Authentication failed: Invalid credentials',
+          details: error.message,
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'Failed to establish connection',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('connection:getActive', async () => {
+    return activeConnection;
+  });
+
+  ipcMain.handle('connection:test', async (_event, config: ConnectionConfig) => {
+    try {
+      const validation = validateConnectionConfig(config);
+      if (!validation.valid) {
+        return false;
+      }
+
+      const testClient = createBigQueryClient(config);
+      await testClient.getDatasets({ maxResults: 1 });
+      return true;
+    } catch (error) {
+      console.error('Connection test failed:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('connection:disconnect', async () => {
+    bigqueryClient = null;
+    activeConnection = null;
+    // Don't clear saved connection - user can restore it later
+  });
+
+  ipcMain.handle('connection:getSaved', async () => {
+    return getSavedConnection();
+  });
+
+  ipcMain.handle('connection:restore', async () => {
+    try {
+      const saved = getSavedConnection();
+      if (!saved) {
+        return null;
+      }
+
+      // Reconstruct ConnectionConfig from saved connection
+      const config: ConnectionConfig = {
+        projectId: saved.projectId,
+        authType: saved.authType,
+        serviceAccountKeyPath: saved.serviceAccountKeyPath,
+        location: saved.location || 'EU',
+        enableDbtSupport: saved.enableDbtSupport,
+      };
+
+      // If using service account key content (not file path), decrypt it
+      if (saved.authType === 'service-account' && !saved.serviceAccountKeyPath) {
+        const decryptedKey = getDecryptedServiceAccountKey();
+        if (decryptedKey) {
+          config.serviceAccountKey = decryptedKey;
+        } else {
+          // Can't restore - key is missing or can't be decrypted
+          // This can happen if the app name changed (which changes the encryption key)
+          // Clear the saved connection so user can reconfigure
+          clearConnection();
+          throw new Error('Saved service account key cannot be decrypted (possibly due to app update). Please reconfigure your connection.');
+        }
+      }
+
+      // Validate and test the connection
+      const validation = validateConnectionConfig(config);
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Invalid saved configuration');
+      }
+
+      // Create BigQuery client
+      bigqueryClient = createBigQueryClient(config);
+
+      // Test connection
+      await bigqueryClient.getDatasets({ maxResults: 1 });
+
+      // Update last connected timestamp
+      const connectionConfig: ConnectionConfiguration = {
+        ...saved,
+        lastConnected: new Date().toISOString(),
+        isActive: true,
+      };
+
+      // Update storage with new timestamp
+      saveConnection(config, connectionConfig);
+
+      activeConnection = connectionConfig;
+
+      return connectionConfig;
+    } catch (error: any) {
+      // Clear invalid saved connection
+      clearConnection();
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: error.message || 'Failed to restore saved connection',
+        details: error,
+      };
+    }
+  });
+}
+
+export function getBigQueryClient(): BigQuery | null {
+  return bigqueryClient;
+}
+
+export function getActiveConnection(): ConnectionConfiguration | null {
+  return activeConnection;
+}
+````
+
 ## File: src/main/ipc/queries.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -8246,33 +8451,29 @@ root.render(
 );
 ````
 
-## File: src/shared/types/bigquery.ts
+## File: src/shared/types/connection.ts
 ````typescript
 /**
- * BigQuery-related types and error interfaces
+ * Connection configuration types for BigQuery
  */
 
-export interface IPCError {
-  code: string; // Error code (e.g., 'BIGQUERY_ERROR', 'QUERY_NOT_FOUND')
-  message: string; // Human-readable error message
-  details?: any; // Additional error details
+export interface ConnectionConfig {
+  projectId: string;
+  authType: 'service-account' | 'application-default';
+  serviceAccountKeyPath?: string;
+  serviceAccountKey?: string; // JSON string content
+  location?: string; // BigQuery location (defaults to 'EU')
+  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
 }
 
-// BigQuery error codes
-export enum BigQueryErrorCode {
-  BIGQUERY_ERROR = 'BIGQUERY_ERROR',
-  NETWORK_ERROR = 'NETWORK_ERROR',
-  AUTH_ERROR = 'AUTH_ERROR',
-  TIMEOUT_ERROR = 'TIMEOUT_ERROR',
-  INVALID_PROJECT_ID = 'INVALID_PROJECT_ID',
-  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
-  CONNECTION_FAILED = 'CONNECTION_FAILED',
-  JOB_NOT_FOUND = 'JOB_NOT_FOUND',
-  CANCEL_FAILED = 'CANCEL_FAILED',
-  QUERY_NOT_FOUND = 'QUERY_NOT_FOUND',
-  INVALID_NAME = 'INVALID_NAME',
-  DUPLICATE_NAME = 'DUPLICATE_NAME',
-  STORAGE_ERROR = 'STORAGE_ERROR',
+export interface ConnectionConfiguration {
+  projectId: string;
+  authType: 'service-account' | 'application-default';
+  serviceAccountKeyPath?: string;
+  location?: string; // BigQuery location (defaults to 'EU')
+  lastConnected?: string; // ISO timestamp
+  isActive: boolean;
+  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
 }
 ````
 
@@ -8603,207 +8804,6 @@ jobs:
 ## File: .husky/pre-commit
 ````
 npm test
-````
-
-## File: src/main/ipc/connection.ts
-````typescript
-import { ipcMain, safeStorage } from 'electron';
-import { BigQuery } from '@google-cloud/bigquery';
-import { validateConnectionConfig } from '../../shared/utils/connection-validation';
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import { BigQueryErrorCode } from '../../shared/types/bigquery';
-import {
-  saveConnection,
-  getSavedConnection,
-  getDecryptedServiceAccountKey,
-  clearConnection,
-} from '../storage/connection-store';
-
-let bigqueryClient: BigQuery | null = null;
-let activeConnection: ConnectionConfiguration | null = null;
-
-function createBigQueryClient(config: ConnectionConfig): BigQuery {
-  const options: { projectId: string; keyFilename?: string; credentials?: any } = {
-    projectId: config.projectId,
-  };
-
-  if (config.authType === 'service-account') {
-    if (config.serviceAccountKeyPath) {
-      options.keyFilename = config.serviceAccountKeyPath;
-    } else if (config.serviceAccountKey) {
-      try {
-        options.credentials = JSON.parse(config.serviceAccountKey);
-      } catch (e) {
-        throw new Error('Invalid service account key JSON');
-      }
-    }
-  }
-
-  return new BigQuery(options);
-}
-
-export function registerConnectionHandlers(): void {
-  ipcMain.handle('connection:configure', async (_event, config: ConnectionConfig) => {
-    try {
-      // Validate configuration
-      const validation = validateConnectionConfig(config);
-      if (!validation.valid) {
-        throw {
-          code: BigQueryErrorCode.INVALID_PROJECT_ID,
-          message: validation.error || 'Invalid configuration',
-        };
-      }
-
-      // Create BigQuery client
-      bigqueryClient = createBigQueryClient(config);
-
-      // Test connection by listing datasets
-      await bigqueryClient.getDatasets({ maxResults: 1 });
-
-      // Store connection configuration (encrypt sensitive data)
-      const connectionConfig: ConnectionConfiguration = {
-        projectId: config.projectId,
-        authType: config.authType,
-        serviceAccountKeyPath: config.serviceAccountKeyPath,
-        location: config.location || 'EU', // Default to EU if not specified
-        lastConnected: new Date().toISOString(),
-        isActive: true,
-        enableDbtSupport: config.enableDbtSupport || false,
-      };
-
-      // Save connection to persistent storage
-      saveConnection(config, connectionConfig);
-
-      activeConnection = connectionConfig;
-
-      return;
-    } catch (error: any) {
-      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-        throw {
-          code: BigQueryErrorCode.NETWORK_ERROR,
-          message: 'Network error: Unable to connect to BigQuery',
-          details: error.message,
-        };
-      }
-      if (error.code === 403 || error.code === 401) {
-        throw {
-          code: BigQueryErrorCode.AUTH_ERROR,
-          message: 'Authentication failed: Invalid credentials',
-          details: error.message,
-        };
-      }
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'Failed to establish connection',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('connection:getActive', async () => {
-    return activeConnection;
-  });
-
-  ipcMain.handle('connection:test', async (_event, config: ConnectionConfig) => {
-    try {
-      const validation = validateConnectionConfig(config);
-      if (!validation.valid) {
-        return false;
-      }
-
-      const testClient = createBigQueryClient(config);
-      await testClient.getDatasets({ maxResults: 1 });
-      return true;
-    } catch (error) {
-      console.error('Connection test failed:', error);
-      return false;
-    }
-  });
-
-  ipcMain.handle('connection:disconnect', async () => {
-    bigqueryClient = null;
-    activeConnection = null;
-    // Don't clear saved connection - user can restore it later
-  });
-
-  ipcMain.handle('connection:getSaved', async () => {
-    return getSavedConnection();
-  });
-
-  ipcMain.handle('connection:restore', async () => {
-    try {
-      const saved = getSavedConnection();
-      if (!saved) {
-        return null;
-      }
-
-      // Reconstruct ConnectionConfig from saved connection
-      const config: ConnectionConfig = {
-        projectId: saved.projectId,
-        authType: saved.authType,
-        serviceAccountKeyPath: saved.serviceAccountKeyPath,
-        location: saved.location || 'EU',
-        enableDbtSupport: saved.enableDbtSupport,
-      };
-
-      // If using service account key content (not file path), decrypt it
-      if (saved.authType === 'service-account' && !saved.serviceAccountKeyPath) {
-        const decryptedKey = getDecryptedServiceAccountKey();
-        if (decryptedKey) {
-          config.serviceAccountKey = decryptedKey;
-        } else {
-          // Can't restore - key is missing or can't be decrypted
-          // This can happen if the app name changed (which changes the encryption key)
-          // Clear the saved connection so user can reconfigure
-          clearConnection();
-          throw new Error('Saved service account key cannot be decrypted (possibly due to app update). Please reconfigure your connection.');
-        }
-      }
-
-      // Validate and test the connection
-      const validation = validateConnectionConfig(config);
-      if (!validation.valid) {
-        throw new Error(validation.error || 'Invalid saved configuration');
-      }
-
-      // Create BigQuery client
-      bigqueryClient = createBigQueryClient(config);
-
-      // Test connection
-      await bigqueryClient.getDatasets({ maxResults: 1 });
-
-      // Update last connected timestamp
-      const connectionConfig: ConnectionConfiguration = {
-        ...saved,
-        lastConnected: new Date().toISOString(),
-        isActive: true,
-      };
-
-      // Update storage with new timestamp
-      saveConnection(config, connectionConfig);
-
-      activeConnection = connectionConfig;
-
-      return connectionConfig;
-    } catch (error: any) {
-      // Clear invalid saved connection
-      clearConnection();
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: error.message || 'Failed to restore saved connection',
-        details: error,
-      };
-    }
-  });
-}
-
-export function getBigQueryClient(): BigQuery | null {
-  return bigqueryClient;
-}
-
-export function getActiveConnection(): ConnectionConfiguration | null {
-  return activeConnection;
-}
 ````
 
 ## File: src/main/ipc/export.ts
@@ -9994,6 +9994,381 @@ export function setTheme(theme: Theme): void {
 }
 ````
 
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
+````css
+.connection-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.connection-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 2rem;
+  min-width: 500px;
+  max-width: 600px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.connection-dialog h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.125rem;
+  font-weight: 400;
+  color: var(--text-white);
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.form-group textarea {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  resize: vertical;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  border-radius: 3px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.dialog-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.checkbox-group {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-primary);
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+````
+
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { validateConnectionConfig } from '../../../shared/utils/connection-validation';
+import type { ConnectionConfig } from '../../../shared/types/connection';
+import './ConnectionDialog.css';
+
+interface ConnectionDialogProps {
+  onClose: () => void;
+}
+
+export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) => {
+  const [projectId, setProjectId] = useState('');
+  const [authType, setAuthType] = useState<'service-account' | 'application-default'>(
+    'service-account'
+  );
+  const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
+  const [serviceAccountKey, setServiceAccountKey] = useState('');
+  const [location, setLocation] = useState('EU');
+  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
+
+  // Handle ESC key to close dialog
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  // Load saved connection settings when dialog opens
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.connection.getSaved().then((saved) => {
+        if (saved) {
+          setProjectId(saved.projectId);
+          setAuthType(saved.authType);
+          setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
+          setLocation(saved.location || 'EU');
+          setEnableDbtSupport(saved.enableDbtSupport || false);
+          // Note: We don't load the service account key content for security reasons
+          // User needs to re-enter it or use the file path
+        }
+      }).catch((err) => {
+        console.error('Failed to load saved connection:', err);
+      });
+    }
+  }, []);
+
+  const handleConnect = async () => {
+    setError(null);
+    setIsConnecting(true);
+    setConnecting(true);
+
+    const config: ConnectionConfig = {
+      projectId: projectId.trim(),
+      authType,
+      serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
+      serviceAccountKey: serviceAccountKey.trim() || undefined,
+      location: location.trim() || 'EU',
+      enableDbtSupport,
+    };
+
+    // Validate configuration
+    const validation = validateConnectionConfig(config);
+    if (!validation.valid) {
+      setError(validation.error || 'Invalid configuration');
+      setIsConnecting(false);
+      setConnecting(false);
+      return;
+    }
+
+    try {
+      if (!window.electronAPI) {
+        throw new Error('Electron API not available');
+      }
+
+      // Test connection first
+      const isValid = await window.electronAPI.connection.test(config);
+      if (!isValid) {
+        throw new Error('Connection test failed. Please check your credentials.');
+      }
+
+      // Configure connection
+      await window.electronAPI.connection.configure(config);
+
+      // Get active connection
+      const activeConnection = await window.electronAPI.connection.getActive();
+      if (activeConnection) {
+        setConnection(activeConnection);
+        onClose();
+      }
+    } catch (err: any) {
+      const errorMessage = err.message || 'Failed to connect to BigQuery';
+      setError(errorMessage);
+      setConnectionError(errorMessage);
+    } finally {
+      setIsConnecting(false);
+      setConnecting(false);
+    }
+  };
+
+  return (
+    <div className="connection-dialog-overlay" onClick={onClose}>
+      <div className="connection-dialog" onClick={(e) => e.stopPropagation()}>
+        <h2>Connect to BigQuery</h2>
+
+        <div className="form-group">
+          <label htmlFor="projectId">Project ID *</label>
+          <input
+            id="projectId"
+            type="text"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            placeholder="my-project-id"
+            disabled={isConnecting}
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="location">Location *</label>
+          <select
+            id="location"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            disabled={isConnecting}
+          >
+            <option value="EU">EU</option>
+            <option value="US">US</option>
+            <option value="asia-northeast1">Asia (Tokyo)</option>
+            <option value="asia-south1">Asia (Mumbai)</option>
+            <option value="asia-southeast1">Asia (Singapore)</option>
+            <option value="australia-southeast1">Australia (Sydney)</option>
+            <option value="europe-west1">Europe (Belgium)</option>
+            <option value="europe-west2">Europe (London)</option>
+            <option value="europe-west3">Europe (Frankfurt)</option>
+            <option value="europe-west4">Europe (Netherlands)</option>
+            <option value="europe-west6">Europe (Zurich)</option>
+            <option value="northamerica-northeast1">North America (Montreal)</option>
+            <option value="southamerica-east1">South America (São Paulo)</option>
+            <option value="us-central1">US (Iowa)</option>
+            <option value="us-east1">US (South Carolina)</option>
+            <option value="us-east4">US (Northern Virginia)</option>
+            <option value="us-west1">US (Oregon)</option>
+            <option value="us-west2">US (Los Angeles)</option>
+            <option value="us-west3">US (Salt Lake City)</option>
+            <option value="us-west4">US (Las Vegas)</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="authType">Authentication Method *</label>
+          <select
+            id="authType"
+            value={authType}
+            onChange={(e) =>
+              setAuthType(e.target.value as 'service-account' | 'application-default')
+            }
+            disabled={isConnecting}
+          >
+            <option value="service-account">Service Account Key</option>
+            <option value="application-default">Application Default Credentials</option>
+          </select>
+        </div>
+
+        {authType === 'service-account' && (
+          <>
+            <div className="form-group">
+              <label htmlFor="keyPath">Service Account Key File Path</label>
+              <input
+                id="keyPath"
+                type="text"
+                value={serviceAccountKeyPath}
+                onChange={(e) => setServiceAccountKeyPath(e.target.value)}
+                placeholder="/path/to/key.json"
+                disabled={isConnecting}
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="keyContent">Or Paste Service Account Key JSON</label>
+              <textarea
+                id="keyContent"
+                value={serviceAccountKey}
+                onChange={(e) => setServiceAccountKey(e.target.value)}
+                placeholder='{"type": "service_account", ...}'
+                rows={5}
+                disabled={isConnecting}
+              />
+            </div>
+          </>
+        )}
+
+        <div className="form-group checkbox-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={enableDbtSupport}
+              onChange={(e) => setEnableDbtSupport(e.target.checked)}
+              disabled={isConnecting}
+            />
+            Enable dbt syntax support
+          </label>
+          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
+        </div>
+
+        {error && <div className="error-message">{error}</div>}
+
+        <div className="dialog-actions">
+          <button onClick={onClose} disabled={isConnecting}>
+            Cancel
+          </button>
+          <button onClick={handleConnect} disabled={isConnecting || !projectId.trim()}>
+            {isConnecting ? 'Connecting...' : 'Connect'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/DatasetTree/DatasetTree.tsx
 ````typescript
 import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
@@ -10769,6 +11144,534 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
 }
 ````
 
+## File: src/renderer/components/JobInfoModal/JobInfoModal.css
+````css
+.job-info-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.job-info-modal-dialog {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.job-info-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.job-info-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.job-info-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+
+.job-info-modal-close:hover {
+  color: var(--text-white);
+}
+
+.job-info-modal-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.job-info-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.job-info-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: job-info-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes job-info-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.job-info-error {
+  padding: 1rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.job-info-details {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.job-info-section {
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.job-info-section h3 {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.job-info-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+.job-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.job-info-row:last-child {
+  border-bottom: none;
+}
+
+.job-info-label {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.job-info-value {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  text-align: right;
+}
+
+.job-info-value code {
+  background-color: var(--bg-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+
+.job-id-value {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.job-info-copy-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.125rem 0.25rem;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+
+.job-info-copy-btn:hover {
+  opacity: 1;
+}
+
+.job-info-highlight {
+  font-weight: 600;
+  color: var(--accent-primary);
+}
+
+.job-info-success {
+  color: var(--text-success, #4caf50);
+}
+
+.job-status {
+  padding: 0.125rem 0.5rem;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.job-status-done {
+  background-color: rgba(76, 175, 80, 0.15);
+  color: var(--text-success, #4caf50);
+}
+
+.job-status-running {
+  background-color: rgba(33, 150, 243, 0.15);
+  color: var(--accent-primary);
+}
+
+.job-status-pending {
+  background-color: rgba(255, 193, 7, 0.15);
+  color: var(--text-warning, #ffc107);
+}
+
+.job-info-tables {
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.job-info-table-item code {
+  display: block;
+  background-color: var(--bg-secondary);
+  padding: 0.375rem 0.625rem;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.job-info-error-section h3 {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+}
+
+.job-info-error-section .job-info-row {
+  background-color: rgba(244, 67, 54, 0.05);
+}
+````
+
+## File: src/renderer/components/JobInfoModal/JobInfoModal.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import type { JobDetails } from '../../../shared/types/bigquery';
+import './JobInfoModal.css';
+
+interface JobInfoModalProps {
+  jobId: string;
+  onClose: () => void;
+}
+
+/**
+ * Format bytes to human readable string
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+/**
+ * Format duration from milliseconds
+ */
+function formatDuration(startTime: string, endTime: string): string {
+  if (!startTime || !endTime) return 'N/A';
+  const start = new Date(startTime).getTime();
+  const end = new Date(endTime).getTime();
+  const ms = end - start;
+  
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = ((ms % 60000) / 1000).toFixed(1);
+  return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Format slot time (milliseconds to readable format)
+ */
+function formatSlotTime(ms: number): string {
+  if (ms === 0) return '0 slot-ms';
+  if (ms < 1000) return `${ms} slot-ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(2)} slot-seconds`;
+  if (ms < 3600000) return `${(ms / 60000).toFixed(2)} slot-minutes`;
+  return `${(ms / 3600000).toFixed(2)} slot-hours`;
+}
+
+/**
+ * Format timestamp to local string
+ */
+function formatTimestamp(isoString: string): string {
+  if (!isoString) return 'N/A';
+  return new Date(isoString).toLocaleString();
+}
+
+export const JobInfoModal: React.FC<JobInfoModalProps> = ({ jobId, onClose }) => {
+  const [jobDetails, setJobDetails] = useState<JobDetails | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadJobInfo = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getJobInfo(jobId);
+        setJobDetails(result);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load job information');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadJobInfo();
+  }, [jobId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopyJobId = () => {
+    navigator.clipboard.writeText(jobId);
+  };
+
+  return (
+    <div className="job-info-modal-overlay" onClick={handleOverlayClick}>
+      <div className="job-info-modal-dialog">
+        <div className="job-info-modal-header">
+          <h2>Job Details</h2>
+          <button className="job-info-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="job-info-modal-content">
+          {isLoading && (
+            <div className="job-info-loading">
+              <div className="job-info-spinner"></div>
+              <div>Loading job information...</div>
+            </div>
+          )}
+          {error && (
+            <div className="job-info-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && jobDetails && (
+            <div className="job-info-details">
+              {/* Basic Job Info */}
+              <section className="job-info-section">
+                <h3>Job Information</h3>
+                <div className="job-info-grid">
+                  <div className="job-info-row">
+                    <span className="job-info-label">Job ID</span>
+                    <span className="job-info-value job-id-value">
+                      <code>{jobDetails.jobId}</code>
+                      <button 
+                        className="job-info-copy-btn" 
+                        onClick={handleCopyJobId}
+                        title="Copy job ID"
+                      >
+                        📋
+                      </button>
+                    </span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Project</span>
+                    <span className="job-info-value">{jobDetails.projectId}</span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Location</span>
+                    <span className="job-info-value">{jobDetails.location || 'N/A'}</span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">User</span>
+                    <span className="job-info-value">{jobDetails.user || 'N/A'}</span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Status</span>
+                    <span className={`job-info-value job-status job-status-${jobDetails.state.toLowerCase()}`}>
+                      {jobDetails.state}
+                    </span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Statement Type</span>
+                    <span className="job-info-value">{jobDetails.statementType}</span>
+                  </div>
+                </div>
+              </section>
+
+              {/* Timing Info */}
+              <section className="job-info-section">
+                <h3>Timing</h3>
+                <div className="job-info-grid">
+                  <div className="job-info-row">
+                    <span className="job-info-label">Created</span>
+                    <span className="job-info-value">{formatTimestamp(jobDetails.creationTime)}</span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Started</span>
+                    <span className="job-info-value">{formatTimestamp(jobDetails.startTime)}</span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Ended</span>
+                    <span className="job-info-value">{formatTimestamp(jobDetails.endTime)}</span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Duration</span>
+                    <span className="job-info-value job-info-highlight">
+                      {formatDuration(jobDetails.startTime, jobDetails.endTime)}
+                    </span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Slot Time</span>
+                    <span className="job-info-value">{formatSlotTime(jobDetails.totalSlotMs)}</span>
+                  </div>
+                </div>
+              </section>
+
+              {/* Data Processing */}
+              <section className="job-info-section">
+                <h3>Data Processing</h3>
+                <div className="job-info-grid">
+                  <div className="job-info-row">
+                    <span className="job-info-label">Bytes Processed</span>
+                    <span className="job-info-value job-info-highlight">
+                      {formatBytes(jobDetails.totalBytesProcessed)}
+                    </span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Bytes Billed</span>
+                    <span className="job-info-value job-info-highlight">
+                      {formatBytes(jobDetails.totalBytesBilled)}
+                    </span>
+                  </div>
+                  <div className="job-info-row">
+                    <span className="job-info-label">Cache Hit</span>
+                    <span className={`job-info-value ${jobDetails.cacheHit ? 'job-info-success' : ''}`}>
+                      {jobDetails.cacheHit ? '✓ Yes' : 'No'}
+                    </span>
+                  </div>
+                  {jobDetails.billingTier && (
+                    <div className="job-info-row">
+                      <span className="job-info-label">Billing Tier</span>
+                      <span className="job-info-value">{jobDetails.billingTier}</span>
+                    </div>
+                  )}
+                  {jobDetails.outputRows !== undefined && (
+                    <div className="job-info-row">
+                      <span className="job-info-label">Output Rows</span>
+                      <span className="job-info-value">{jobDetails.outputRows.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {jobDetails.numDmlAffectedRows !== undefined && (
+                    <div className="job-info-row">
+                      <span className="job-info-label">Rows Affected</span>
+                      <span className="job-info-value">{jobDetails.numDmlAffectedRows.toLocaleString()}</span>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* Referenced Tables */}
+              {jobDetails.referencedTables && jobDetails.referencedTables.length > 0 && (
+                <section className="job-info-section">
+                  <h3>Referenced Tables</h3>
+                  <div className="job-info-tables">
+                    {jobDetails.referencedTables.map((table, index) => (
+                      <div key={index} className="job-info-table-item">
+                        <code>{table.projectId}.{table.datasetId}.{table.tableId}</code>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Error Info */}
+              {jobDetails.errorResult && (
+                <section className="job-info-section job-info-error-section">
+                  <h3>Error Details</h3>
+                  <div className="job-info-grid">
+                    <div className="job-info-row">
+                      <span className="job-info-label">Reason</span>
+                      <span className="job-info-value">{jobDetails.errorResult.reason}</span>
+                    </div>
+                    <div className="job-info-row">
+                      <span className="job-info-label">Location</span>
+                      <span className="job-info-value">{jobDetails.errorResult.location}</span>
+                    </div>
+                    <div className="job-info-row">
+                      <span className="job-info-label">Message</span>
+                      <span className="job-info-value">{jobDetails.errorResult.message}</span>
+                    </div>
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/QueryEditor/EditorStatusBar.tsx
 ````typescript
 import React from 'react';
@@ -11397,434 +12300,6 @@ export const SaveQueryDialog: React.FC<SaveQueryDialogProps> = ({
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-````
-
-## File: src/renderer/components/QueryHistory/QueryHistory.tsx
-````typescript
-import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
-import { useQueryHistoryStore } from '../../stores/query-history-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import type { QueryHistoryEntry } from '../../../shared/types/query';
-import './QueryHistory.css';
-
-interface QueryHistoryProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
-}
-
-/**
- * Format bytes to human readable string
- */
-function formatBytes(bytes: number | undefined): string {
-  if (bytes === undefined || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-/**
- * Format execution time to human readable string
- */
-function formatExecutionTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
-}
-
-/**
- * Format relative time (e.g., "2 minutes ago")
- */
-function formatRelativeTime(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHour / 24);
-
-  if (diffSec < 60) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHour < 24) return `${diffHour}h ago`;
-  if (diffDay < 7) return `${diffDay}d ago`;
-  
-  return date.toLocaleDateString();
-}
-
-/**
- * Get date group label for history entries
- */
-function getDateGroup(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const entryDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (entryDate.getTime() === today.getTime()) return 'Today';
-  if (entryDate.getTime() === yesterday.getTime()) return 'Yesterday';
-  if (now.getTime() - entryDate.getTime() < 7 * 24 * 60 * 60 * 1000) return 'This Week';
-  if (now.getTime() - entryDate.getTime() < 30 * 24 * 60 * 60 * 1000) return 'This Month';
-  return 'Older';
-}
-
-/**
- * Truncate query text for display
- */
-function truncateQuery(query: string, maxLength: number = 100): string {
-  const singleLine = query.replace(/\s+/g, ' ').trim();
-  if (singleLine.length <= maxLength) return singleLine;
-  return singleLine.substring(0, maxLength) + '...';
-}
-
-const QueryHistoryComponent: React.FC<QueryHistoryProps> = ({ 
-  collapsed = false, 
-  onToggleCollapse, 
-  onRefreshReady 
-}) => {
-  const { entries, isLoading, loadHistory, deleteEntry, clearHistory, setSearchTerm: setStoreSearchTerm, getFilteredEntries } = useQueryHistoryStore();
-  const { createTab, setTabQuery, updateTab } = useTabsStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    entry: QueryHistoryEntry;
-  } | null>(null);
-  const [hoveredEntry, setHoveredEntry] = useState<{
-    entry: QueryHistoryEntry;
-    x: number;
-    y: number;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
-
-  useEffect(() => {
-    setStoreSearchTerm(searchTerm);
-  }, [searchTerm, setStoreSearchTerm]);
-
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadHistory, isLoading);
-    }
-  }, [onRefreshReady, loadHistory, isLoading]);
-
-  const handleEntryContextMenu = (event: React.MouseEvent, entry: QueryHistoryEntry) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      entry,
-    });
-  };
-
-  const handleEntryMouseEnter = (event: React.MouseEvent, entry: QueryHistoryEntry) => {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    
-    // Clear any existing timeouts
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-    
-    // Add a small delay before showing tooltip
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredEntry({
-        entry,
-        x: rect.right + 8,
-        y: rect.top,
-      });
-    }, 300);
-  };
-
-  const handleEntryMouseLeave = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    // Delay hiding to allow cursor to move into tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setHoveredEntry(null);
-    }, 100);
-  };
-
-  const handleTooltipMouseEnter = () => {
-    // Cancel the hide timeout when entering tooltip
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  };
-
-  const handleTooltipMouseLeave = () => {
-    // Hide tooltip when leaving it
-    setHoveredEntry(null);
-  };
-
-  const handleOpenInNewTab = () => {
-    if (!contextMenu) return;
-    
-    const { entry } = contextMenu;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, entry.queryText);
-    updateTab(newTabId, {
-      title: `Query ${new Date(entry.executedAt).toLocaleTimeString()}`,
-      isModified: false,
-    });
-    
-    setContextMenu(null);
-  };
-
-  const handleCopyQuery = () => {
-    if (!contextMenu) return;
-    navigator.clipboard.writeText(contextMenu.entry.queryText);
-    setContextMenu(null);
-  };
-
-  const handleDeleteEntry = () => {
-    if (!contextMenu) return;
-    deleteEntry(contextMenu.entry.id);
-    setContextMenu(null);
-  };
-
-  const handleClearHistory = () => {
-    if (window.confirm('Are you sure you want to clear all query history? This cannot be undone.')) {
-      clearHistory();
-    }
-  };
-
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
-
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
-
-  // Filter and group entries
-  const filteredEntries = useMemo(() => {
-    if (!searchTerm.trim()) {
-      return entries;
-    }
-    return getFilteredEntries();
-  }, [entries, searchTerm, getFilteredEntries]);
-
-  // Group entries by date
-  const groupedEntries = useMemo(() => {
-    const groups: { label: string; entries: QueryHistoryEntry[] }[] = [];
-    let currentGroup: string | null = null;
-
-    for (const entry of filteredEntries) {
-      const group = getDateGroup(entry.executedAt);
-      if (group !== currentGroup) {
-        groups.push({ label: group, entries: [entry] });
-        currentGroup = group;
-      } else {
-        groups[groups.length - 1].entries.push(entry);
-      }
-    }
-
-    return groups;
-  }, [filteredEntries]);
-
-  const getStatusIcon = (status: QueryHistoryEntry['status']) => {
-    switch (status) {
-      case 'completed':
-        return '✓';
-      case 'error':
-        return '✕';
-      case 'cancelled':
-        return '◯';
-      default:
-        return '•';
-    }
-  };
-
-  return (
-    <div className={`query-history ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="query-history-search">
-            <input
-              type="text"
-              className="query-history-search-input"
-              placeholder="Search history..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="query-history-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="query-history-content">
-            {isLoading && entries.length === 0 && (
-              <div className="query-history-loading">Loading history...</div>
-            )}
-            {filteredEntries.length === 0 && !isLoading && (
-              <div className="query-history-empty">
-                {searchTerm ? 'No matching queries found' : 'No query history yet'}
-              </div>
-            )}
-            {groupedEntries.map((group, groupIndex) => (
-              <React.Fragment key={group.label}>
-                <div className="query-history-date-separator">{group.label}</div>
-                {group.entries.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className={`query-history-item status-${entry.status}`}
-                    onContextMenu={(e) => handleEntryContextMenu(e, entry)}
-                    onMouseEnter={(e) => handleEntryMouseEnter(e, entry)}
-                    onMouseLeave={handleEntryMouseLeave}
-                  >
-                    <div className="query-history-item-header">
-                      <div className="query-history-item-status">
-                        <span className={`query-history-status-icon ${entry.status}`}>
-                          {getStatusIcon(entry.status)}
-                        </span>
-                      </div>
-                      <span className="query-history-item-time">
-                        {formatRelativeTime(entry.executedAt)}
-                      </span>
-                    </div>
-                    <div className="query-history-item-query">
-                      {truncateQuery(entry.queryText)}
-                    </div>
-                    <div className="query-history-item-meta">
-                      <span className="query-history-meta-item">
-                        <span className="query-history-meta-icon">⏱</span>
-                        {formatExecutionTime(entry.executionTimeMs)}
-                      </span>
-                      {entry.bytesProcessed !== undefined && (
-                        <span className="query-history-meta-item">
-                          
-                          {formatBytes(entry.bytesProcessed)}
-                        </span>
-                      )}
-                      {entry.totalRows !== undefined && (
-                        <span className="query-history-meta-item">
-                          <span className="query-history-meta-icon">↔</span>
-                          {entry.totalRows.toLocaleString()} rows
-                        </span>
-                      )}
-                    </div>
-                    {entry.status === 'error' && entry.errorMessage && (
-                      <div className="query-history-error-message">
-                        {entry.errorMessage}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </React.Fragment>
-            ))}
-          </div>
-          {filteredEntries.length > 0 && (
-            <div className="query-history-footer">
-              <button 
-                className="query-history-clear-btn"
-                onClick={handleClearHistory}
-                title="Clear all history"
-              >
-                Clear History
-              </button>
-            </div>
-          )}
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleOpenInNewTab}>
-            Open in new tab
-          </div>
-          <div className="context-menu-item" onClick={handleCopyQuery}>
-            Copy query
-          </div>
-          <div className="context-menu-separator" />
-          <div className="context-menu-item danger" onClick={handleDeleteEntry}>
-            Delete
-          </div>
-        </div>
-      )}
-      {hoveredEntry && (
-        <div
-          className="query-history-tooltip"
-          style={{
-            position: 'fixed',
-            left: `${hoveredEntry.x}px`,
-            top: `${hoveredEntry.y}px`,
-          }}
-          onMouseEnter={handleTooltipMouseEnter}
-          onMouseLeave={handleTooltipMouseLeave}
-        >
-          <pre className="query-history-tooltip-code">{hoveredEntry.entry.queryText}</pre>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const QueryHistory = memo(QueryHistoryComponent, (prevProps, nextProps) => {
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse
-  );
-});
 ````
 
 ## File: src/renderer/components/QueryResults/ColumnSortMenu.css
@@ -16084,29 +16559,79 @@ function hasErrorsInTree(node: TreeSitterNode): boolean {
 }
 ````
 
-## File: src/shared/types/connection.ts
+## File: src/shared/types/bigquery.ts
 ````typescript
 /**
- * Connection configuration types for BigQuery
+ * BigQuery-related types and error interfaces
  */
 
-export interface ConnectionConfig {
-  projectId: string;
-  authType: 'service-account' | 'application-default';
-  serviceAccountKeyPath?: string;
-  serviceAccountKey?: string; // JSON string content
-  location?: string; // BigQuery location (defaults to 'EU')
-  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
+export interface IPCError {
+  code: string; // Error code (e.g., 'BIGQUERY_ERROR', 'QUERY_NOT_FOUND')
+  message: string; // Human-readable error message
+  details?: any; // Additional error details
 }
 
-export interface ConnectionConfiguration {
+/**
+ * Job details returned from BigQuery job metadata
+ */
+export interface JobDetails {
+  // Basic job info
+  jobId: string;
   projectId: string;
-  authType: 'service-account' | 'application-default';
-  serviceAccountKeyPath?: string;
-  location?: string; // BigQuery location (defaults to 'EU')
-  lastConnected?: string; // ISO timestamp
-  isActive: boolean;
-  enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
+  location: string;
+  user: string;
+  
+  // Timing info
+  creationTime: string; // ISO timestamp
+  startTime: string; // ISO timestamp
+  endTime: string; // ISO timestamp
+  totalSlotMs: number; // Slot milliseconds used
+  
+  // Query statistics
+  totalBytesProcessed: number;
+  totalBytesBilled: number;
+  cacheHit: boolean;
+  statementType: string; // SELECT, INSERT, UPDATE, etc.
+  
+  // Row counts
+  numDmlAffectedRows?: number; // For DML queries
+  outputRows?: number; // For SELECT queries
+  
+  // Performance details
+  billingTier?: number;
+  estimatedBytesProcessed?: number;
+  
+  // Query plan (optional, for advanced view)
+  referencedTables?: Array<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  }>;
+  
+  // Status
+  state: 'PENDING' | 'RUNNING' | 'DONE';
+  errorResult?: {
+    reason: string;
+    location: string;
+    message: string;
+  };
+}
+
+// BigQuery error codes
+export enum BigQueryErrorCode {
+  BIGQUERY_ERROR = 'BIGQUERY_ERROR',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  AUTH_ERROR = 'AUTH_ERROR',
+  TIMEOUT_ERROR = 'TIMEOUT_ERROR',
+  INVALID_PROJECT_ID = 'INVALID_PROJECT_ID',
+  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
+  CONNECTION_FAILED = 'CONNECTION_FAILED',
+  JOB_NOT_FOUND = 'JOB_NOT_FOUND',
+  CANCEL_FAILED = 'CANCEL_FAILED',
+  QUERY_NOT_FOUND = 'QUERY_NOT_FOUND',
+  INVALID_NAME = 'INVALID_NAME',
+  DUPLICATE_NAME = 'DUPLICATE_NAME',
+  STORAGE_ERROR = 'STORAGE_ERROR',
 }
 ````
 
@@ -17637,6 +18162,277 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByTestId('child1')).toBeInTheDocument();
     expect(screen.getByTestId('child2')).toBeInTheDocument();
+  });
+});
+````
+
+## File: tests/unit/renderer/components/JobInfoModal.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { JobInfoModal } from '../../../../src/renderer/components/JobInfoModal/JobInfoModal';
+import type { JobDetails } from '../../../../src/shared/types/bigquery';
+
+// Get the mocked electronAPI from the global window
+const mockElectronAPI = (window as any).electronAPI;
+
+// Mock job details for testing
+const mockJobDetails: JobDetails = {
+  jobId: 'test-job-123',
+  projectId: 'test-project',
+  location: 'EU',
+  user: 'test@example.com',
+  creationTime: '2025-12-05T10:00:00.000Z',
+  startTime: '2025-12-05T10:00:01.000Z',
+  endTime: '2025-12-05T10:00:05.000Z',
+  totalSlotMs: 5000,
+  totalBytesProcessed: 1073741824, // 1 GB
+  totalBytesBilled: 1073741824,
+  cacheHit: false,
+  statementType: 'SELECT',
+  outputRows: 1000,
+  billingTier: 1,
+  referencedTables: [
+    { projectId: 'test-project', datasetId: 'test_dataset', tableId: 'test_table' },
+  ],
+  state: 'DONE',
+};
+
+describe('JobInfoModal', () => {
+  const mockOnClose = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Setup default mock for getJobInfo
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue(mockJobDetails);
+  });
+
+  it('should render loading state initially', () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    expect(screen.getByText('Loading job information...')).toBeInTheDocument();
+  });
+
+  it('should render job details after loading', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    // Check that job ID is displayed
+    expect(screen.getByText('test-job-123')).toBeInTheDocument();
+    
+    // Check project ID
+    expect(screen.getByText('test-project')).toBeInTheDocument();
+    
+    // Check location
+    expect(screen.getByText('EU')).toBeInTheDocument();
+    
+    // Check user
+    expect(screen.getByText('test@example.com')).toBeInTheDocument();
+  });
+
+  it('should display bytes processed in human readable format', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    // 1 GB should be displayed
+    expect(screen.getAllByText('1 GB').length).toBeGreaterThan(0);
+  });
+
+  it('should display cache hit status', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No')).toBeInTheDocument();
+    });
+  });
+
+  it('should display cache hit as Yes when cacheHit is true', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      cacheHit: true,
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('✓ Yes')).toBeInTheDocument();
+    });
+  });
+
+  it('should display referenced tables', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Referenced Tables')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('test-project.test_dataset.test_table')).toBeInTheDocument();
+  });
+
+  it('should display output rows', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('1,000')).toBeInTheDocument();
+    });
+  });
+
+  it('should call onClose when close button is clicked', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const closeButton = screen.getByRole('button', { name: '×' });
+    fireEvent.click(closeButton);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should call onClose when clicking overlay', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const overlay = document.querySelector('.job-info-modal-overlay');
+    fireEvent.click(overlay!);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should not call onClose when clicking dialog content', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const dialog = document.querySelector('.job-info-modal-dialog');
+    fireEvent.click(dialog!);
+
+    expect(mockOnClose).not.toHaveBeenCalled();
+  });
+
+  it('should call onClose when escape key is pressed', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should display error message when loading fails', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockRejectedValue(
+      new Error('Job not found')
+    );
+
+    render(<JobInfoModal jobId="invalid-job" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error:/)).toBeInTheDocument();
+      expect(screen.getByText(/Job not found/)).toBeInTheDocument();
+    });
+  });
+
+  it('should copy job ID when copy button is clicked', async () => {
+    const mockClipboard = { writeText: jest.fn() };
+    Object.assign(navigator, { clipboard: mockClipboard });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const copyButton = screen.getByTitle('Copy job ID');
+    fireEvent.click(copyButton);
+
+    expect(mockClipboard.writeText).toHaveBeenCalledWith('test-job-123');
+  });
+
+  it('should display job status with correct styling', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DONE')).toBeInTheDocument();
+    });
+
+    const statusElement = screen.getByText('DONE');
+    expect(statusElement).toHaveClass('job-status-done');
+  });
+
+  it('should display statement type', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SELECT')).toBeInTheDocument();
+    });
+  });
+
+  it('should display error details when job has error', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      state: 'DONE',
+      errorResult: {
+        reason: 'invalidQuery',
+        location: 'query',
+        message: 'Syntax error at line 1',
+      },
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Error Details')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('invalidQuery')).toBeInTheDocument();
+    expect(screen.getByText('Syntax error at line 1')).toBeInTheDocument();
+  });
+
+  it('should display DML affected rows for DML queries', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      statementType: 'UPDATE',
+      outputRows: undefined,
+      numDmlAffectedRows: 500,
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Rows Affected')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('500')).toBeInTheDocument();
+  });
+
+  it('should not display referenced tables section when empty', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      referencedTables: undefined,
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('Referenced Tables')).not.toBeInTheDocument();
   });
 });
 ````
@@ -21097,381 +21893,6 @@ module.exports = (env, argv) => {
 };
 ````
 
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
-````css
-.connection-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.connection-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 2rem;
-  min-width: 500px;
-  max-width: 600px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.connection-dialog h2 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.125rem;
-  font-weight: 400;
-  color: var(--text-white);
-}
-
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.form-group input,
-.form-group select,
-.form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.form-group textarea {
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  resize: vertical;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  border-radius: 3px;
-  margin-bottom: 1rem;
-  border: 1px solid var(--border-error);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
-}
-
-.dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.dialog-actions button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.checkbox-group {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border-primary);
-}
-
-.checkbox-label {
-  display: flex !important;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  user-select: none;
-}
-
-.checkbox-label input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--accent-primary);
-}
-
-.field-hint {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-````
-
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { validateConnectionConfig } from '../../../shared/utils/connection-validation';
-import type { ConnectionConfig } from '../../../shared/types/connection';
-import './ConnectionDialog.css';
-
-interface ConnectionDialogProps {
-  onClose: () => void;
-}
-
-export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) => {
-  const [projectId, setProjectId] = useState('');
-  const [authType, setAuthType] = useState<'service-account' | 'application-default'>(
-    'service-account'
-  );
-  const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
-  const [serviceAccountKey, setServiceAccountKey] = useState('');
-  const [location, setLocation] = useState('EU');
-  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
-
-  const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
-
-  // Handle ESC key to close dialog
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
-  // Load saved connection settings when dialog opens
-  useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.connection.getSaved().then((saved) => {
-        if (saved) {
-          setProjectId(saved.projectId);
-          setAuthType(saved.authType);
-          setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
-          setLocation(saved.location || 'EU');
-          setEnableDbtSupport(saved.enableDbtSupport || false);
-          // Note: We don't load the service account key content for security reasons
-          // User needs to re-enter it or use the file path
-        }
-      }).catch((err) => {
-        console.error('Failed to load saved connection:', err);
-      });
-    }
-  }, []);
-
-  const handleConnect = async () => {
-    setError(null);
-    setIsConnecting(true);
-    setConnecting(true);
-
-    const config: ConnectionConfig = {
-      projectId: projectId.trim(),
-      authType,
-      serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
-      serviceAccountKey: serviceAccountKey.trim() || undefined,
-      location: location.trim() || 'EU',
-      enableDbtSupport,
-    };
-
-    // Validate configuration
-    const validation = validateConnectionConfig(config);
-    if (!validation.valid) {
-      setError(validation.error || 'Invalid configuration');
-      setIsConnecting(false);
-      setConnecting(false);
-      return;
-    }
-
-    try {
-      if (!window.electronAPI) {
-        throw new Error('Electron API not available');
-      }
-
-      // Test connection first
-      const isValid = await window.electronAPI.connection.test(config);
-      if (!isValid) {
-        throw new Error('Connection test failed. Please check your credentials.');
-      }
-
-      // Configure connection
-      await window.electronAPI.connection.configure(config);
-
-      // Get active connection
-      const activeConnection = await window.electronAPI.connection.getActive();
-      if (activeConnection) {
-        setConnection(activeConnection);
-        onClose();
-      }
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to connect to BigQuery';
-      setError(errorMessage);
-      setConnectionError(errorMessage);
-    } finally {
-      setIsConnecting(false);
-      setConnecting(false);
-    }
-  };
-
-  return (
-    <div className="connection-dialog-overlay" onClick={onClose}>
-      <div className="connection-dialog" onClick={(e) => e.stopPropagation()}>
-        <h2>Connect to BigQuery</h2>
-
-        <div className="form-group">
-          <label htmlFor="projectId">Project ID *</label>
-          <input
-            id="projectId"
-            type="text"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            placeholder="my-project-id"
-            disabled={isConnecting}
-          />
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="location">Location *</label>
-          <select
-            id="location"
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            disabled={isConnecting}
-          >
-            <option value="EU">EU</option>
-            <option value="US">US</option>
-            <option value="asia-northeast1">Asia (Tokyo)</option>
-            <option value="asia-south1">Asia (Mumbai)</option>
-            <option value="asia-southeast1">Asia (Singapore)</option>
-            <option value="australia-southeast1">Australia (Sydney)</option>
-            <option value="europe-west1">Europe (Belgium)</option>
-            <option value="europe-west2">Europe (London)</option>
-            <option value="europe-west3">Europe (Frankfurt)</option>
-            <option value="europe-west4">Europe (Netherlands)</option>
-            <option value="europe-west6">Europe (Zurich)</option>
-            <option value="northamerica-northeast1">North America (Montreal)</option>
-            <option value="southamerica-east1">South America (São Paulo)</option>
-            <option value="us-central1">US (Iowa)</option>
-            <option value="us-east1">US (South Carolina)</option>
-            <option value="us-east4">US (Northern Virginia)</option>
-            <option value="us-west1">US (Oregon)</option>
-            <option value="us-west2">US (Los Angeles)</option>
-            <option value="us-west3">US (Salt Lake City)</option>
-            <option value="us-west4">US (Las Vegas)</option>
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="authType">Authentication Method *</label>
-          <select
-            id="authType"
-            value={authType}
-            onChange={(e) =>
-              setAuthType(e.target.value as 'service-account' | 'application-default')
-            }
-            disabled={isConnecting}
-          >
-            <option value="service-account">Service Account Key</option>
-            <option value="application-default">Application Default Credentials</option>
-          </select>
-        </div>
-
-        {authType === 'service-account' && (
-          <>
-            <div className="form-group">
-              <label htmlFor="keyPath">Service Account Key File Path</label>
-              <input
-                id="keyPath"
-                type="text"
-                value={serviceAccountKeyPath}
-                onChange={(e) => setServiceAccountKeyPath(e.target.value)}
-                placeholder="/path/to/key.json"
-                disabled={isConnecting}
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="keyContent">Or Paste Service Account Key JSON</label>
-              <textarea
-                id="keyContent"
-                value={serviceAccountKey}
-                onChange={(e) => setServiceAccountKey(e.target.value)}
-                placeholder='{"type": "service_account", ...}'
-                rows={5}
-                disabled={isConnecting}
-              />
-            </div>
-          </>
-        )}
-
-        <div className="form-group checkbox-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={enableDbtSupport}
-              onChange={(e) => setEnableDbtSupport(e.target.checked)}
-              disabled={isConnecting}
-            />
-            Enable dbt syntax support
-          </label>
-          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
-        </div>
-
-        {error && <div className="error-message">{error}</div>}
-
-        <div className="dialog-actions">
-          <button onClick={onClose} disabled={isConnecting}>
-            Cancel
-          </button>
-          <button onClick={handleConnect} disabled={isConnecting || !projectId.trim()}>
-            {isConnecting ? 'Connecting...' : 'Connect'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/components/DatasetTree/DatasetTree.css
 ````css
 .dataset-tree {
@@ -21785,6 +22206,453 @@ export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) =
   border-bottom-left-radius: 3px;
   border-bottom-right-radius: 3px;
 }
+````
+
+## File: src/renderer/components/QueryHistory/QueryHistory.tsx
+````typescript
+import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
+import { useQueryHistoryStore } from '../../stores/query-history-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import { JobInfoModal } from '../JobInfoModal/JobInfoModal';
+import type { QueryHistoryEntry } from '../../../shared/types/query';
+import './QueryHistory.css';
+
+interface QueryHistoryProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+/**
+ * Format bytes to human readable string
+ */
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Format execution time to human readable string
+ */
+function formatExecutionTime(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60000).toFixed(1)}m`;
+}
+
+/**
+ * Format relative time (e.g., "2 minutes ago")
+ */
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
+
+  if (diffSec < 60) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHour < 24) return `${diffHour}h ago`;
+  if (diffDay < 7) return `${diffDay}d ago`;
+  
+  return date.toLocaleDateString();
+}
+
+/**
+ * Get date group label for history entries
+ */
+function getDateGroup(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const entryDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  if (entryDate.getTime() === today.getTime()) return 'Today';
+  if (entryDate.getTime() === yesterday.getTime()) return 'Yesterday';
+  if (now.getTime() - entryDate.getTime() < 7 * 24 * 60 * 60 * 1000) return 'This Week';
+  if (now.getTime() - entryDate.getTime() < 30 * 24 * 60 * 60 * 1000) return 'This Month';
+  return 'Older';
+}
+
+/**
+ * Truncate query text for display
+ */
+function truncateQuery(query: string, maxLength: number = 100): string {
+  const singleLine = query.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= maxLength) return singleLine;
+  return singleLine.substring(0, maxLength) + '...';
+}
+
+const QueryHistoryComponent: React.FC<QueryHistoryProps> = ({ 
+  collapsed = false, 
+  onToggleCollapse, 
+  onRefreshReady 
+}) => {
+  const { entries, isLoading, loadHistory, deleteEntry, clearHistory, setSearchTerm: setStoreSearchTerm, getFilteredEntries } = useQueryHistoryStore();
+  const { createTab, setTabQuery, updateTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    entry: QueryHistoryEntry;
+  } | null>(null);
+  const [hoveredEntry, setHoveredEntry] = useState<{
+    entry: QueryHistoryEntry;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [jobInfoModal, setJobInfoModal] = useState<{ jobId: string } | null>(null);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadHistory, isLoading);
+    }
+  }, [onRefreshReady, loadHistory, isLoading]);
+
+  const handleEntryContextMenu = (event: React.MouseEvent, entry: QueryHistoryEntry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      entry,
+    });
+  };
+
+  const handleEntryMouseEnter = (event: React.MouseEvent, entry: QueryHistoryEntry) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredEntry({
+        entry,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleEntryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredEntry(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredEntry(null);
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { entry } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, entry.queryText);
+    updateTab(newTabId, {
+      title: `Query ${new Date(entry.executedAt).toLocaleTimeString()}`,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleCopyQuery = () => {
+    if (!contextMenu) return;
+    navigator.clipboard.writeText(contextMenu.entry.queryText);
+    setContextMenu(null);
+  };
+
+  const handleDeleteEntry = () => {
+    if (!contextMenu) return;
+    deleteEntry(contextMenu.entry.id);
+    setContextMenu(null);
+  };
+
+  const handleViewJobDetails = () => {
+    if (!contextMenu || !contextMenu.entry.jobId) return;
+    setJobInfoModal({ jobId: contextMenu.entry.jobId });
+    setContextMenu(null);
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm('Are you sure you want to clear all query history? This cannot be undone.')) {
+      clearHistory();
+    }
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter and group entries
+  const filteredEntries = useMemo(() => {
+    if (!searchTerm.trim()) {
+      return entries;
+    }
+    return getFilteredEntries();
+  }, [entries, searchTerm, getFilteredEntries]);
+
+  // Group entries by date
+  const groupedEntries = useMemo(() => {
+    const groups: { label: string; entries: QueryHistoryEntry[] }[] = [];
+    let currentGroup: string | null = null;
+
+    for (const entry of filteredEntries) {
+      const group = getDateGroup(entry.executedAt);
+      if (group !== currentGroup) {
+        groups.push({ label: group, entries: [entry] });
+        currentGroup = group;
+      } else {
+        groups[groups.length - 1].entries.push(entry);
+      }
+    }
+
+    return groups;
+  }, [filteredEntries]);
+
+  const getStatusIcon = (status: QueryHistoryEntry['status']) => {
+    switch (status) {
+      case 'completed':
+        return '✓';
+      case 'error':
+        return '✕';
+      case 'cancelled':
+        return '◯';
+      default:
+        return '•';
+    }
+  };
+
+  return (
+    <div className={`query-history ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="query-history-search">
+            <input
+              type="text"
+              className="query-history-search-input"
+              placeholder="Search history..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="query-history-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="query-history-content">
+            {isLoading && entries.length === 0 && (
+              <div className="query-history-loading">Loading history...</div>
+            )}
+            {filteredEntries.length === 0 && !isLoading && (
+              <div className="query-history-empty">
+                {searchTerm ? 'No matching queries found' : 'No query history yet'}
+              </div>
+            )}
+            {groupedEntries.map((group, groupIndex) => (
+              <React.Fragment key={group.label}>
+                <div className="query-history-date-separator">{group.label}</div>
+                {group.entries.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`query-history-item status-${entry.status}`}
+                    onContextMenu={(e) => handleEntryContextMenu(e, entry)}
+                    onMouseEnter={(e) => handleEntryMouseEnter(e, entry)}
+                    onMouseLeave={handleEntryMouseLeave}
+                  >
+                    <div className="query-history-item-header">
+                      <div className="query-history-item-status">
+                        <span className={`query-history-status-icon ${entry.status}`}>
+                          {getStatusIcon(entry.status)}
+                        </span>
+                      </div>
+                      <span className="query-history-item-time">
+                        {formatRelativeTime(entry.executedAt)}
+                      </span>
+                    </div>
+                    <div className="query-history-item-query">
+                      {truncateQuery(entry.queryText)}
+                    </div>
+                    <div className="query-history-item-meta">
+                      <span className="query-history-meta-item">
+                        <span className="query-history-meta-icon">⏱</span>
+                        {formatExecutionTime(entry.executionTimeMs)}
+                      </span>
+                      {entry.bytesProcessed !== undefined && (
+                        <span className="query-history-meta-item">
+                          
+                          {formatBytes(entry.bytesProcessed)}
+                        </span>
+                      )}
+                      {entry.totalRows !== undefined && (
+                        <span className="query-history-meta-item">
+                          <span className="query-history-meta-icon">↔</span>
+                          {entry.totalRows.toLocaleString()} rows
+                        </span>
+                      )}
+                    </div>
+                    {entry.status === 'error' && entry.errorMessage && (
+                      <div className="query-history-error-message">
+                        {entry.errorMessage}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+          </div>
+          {filteredEntries.length > 0 && (
+            <div className="query-history-footer">
+              <button 
+                className="query-history-clear-btn"
+                onClick={handleClearHistory}
+                title="Clear all history"
+              >
+                Clear History
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleCopyQuery}>
+            Copy query
+          </div>
+          {contextMenu.entry.jobId && (
+            <div className="context-menu-item" onClick={handleViewJobDetails}>
+              View job details
+            </div>
+          )}
+          <div className="context-menu-separator" />
+          <div className="context-menu-item danger" onClick={handleDeleteEntry}>
+            Delete
+          </div>
+        </div>
+      )}
+      {jobInfoModal && (
+        <JobInfoModal
+          jobId={jobInfoModal.jobId}
+          onClose={() => setJobInfoModal(null)}
+        />
+      )}
+      {hoveredEntry && (
+        <div
+          className="query-history-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredEntry.x}px`,
+            top: `${hoveredEntry.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="query-history-tooltip-code">{hoveredEntry.entry.queryText}</pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const QueryHistory = memo(QueryHistoryComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
+  );
+});
 ````
 
 ## File: src/renderer/components/QueryResults/QueryResults.tsx
@@ -25041,107 +25909,6 @@ const App: React.FC = () => {
 };
 
 export default App;
-````
-
-## File: tests/setup.ts
-````typescript
-import '@testing-library/jest-dom';
-
-// Mock HTMLCanvasElement.getContext for jsdom
-HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
-  clearRect: jest.fn(),
-  fillRect: jest.fn(),
-  getImageData: jest.fn(),
-  putImageData: jest.fn(),
-  createImageData: jest.fn(),
-  setTransform: jest.fn(),
-  drawImage: jest.fn(),
-  save: jest.fn(),
-  restore: jest.fn(),
-  beginPath: jest.fn(),
-  moveTo: jest.fn(),
-  lineTo: jest.fn(),
-  closePath: jest.fn(),
-  stroke: jest.fn(),
-  fill: jest.fn(),
-  translate: jest.fn(),
-  scale: jest.fn(),
-  rotate: jest.fn(),
-  arc: jest.fn(),
-  measureText: jest.fn(() => ({ width: 0 })),
-  fillText: jest.fn(),
-  strokeText: jest.fn(),
-  clip: jest.fn(),
-})) as jest.Mock;
-
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getTheme: jest.fn().mockResolvedValue('dark'),
-    setTheme: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-    onToggleTheme: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
-};
-
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -29040,6 +29807,108 @@ export function registerBigQueryLanguage(
 }
 ````
 
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+    getJobInfo: jest.fn().mockResolvedValue({}),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getTheme: jest.fn().mockResolvedValue('dark'),
+    setTheme: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+    onToggleTheme: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
+````
+
 ## File: README.md
 ````markdown
 # QueryForge
@@ -29329,6 +30198,1089 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
+````
+
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerExportHandlers();
+registerQueryHistoryHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+  closeHistoryDatabase();
+});
+````
+
+## File: tests/unit/renderer/utils/sql-validation.test.ts
+````typescript
+import { parse } from 'sql-parser-cst';
+import {
+  collectColumnRefsFromExpression,
+  collectColumnRefsForSelect,
+  buildTableAliasMapFromSelect,
+  collectSubqueries,
+  validateColumnReferences,
+  validateBigQuerySyntaxRules,
+  validateGroupByColumns,
+  containsAggregateFunction,
+  containsWindowFunction,
+  ColumnRefInfo,
+  ColumnValidationIssue,
+} from '../../../../src/renderer/utils/sql-validation';
+
+describe('SQL Validation Utilities', () => {
+  const parseSQL = (sql: string): any => {
+    try {
+      // Parse SQL and return CST directly - validation functions now work with CST!
+      const cst = parse(sql, { dialect: 'bigquery', includeRange: true });
+      
+      // CST structure: statements are in cst.statements or cst is the statement itself
+      const statements = cst.statements || (Array.isArray(cst) ? cst : [cst]);
+      return statements.length > 0 ? statements[0] : cst;
+    } catch (error) {
+      // If parsing fails, return null (tests should handle this)
+      return null;
+    }
+  };
+
+  describe('collectColumnRefsFromExpression', () => {
+    it('should collect simple column references', () => {
+      const stmt = parseSQL('SELECT col1, col2 FROM table1');
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const refs: ColumnRefInfo[] = [];
+      
+      // Use collectColumnRefsForSelect which handles CST structure
+      const allRefs = collectColumnRefsForSelect(stmt);
+      
+      expect(allRefs.length).toBeGreaterThanOrEqual(2);
+      const col1Ref = allRefs.find(r => r.column === 'col1');
+      const col2Ref = allRefs.find(r => r.column === 'col2');
+      expect(col1Ref).toBeDefined();
+      expect(col2Ref).toBeDefined();
+      if (col1Ref) expect(col1Ref.alias).toBeNull();
+    });
+
+    it('should collect aliased column references', () => {
+      const stmt = parseSQL('SELECT t.col1, t.col2 FROM table1 AS t');
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const allRefs = collectColumnRefsForSelect(stmt);
+      
+      expect(allRefs.length).toBeGreaterThanOrEqual(2);
+      const col1Ref = allRefs.find(r => r.column === 'col1' && r.alias === 't');
+      const col2Ref = allRefs.find(r => r.column === 'col2' && r.alias === 't');
+      expect(col1Ref).toBeDefined();
+      expect(col2Ref).toBeDefined();
+    });
+
+    it('should NOT collect column refs from subqueries', () => {
+      // This is the key test for the fix - subquery columns should not be collected
+      const stmt = parseSQL(`
+        SELECT col1 FROM table1
+        WHERE col2 IN (SELECT sub_col FROM subtable)
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const refs = collectColumnRefsForSelect(stmt);
+      
+      // Should only have col1 and col2 from the outer query, NOT sub_col from the subquery
+      const colNames = refs.map(r => r.column);
+      expect(colNames).toContain('col1');
+      expect(colNames).toContain('col2');
+      expect(colNames).not.toContain('sub_col');
+    });
+
+    it('should NOT collect column refs from NOT EXISTS subqueries', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM outer_table o
+        WHERE NOT EXISTS (
+          SELECT 1 FROM inner_table i
+          WHERE i.id = o.id
+        )
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const refs = collectColumnRefsForSelect(stmt);
+      
+      // Should NOT collect i.id from the subquery - it has its own scope
+      // o.id might be collected as it's a correlated reference, but i.id should not be
+      const colNames = refs.map(r => r.column);
+      expect(colNames).not.toContain('i.id');
+    });
+  });
+
+  describe('collectColumnRefsForSelect', () => {
+    it('should collect refs from SELECT, WHERE, and JOIN ON clauses', () => {
+      const ast = parseSQL(`
+        SELECT a.col1, b.col2
+        FROM table1 a
+        JOIN table2 b ON a.id = b.id
+        WHERE a.col3 > 10
+      `);
+      
+      const refs = collectColumnRefsForSelect(ast);
+      
+      // col1, col2 from SELECT, id (x2) from ON, col3 from WHERE
+      const columns = refs.map(r => r.column);
+      expect(columns).toContain('col1');
+      expect(columns).toContain('col2');
+      expect(columns).toContain('id');
+      expect(columns).toContain('col3');
+    });
+
+    it('should NOT include subquery column refs in the main scope', () => {
+      const ast = parseSQL(`
+        SELECT dp.ProdKey
+        FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      const refs = collectColumnRefsForSelect(ast);
+      
+      // Should only have dp.ProdKey from the outer SELECT
+      // The subquery refs (da.ProdKey, dp.ProdKey in WHERE) should NOT be collected
+      expect(refs).toHaveLength(1);
+      expect(refs[0].alias).toBe('dp');
+      expect(refs[0].column).toBe('ProdKey');
+    });
+  });
+
+  describe('buildTableAliasMapFromSelect', () => {
+    it('should build alias map for simple query', () => {
+      const ast = parseSQL('SELECT * FROM dataset.table1 AS t1');
+      
+      const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('t1')).toBe(true);
+      expect(aliasMap.get('t1')?.tableId).toBe('table1');
+      expect(uniqueTables.size).toBe(1);
+    });
+
+    it('should build alias map for JOIN query', () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        JOIN dataset.table2 t2 ON t1.id = t2.id
+      `);
+      
+      const { aliasMap } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('t1')).toBe(true);
+      expect(aliasMap.has('t2')).toBe(true);
+    });
+
+    it('should register CTE names as valid aliases', () => {
+      const ast = parseSQL(`
+        WITH cte_data AS (
+          SELECT id, value FROM dataset.source_table
+        )
+        SELECT * FROM cte_data
+      `);
+      
+      const { aliasMap } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('cte_data')).toBe(true);
+      // CTE alias should not have datasetId/tableId since it's a virtual table
+      expect(aliasMap.get('cte_data')?.datasetId).toBeUndefined();
+    });
+  });
+
+  describe('collectSubqueries', () => {
+    it('should collect subqueries from WHERE clause', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (SELECT id FROM table2)
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      // Get WHERE condition from CST - use helper from validation utils
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      expect(subqueries.length).toBeGreaterThanOrEqual(1);
+      const nodeType = subqueries[0]?.type || subqueries[0]?.kind;
+      expect(nodeType === 'select' || nodeType === 'select_stmt' || nodeType === 'SelectStatement').toBe(true);
+    });
+
+    it('should collect NOT EXISTS subqueries', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1 t1
+        WHERE NOT EXISTS (
+          SELECT 1 FROM table2 t2
+          WHERE t2.id = t1.id
+        )
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      // Get WHERE condition from CST
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      expect(subqueries.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should collect multiple subqueries', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (SELECT id FROM table2)
+          AND name IN (SELECT name FROM table3)
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      expect(subqueries.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should collect nested subqueries at top level only', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (
+          SELECT id FROM table2
+          WHERE value IN (SELECT value FROM table3)
+        )
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      // Should collect at least the first level subquery
+      // (nested ones might also be collected, but that's okay - they'll be processed separately)
+      expect(subqueries.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('validateColumnReferences', () => {
+    // Mock getTableFields function
+    const mockGetTableFields = jest.fn();
+
+    beforeEach(() => {
+      mockGetTableFields.mockReset();
+    });
+
+    it('should not report error for valid alias in subquery', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      // Mock schema lookups
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'Name']);
+        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // Should have no issues - both dp and da are valid in their respective scopes
+      // and dp is valid in the subquery due to correlated subquery support
+      const aliasErrors = issues.filter(i => i.message.includes('Unknown table or alias'));
+      expect(aliasErrors).toHaveLength(0);
+    });
+
+    it('should report error for unknown alias in outer query', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE unknown_alias.col = 1
+      `);
+      
+      mockGetTableFields.mockResolvedValue(['col', 'id']);
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown_alias"'))).toBe(true);
+    });
+
+    it('should report error for unknown alias in subquery', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE EXISTS (
+          SELECT 1 FROM dataset.table2 t2
+          WHERE unknown.col = t2.col
+        )
+      `);
+      
+      mockGetTableFields.mockResolvedValue(['col', 'id']);
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown"'))).toBe(true);
+    });
+
+    it('should allow outer table alias in correlated subquery', async () => {
+      // This is the key test case from the bug report
+      const ast = parseSQL(`
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'ProductName']);
+        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // dp.ProdKey should be valid in the subquery (correlated reference)
+      const dpError = issues.find(i => i.message.includes('"dp"'));
+      expect(dpError).toBeUndefined();
+    });
+
+    it('should validate columns in deeply nested subqueries', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE id IN (
+          SELECT id FROM dataset.table2 t2
+          WHERE value IN (
+            SELECT value FROM dataset.table3 t3
+            WHERE t3.ref = t1.id
+          )
+        )
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'table1') return Promise.resolve(['id', 'name']);
+        if (tableId === 'table2') return Promise.resolve(['id', 'value']);
+        if (tableId === 'table3') return Promise.resolve(['value', 'ref']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // t1.id should be valid even in the deeply nested subquery (correlated reference)
+      const t1Error = issues.find(i => i.message.includes('"t1"'));
+      expect(t1Error).toBeUndefined();
+    });
+
+    it('should validate CTE body columns separately', async () => {
+      const ast = parseSQL(`
+        WITH stage AS (
+          SELECT id, name FROM dataset.source s
+          WHERE s.active = true
+        )
+        SELECT * FROM stage
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'source') return Promise.resolve(['id', 'name', 'active']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      
+      // s should be valid within the CTE body
+      const sError = issues.find(i => i.message.includes('"s"'));
+      expect(sError).toBeUndefined();
+    });
+
+    it('should handle complex query with CTE and correlated subquery', async () => {
+      // This simulates the original bug report query pattern
+      const ast = parseSQL(`
+        WITH Stage AS (
+          SELECT actr.AcNo, actr.VoNo
+          FROM dataset.AcTr actr
+          WHERE NOT EXISTS (
+            SELECT *
+            FROM dataset.fact_table fir
+            WHERE fir.InvoiceNo = actr.VoNo
+          )
+        )
+        SELECT * FROM Stage s
+        JOIN dataset.dim_table d ON s.AcNo = d.AcNo
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'AcTr') return Promise.resolve(['AcNo', 'VoNo', 'Amount']);
+        if (tableId === 'fact_table') return Promise.resolve(['InvoiceNo', 'Amount']);
+        if (tableId === 'dim_table') return Promise.resolve(['AcNo', 'Name']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // fir should be valid within the subquery
+      const firError = issues.find(i => i.message.includes('"fir"'));
+      expect(firError).toBeUndefined();
+      
+      // actr should be valid in the correlated subquery (parent scope)
+      const actrError = issues.find(i => i.message.includes('"actr"'));
+      expect(actrError).toBeUndefined();
+    });
+  });
+
+  describe('validateBigQuerySyntaxRules', () => {
+      describe('containsAggregateFunction', () => {
+      it('should detect COUNT aggregate function', () => {
+        const stmt = parseSQL('SELECT COUNT(*) FROM table1');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        // Get first column expression from CST - columns are directly in items array
+        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
+        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
+        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(true);
+        expect(result.functionName).toBe('COUNT');
+      });
+
+      it('should detect SUM aggregate function', () => {
+        const stmt = parseSQL('SELECT SUM(amount) FROM table1');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
+        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
+        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(true);
+        expect(result.functionName).toBe('SUM');
+      });
+
+      it('should not detect non-aggregate functions', () => {
+        const stmt = parseSQL('SELECT UPPER(name) FROM table1');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        const columns = stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
+        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(false);
+      });
+
+      it('should not detect aggregate in subquery', () => {
+        const stmt = parseSQL('SELECT * FROM table1 WHERE id IN (SELECT MAX(id) FROM table2)');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        // The WHERE clause contains the subquery
+        const whereCondition = stmt.whereClause?.condition || stmt.where;
+        const result = containsAggregateFunction(whereCondition);
+        expect(result.found).toBe(false); // Subqueries are skipped
+      });
+    });
+
+    describe('aggregate in WHERE validation', () => {
+      it('should report error when COUNT is used in WHERE', () => {
+        // Note: This query won't parse correctly since it's invalid SQL,
+        // but we test the validation logic with a mock AST
+        const mockAst = {
+          type: 'select',
+          columns: [{ expr: { type: 'column_ref', column: 'id' } }],
+          from: [{ table: 'orders' }],
+          where: {
+            type: 'binary_expr',
+            operator: '>',
+            left: {
+              type: 'aggr_func',
+              name: 'count',
+              args: { expr: '*' },
+            },
+            right: { type: 'number', value: 5 },
+          },
+        };
+        
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
+        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
+        expect(issues.some((i: ColumnValidationIssue) => i.message.includes('COUNT'))).toBe(true);
+      });
+
+      it('should not report error for valid WHERE without aggregates', () => {
+        const ast = parseSQL('SELECT * FROM orders WHERE amount > 100');
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toHaveLength(0);
+      });
+    });
+
+    describe('window function validation', () => {
+      it('should allow window functions in SELECT', () => {
+        const ast = parseSQL('SELECT ROW_NUMBER() OVER (ORDER BY id) as rn FROM table1');
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        // No errors about window functions in SELECT
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'window-in-where')).toHaveLength(0);
+      });
+    });
+
+    describe('CTE validation', () => {
+      it('should validate syntax rules within CTEs', () => {
+        // Create a mock CTE with an aggregate in WHERE
+        const mockAst = {
+          type: 'select',
+          with: [{
+            name: { value: 'cte_data' },
+            stmt: {
+              ast: {
+                type: 'select',
+                columns: [{ expr: { type: 'column_ref', column: 'id' } }],
+                from: [{ table: 'source' }],
+                where: {
+                  type: 'aggr_func',
+                  name: 'sum',
+                  args: { expr: { type: 'column_ref', column: 'amount' } },
+                },
+              }
+            }
+          }],
+          columns: [{ expr: { type: 'star' } }],
+          from: [{ table: 'cte_data' }],
+        };
+        
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
+        // Should detect aggregate in WHERE within the CTE
+        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
+      });
+    });
+
+    describe('GROUP BY positional references', () => {
+      it('should accept GROUP BY with positional references (number_literal type)', () => {
+        // This tests that sql-parser-cst's number_literal type is properly recognized
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            o.OrderStatus,
+            o.BillingCurrency,
+            o.PlacedPrice,
+            o.Discount,
+            SAFE_DIVIDE(SUM(o.Discount), SUM(o.PlacedPrice)) * 100 AS DiscountPercent,
+            o.OrderDateCet,
+            IFNULL(o.CouponCode, 'NONE') AS CouponCode
+          FROM
+            orders AS o
+          GROUP BY
+            1, 2, 3, 4, 5, 6, 8, 9
+        `);
+        // Should not produce errors for valid GROUP BY positional references
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        // This validates GROUP BY semantics, not positional references
+        // The validateGroupByColumns function handles positional reference validation
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+
+      it('should accept GROUP BY with positional references in CTE queries', () => {
+        const ast = parseSQL(`
+          WITH
+            data AS (
+              SELECT 1 AS col1, 'a' AS col2, 100 AS col3
+            )
+          SELECT
+            col1,
+            col2,
+            SUM(col3) AS total
+          FROM
+            data
+          GROUP BY
+            1, 2
+        `);
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+
+      it('should report error when SELECT column is missing from GROUP BY positional references', async () => {
+        // Query with position 1 missing from GROUP BY
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            o.OrderStatus,
+            SUM(o.Amount) AS TotalAmount
+          FROM
+            orders AS o
+          GROUP BY
+            2, 3
+        `);
+        // Position 1 (o.OrderNumber) is not in GROUP BY and not an aggregate
+        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+        const mockGetTableFields = async () => null;
+        const issues = await validateGroupByColumns(
+          ast,
+          aliasMap,
+          uniqueTables,
+          mockGetTableFields,
+          '',
+          false
+        );
+        // Should have an error about o.OrderNumber not being grouped
+        expect(issues.some((i: ColumnValidationIssue) => 
+          i.rule === 'select-not-in-group-by' && 
+          i.message.includes('OrderNumber')
+        )).toBe(true);
+      });
+
+      it('should not report error when all non-aggregate SELECT columns are in GROUP BY', async () => {
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            SUM(o.Amount) AS TotalAmount
+          FROM
+            orders AS o
+          GROUP BY
+            1, 2
+        `);
+        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+        const mockGetTableFields = async () => null;
+        const issues = await validateGroupByColumns(
+          ast,
+          aliasMap,
+          uniqueTables,
+          mockGetTableFields,
+          '',
+          false
+        );
+        // Should have no errors - all non-aggregate columns are grouped
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'select-not-in-group-by')).toHaveLength(0);
+      });
+    });
+  });
+});
 ````
 
 ## File: src/main/ipc/bigquery.ts
@@ -30548,411 +32500,103 @@ export function registerBigQueryHandlers(): void {
       throw err;
     }
   });
-}
-````
 
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { registerExportHandlers } from './ipc/export';
-import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-registerExportHandlers();
-registerQueryHistoryHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        {
-          label: 'Save Query',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => {
-            mainWindow?.webContents.send('menu:save-query');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
+  /**
+   * Get job information by job ID.
+   * Returns detailed metadata about a BigQuery job including timing, bytes processed,
+   * cache hit status, billing tier, and referenced tables.
+   */
+  ipcMain.handle('bigquery:getJobInfo', async (_event, jobId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
     }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
 
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
     try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
+      const job = client.job(jobId);
+      const [metadata] = await job.getMetadata();
+
+      // Extract statistics
+      const stats = metadata.statistics || {};
+      const queryStats = stats.query || {};
+
+      // Parse timestamps - BigQuery returns timestamps as string milliseconds
+      const parseTimestamp = (ts: string | undefined): string => {
+        if (!ts) return '';
+        const ms = parseInt(ts, 10);
+        return new Date(ms).toISOString();
+      };
+
+      // Parse bytes/numbers
+      const parseNumber = (val: string | number | undefined): number => {
+        if (val === undefined || val === null) return 0;
+        if (typeof val === 'number') return val;
+        return parseInt(val, 10) || 0;
+      };
+
+      // Extract referenced tables
+      const referencedTables = (queryStats.referencedTables || []).map((table: any) => ({
+        projectId: table.projectId,
+        datasetId: table.datasetId,
+        tableId: table.tableId,
+      }));
+
+      return {
+        // Basic job info
+        jobId: metadata.jobReference?.jobId || jobId,
+        projectId: metadata.jobReference?.projectId || '',
+        location: metadata.jobReference?.location || '',
+        user: metadata.user_email || '',
+
+        // Timing info
+        creationTime: parseTimestamp(stats.creationTime),
+        startTime: parseTimestamp(stats.startTime),
+        endTime: parseTimestamp(stats.endTime),
+        totalSlotMs: parseNumber(stats.totalSlotMs),
+
+        // Query statistics
+        totalBytesProcessed: parseNumber(stats.totalBytesProcessed),
+        totalBytesBilled: parseNumber(queryStats.totalBytesBilled),
+        cacheHit: queryStats.cacheHit === true,
+        statementType: queryStats.statementType || 'UNKNOWN',
+
+        // Row counts
+        numDmlAffectedRows: queryStats.numDmlAffectedRows ? parseNumber(queryStats.numDmlAffectedRows) : undefined,
+        outputRows: queryStats.outputRows ? parseNumber(queryStats.outputRows) : undefined,
+
+        // Performance details
+        billingTier: queryStats.billingTier ? parseNumber(queryStats.billingTier) : undefined,
+        estimatedBytesProcessed: queryStats.estimatedBytesProcessed ? parseNumber(queryStats.estimatedBytesProcessed) : undefined,
+
+        // Referenced tables
+        referencedTables: referencedTables.length > 0 ? referencedTables : undefined,
+
+        // Status
+        state: metadata.status?.state || 'UNKNOWN',
+        errorResult: metadata.status?.errorResult ? {
+          reason: metadata.status.errorResult.reason || '',
+          location: metadata.status.errorResult.location || '',
+          message: metadata.status.errorResult.message || '',
+        } : undefined,
+      };
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.JOB_NOT_FOUND,
+          message: 'Job not found. It may have expired or been deleted.',
+        };
       }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to get job information',
+        details: error.errors || error,
+      };
     }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
   });
 }
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-  closeHistoryDatabase();
-});
 ````
 
 ## File: src/main/preload.ts
@@ -30961,6 +32605,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
 import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
+import type { JobDetails } from '../shared/types/bigquery';
 
 /**
  * Electron API exposed to renderer process
@@ -30983,6 +32628,7 @@ export interface ElectronAPI {
       };
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    getJobInfo(jobId: string): Promise<JobDetails>;
     onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
     onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
@@ -31089,6 +32735,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
     getViewDefinition: (datasetId: string, tableId: string) =>
       ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    getJobInfo: (jobId: string) => ipcRenderer.invoke('bigquery:getJobInfo', jobId),
     onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
       const handler = (_event: any, data: any) => callback(data);
       ipcRenderer.on('bigquery:progress', handler);
@@ -31204,690 +32851,12 @@ declare global {
 }
 ````
 
-## File: tests/unit/renderer/utils/sql-validation.test.ts
-````typescript
-import { parse } from 'sql-parser-cst';
-import {
-  collectColumnRefsFromExpression,
-  collectColumnRefsForSelect,
-  buildTableAliasMapFromSelect,
-  collectSubqueries,
-  validateColumnReferences,
-  validateBigQuerySyntaxRules,
-  validateGroupByColumns,
-  containsAggregateFunction,
-  containsWindowFunction,
-  ColumnRefInfo,
-  ColumnValidationIssue,
-} from '../../../../src/renderer/utils/sql-validation';
-
-describe('SQL Validation Utilities', () => {
-  const parseSQL = (sql: string): any => {
-    try {
-      // Parse SQL and return CST directly - validation functions now work with CST!
-      const cst = parse(sql, { dialect: 'bigquery', includeRange: true });
-      
-      // CST structure: statements are in cst.statements or cst is the statement itself
-      const statements = cst.statements || (Array.isArray(cst) ? cst : [cst]);
-      return statements.length > 0 ? statements[0] : cst;
-    } catch (error) {
-      // If parsing fails, return null (tests should handle this)
-      return null;
-    }
-  };
-
-  describe('collectColumnRefsFromExpression', () => {
-    it('should collect simple column references', () => {
-      const stmt = parseSQL('SELECT col1, col2 FROM table1');
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const refs: ColumnRefInfo[] = [];
-      
-      // Use collectColumnRefsForSelect which handles CST structure
-      const allRefs = collectColumnRefsForSelect(stmt);
-      
-      expect(allRefs.length).toBeGreaterThanOrEqual(2);
-      const col1Ref = allRefs.find(r => r.column === 'col1');
-      const col2Ref = allRefs.find(r => r.column === 'col2');
-      expect(col1Ref).toBeDefined();
-      expect(col2Ref).toBeDefined();
-      if (col1Ref) expect(col1Ref.alias).toBeNull();
-    });
-
-    it('should collect aliased column references', () => {
-      const stmt = parseSQL('SELECT t.col1, t.col2 FROM table1 AS t');
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const allRefs = collectColumnRefsForSelect(stmt);
-      
-      expect(allRefs.length).toBeGreaterThanOrEqual(2);
-      const col1Ref = allRefs.find(r => r.column === 'col1' && r.alias === 't');
-      const col2Ref = allRefs.find(r => r.column === 'col2' && r.alias === 't');
-      expect(col1Ref).toBeDefined();
-      expect(col2Ref).toBeDefined();
-    });
-
-    it('should NOT collect column refs from subqueries', () => {
-      // This is the key test for the fix - subquery columns should not be collected
-      const stmt = parseSQL(`
-        SELECT col1 FROM table1
-        WHERE col2 IN (SELECT sub_col FROM subtable)
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const refs = collectColumnRefsForSelect(stmt);
-      
-      // Should only have col1 and col2 from the outer query, NOT sub_col from the subquery
-      const colNames = refs.map(r => r.column);
-      expect(colNames).toContain('col1');
-      expect(colNames).toContain('col2');
-      expect(colNames).not.toContain('sub_col');
-    });
-
-    it('should NOT collect column refs from NOT EXISTS subqueries', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM outer_table o
-        WHERE NOT EXISTS (
-          SELECT 1 FROM inner_table i
-          WHERE i.id = o.id
-        )
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const refs = collectColumnRefsForSelect(stmt);
-      
-      // Should NOT collect i.id from the subquery - it has its own scope
-      // o.id might be collected as it's a correlated reference, but i.id should not be
-      const colNames = refs.map(r => r.column);
-      expect(colNames).not.toContain('i.id');
-    });
-  });
-
-  describe('collectColumnRefsForSelect', () => {
-    it('should collect refs from SELECT, WHERE, and JOIN ON clauses', () => {
-      const ast = parseSQL(`
-        SELECT a.col1, b.col2
-        FROM table1 a
-        JOIN table2 b ON a.id = b.id
-        WHERE a.col3 > 10
-      `);
-      
-      const refs = collectColumnRefsForSelect(ast);
-      
-      // col1, col2 from SELECT, id (x2) from ON, col3 from WHERE
-      const columns = refs.map(r => r.column);
-      expect(columns).toContain('col1');
-      expect(columns).toContain('col2');
-      expect(columns).toContain('id');
-      expect(columns).toContain('col3');
-    });
-
-    it('should NOT include subquery column refs in the main scope', () => {
-      const ast = parseSQL(`
-        SELECT dp.ProdKey
-        FROM dataset.dim_product dp
-        WHERE NOT EXISTS (
-          SELECT NULL FROM dataset.dim_agreement da
-          WHERE da.ProdKey = dp.ProdKey
-        )
-      `);
-      
-      const refs = collectColumnRefsForSelect(ast);
-      
-      // Should only have dp.ProdKey from the outer SELECT
-      // The subquery refs (da.ProdKey, dp.ProdKey in WHERE) should NOT be collected
-      expect(refs).toHaveLength(1);
-      expect(refs[0].alias).toBe('dp');
-      expect(refs[0].column).toBe('ProdKey');
-    });
-  });
-
-  describe('buildTableAliasMapFromSelect', () => {
-    it('should build alias map for simple query', () => {
-      const ast = parseSQL('SELECT * FROM dataset.table1 AS t1');
-      
-      const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
-      
-      expect(aliasMap.has('t1')).toBe(true);
-      expect(aliasMap.get('t1')?.tableId).toBe('table1');
-      expect(uniqueTables.size).toBe(1);
-    });
-
-    it('should build alias map for JOIN query', () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        JOIN dataset.table2 t2 ON t1.id = t2.id
-      `);
-      
-      const { aliasMap } = buildTableAliasMapFromSelect(ast);
-      
-      expect(aliasMap.has('t1')).toBe(true);
-      expect(aliasMap.has('t2')).toBe(true);
-    });
-
-    it('should register CTE names as valid aliases', () => {
-      const ast = parseSQL(`
-        WITH cte_data AS (
-          SELECT id, value FROM dataset.source_table
-        )
-        SELECT * FROM cte_data
-      `);
-      
-      const { aliasMap } = buildTableAliasMapFromSelect(ast);
-      
-      expect(aliasMap.has('cte_data')).toBe(true);
-      // CTE alias should not have datasetId/tableId since it's a virtual table
-      expect(aliasMap.get('cte_data')?.datasetId).toBeUndefined();
-    });
-  });
-
-  describe('collectSubqueries', () => {
-    it('should collect subqueries from WHERE clause', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1
-        WHERE id IN (SELECT id FROM table2)
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      // Get WHERE condition from CST - use helper from validation utils
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      expect(subqueries.length).toBeGreaterThanOrEqual(1);
-      const nodeType = subqueries[0]?.type || subqueries[0]?.kind;
-      expect(nodeType === 'select' || nodeType === 'select_stmt' || nodeType === 'SelectStatement').toBe(true);
-    });
-
-    it('should collect NOT EXISTS subqueries', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1 t1
-        WHERE NOT EXISTS (
-          SELECT 1 FROM table2 t2
-          WHERE t2.id = t1.id
-        )
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      // Get WHERE condition from CST
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      expect(subqueries.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('should collect multiple subqueries', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1
-        WHERE id IN (SELECT id FROM table2)
-          AND name IN (SELECT name FROM table3)
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      expect(subqueries.length).toBeGreaterThanOrEqual(2);
-    });
-
-    it('should collect nested subqueries at top level only', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1
-        WHERE id IN (
-          SELECT id FROM table2
-          WHERE value IN (SELECT value FROM table3)
-        )
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      // Should collect at least the first level subquery
-      // (nested ones might also be collected, but that's okay - they'll be processed separately)
-      expect(subqueries.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  describe('validateColumnReferences', () => {
-    // Mock getTableFields function
-    const mockGetTableFields = jest.fn();
-
-    beforeEach(() => {
-      mockGetTableFields.mockReset();
-    });
-
-    it('should not report error for valid alias in subquery', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.dim_product dp
-        WHERE NOT EXISTS (
-          SELECT NULL FROM dataset.dim_agreement da
-          WHERE da.ProdKey = dp.ProdKey
-        )
-      `);
-      
-      // Mock schema lookups
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'Name']);
-        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // Should have no issues - both dp and da are valid in their respective scopes
-      // and dp is valid in the subquery due to correlated subquery support
-      const aliasErrors = issues.filter(i => i.message.includes('Unknown table or alias'));
-      expect(aliasErrors).toHaveLength(0);
-    });
-
-    it('should report error for unknown alias in outer query', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        WHERE unknown_alias.col = 1
-      `);
-      
-      mockGetTableFields.mockResolvedValue(['col', 'id']);
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown_alias"'))).toBe(true);
-    });
-
-    it('should report error for unknown alias in subquery', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        WHERE EXISTS (
-          SELECT 1 FROM dataset.table2 t2
-          WHERE unknown.col = t2.col
-        )
-      `);
-      
-      mockGetTableFields.mockResolvedValue(['col', 'id']);
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown"'))).toBe(true);
-    });
-
-    it('should allow outer table alias in correlated subquery', async () => {
-      // This is the key test case from the bug report
-      const ast = parseSQL(`
-        SELECT * FROM dataset.dim_product dp
-        WHERE NOT EXISTS (
-          SELECT NULL FROM dataset.dim_agreement da
-          WHERE da.ProdKey = dp.ProdKey
-        )
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'ProductName']);
-        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // dp.ProdKey should be valid in the subquery (correlated reference)
-      const dpError = issues.find(i => i.message.includes('"dp"'));
-      expect(dpError).toBeUndefined();
-    });
-
-    it('should validate columns in deeply nested subqueries', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        WHERE id IN (
-          SELECT id FROM dataset.table2 t2
-          WHERE value IN (
-            SELECT value FROM dataset.table3 t3
-            WHERE t3.ref = t1.id
-          )
-        )
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'table1') return Promise.resolve(['id', 'name']);
-        if (tableId === 'table2') return Promise.resolve(['id', 'value']);
-        if (tableId === 'table3') return Promise.resolve(['value', 'ref']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // t1.id should be valid even in the deeply nested subquery (correlated reference)
-      const t1Error = issues.find(i => i.message.includes('"t1"'));
-      expect(t1Error).toBeUndefined();
-    });
-
-    it('should validate CTE body columns separately', async () => {
-      const ast = parseSQL(`
-        WITH stage AS (
-          SELECT id, name FROM dataset.source s
-          WHERE s.active = true
-        )
-        SELECT * FROM stage
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'source') return Promise.resolve(['id', 'name', 'active']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      
-      // s should be valid within the CTE body
-      const sError = issues.find(i => i.message.includes('"s"'));
-      expect(sError).toBeUndefined();
-    });
-
-    it('should handle complex query with CTE and correlated subquery', async () => {
-      // This simulates the original bug report query pattern
-      const ast = parseSQL(`
-        WITH Stage AS (
-          SELECT actr.AcNo, actr.VoNo
-          FROM dataset.AcTr actr
-          WHERE NOT EXISTS (
-            SELECT *
-            FROM dataset.fact_table fir
-            WHERE fir.InvoiceNo = actr.VoNo
-          )
-        )
-        SELECT * FROM Stage s
-        JOIN dataset.dim_table d ON s.AcNo = d.AcNo
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'AcTr') return Promise.resolve(['AcNo', 'VoNo', 'Amount']);
-        if (tableId === 'fact_table') return Promise.resolve(['InvoiceNo', 'Amount']);
-        if (tableId === 'dim_table') return Promise.resolve(['AcNo', 'Name']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // fir should be valid within the subquery
-      const firError = issues.find(i => i.message.includes('"fir"'));
-      expect(firError).toBeUndefined();
-      
-      // actr should be valid in the correlated subquery (parent scope)
-      const actrError = issues.find(i => i.message.includes('"actr"'));
-      expect(actrError).toBeUndefined();
-    });
-  });
-
-  describe('validateBigQuerySyntaxRules', () => {
-      describe('containsAggregateFunction', () => {
-      it('should detect COUNT aggregate function', () => {
-        const stmt = parseSQL('SELECT COUNT(*) FROM table1');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        // Get first column expression from CST - columns are directly in items array
-        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
-        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
-        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
-        const result = containsAggregateFunction(selectExpr);
-        expect(result.found).toBe(true);
-        expect(result.functionName).toBe('COUNT');
-      });
-
-      it('should detect SUM aggregate function', () => {
-        const stmt = parseSQL('SELECT SUM(amount) FROM table1');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
-        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
-        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
-        const result = containsAggregateFunction(selectExpr);
-        expect(result.found).toBe(true);
-        expect(result.functionName).toBe('SUM');
-      });
-
-      it('should not detect non-aggregate functions', () => {
-        const stmt = parseSQL('SELECT UPPER(name) FROM table1');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        const columns = stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
-        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
-        const result = containsAggregateFunction(selectExpr);
-        expect(result.found).toBe(false);
-      });
-
-      it('should not detect aggregate in subquery', () => {
-        const stmt = parseSQL('SELECT * FROM table1 WHERE id IN (SELECT MAX(id) FROM table2)');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        // The WHERE clause contains the subquery
-        const whereCondition = stmt.whereClause?.condition || stmt.where;
-        const result = containsAggregateFunction(whereCondition);
-        expect(result.found).toBe(false); // Subqueries are skipped
-      });
-    });
-
-    describe('aggregate in WHERE validation', () => {
-      it('should report error when COUNT is used in WHERE', () => {
-        // Note: This query won't parse correctly since it's invalid SQL,
-        // but we test the validation logic with a mock AST
-        const mockAst = {
-          type: 'select',
-          columns: [{ expr: { type: 'column_ref', column: 'id' } }],
-          from: [{ table: 'orders' }],
-          where: {
-            type: 'binary_expr',
-            operator: '>',
-            left: {
-              type: 'aggr_func',
-              name: 'count',
-              args: { expr: '*' },
-            },
-            right: { type: 'number', value: 5 },
-          },
-        };
-        
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
-        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
-        expect(issues.some((i: ColumnValidationIssue) => i.message.includes('COUNT'))).toBe(true);
-      });
-
-      it('should not report error for valid WHERE without aggregates', () => {
-        const ast = parseSQL('SELECT * FROM orders WHERE amount > 100');
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toHaveLength(0);
-      });
-    });
-
-    describe('window function validation', () => {
-      it('should allow window functions in SELECT', () => {
-        const ast = parseSQL('SELECT ROW_NUMBER() OVER (ORDER BY id) as rn FROM table1');
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        // No errors about window functions in SELECT
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'window-in-where')).toHaveLength(0);
-      });
-    });
-
-    describe('CTE validation', () => {
-      it('should validate syntax rules within CTEs', () => {
-        // Create a mock CTE with an aggregate in WHERE
-        const mockAst = {
-          type: 'select',
-          with: [{
-            name: { value: 'cte_data' },
-            stmt: {
-              ast: {
-                type: 'select',
-                columns: [{ expr: { type: 'column_ref', column: 'id' } }],
-                from: [{ table: 'source' }],
-                where: {
-                  type: 'aggr_func',
-                  name: 'sum',
-                  args: { expr: { type: 'column_ref', column: 'amount' } },
-                },
-              }
-            }
-          }],
-          columns: [{ expr: { type: 'star' } }],
-          from: [{ table: 'cte_data' }],
-        };
-        
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
-        // Should detect aggregate in WHERE within the CTE
-        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
-      });
-    });
-
-    describe('GROUP BY positional references', () => {
-      it('should accept GROUP BY with positional references (number_literal type)', () => {
-        // This tests that sql-parser-cst's number_literal type is properly recognized
-        const ast = parseSQL(`
-          SELECT
-            o.OrderNumber,
-            o.CustomerId,
-            o.OrderStatus,
-            o.BillingCurrency,
-            o.PlacedPrice,
-            o.Discount,
-            SAFE_DIVIDE(SUM(o.Discount), SUM(o.PlacedPrice)) * 100 AS DiscountPercent,
-            o.OrderDateCet,
-            IFNULL(o.CouponCode, 'NONE') AS CouponCode
-          FROM
-            orders AS o
-          GROUP BY
-            1, 2, 3, 4, 5, 6, 8, 9
-        `);
-        // Should not produce errors for valid GROUP BY positional references
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        // This validates GROUP BY semantics, not positional references
-        // The validateGroupByColumns function handles positional reference validation
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
-      });
-
-      it('should accept GROUP BY with positional references in CTE queries', () => {
-        const ast = parseSQL(`
-          WITH
-            data AS (
-              SELECT 1 AS col1, 'a' AS col2, 100 AS col3
-            )
-          SELECT
-            col1,
-            col2,
-            SUM(col3) AS total
-          FROM
-            data
-          GROUP BY
-            1, 2
-        `);
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
-      });
-
-      it('should report error when SELECT column is missing from GROUP BY positional references', async () => {
-        // Query with position 1 missing from GROUP BY
-        const ast = parseSQL(`
-          SELECT
-            o.OrderNumber,
-            o.CustomerId,
-            o.OrderStatus,
-            SUM(o.Amount) AS TotalAmount
-          FROM
-            orders AS o
-          GROUP BY
-            2, 3
-        `);
-        // Position 1 (o.OrderNumber) is not in GROUP BY and not an aggregate
-        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
-        const mockGetTableFields = async () => null;
-        const issues = await validateGroupByColumns(
-          ast,
-          aliasMap,
-          uniqueTables,
-          mockGetTableFields,
-          '',
-          false
-        );
-        // Should have an error about o.OrderNumber not being grouped
-        expect(issues.some((i: ColumnValidationIssue) => 
-          i.rule === 'select-not-in-group-by' && 
-          i.message.includes('OrderNumber')
-        )).toBe(true);
-      });
-
-      it('should not report error when all non-aggregate SELECT columns are in GROUP BY', async () => {
-        const ast = parseSQL(`
-          SELECT
-            o.OrderNumber,
-            o.CustomerId,
-            SUM(o.Amount) AS TotalAmount
-          FROM
-            orders AS o
-          GROUP BY
-            1, 2
-        `);
-        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
-        const mockGetTableFields = async () => null;
-        const issues = await validateGroupByColumns(
-          ast,
-          aliasMap,
-          uniqueTables,
-          mockGetTableFields,
-          '',
-          false
-        );
-        // Should have no errors - all non-aggregate columns are grouped
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'select-not-in-group-by')).toHaveLength(0);
-      });
-    });
-  });
-});
-````
-
 ## File: src/renderer/types/electron-api.d.ts
 ````typescript
 import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
 import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../../shared/types/query';
 import type { Dataset, Table } from '../../shared/types/dataset';
+import type { JobDetails } from '../../shared/types/bigquery';
 
 /**
  * Electron API exposed to renderer process
@@ -31910,6 +32879,7 @@ export interface ElectronAPI {
       };
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    getJobInfo(jobId: string): Promise<JobDetails>;
     onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
     onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
