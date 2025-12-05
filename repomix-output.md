@@ -120,8 +120,12 @@ src/
         HelpDialog.css
         HelpDialog.tsx
       QueryEditor/
+        EditorStatusBar.tsx
+        EditorToolbar.tsx
+        index.ts
         QueryEditor.css
         QueryEditor.tsx
+        SaveQueryDialog.tsx
       QueryHistory/
         QueryHistory.css
         QueryHistory.tsx
@@ -172,7 +176,9 @@ src/
     utils/
       bigquery-completions.ts
       bigquery-formatter.ts
+      dbt-utils.ts
       export-utils.ts
+      sql-validation-helpers.ts
       sql-validation.ts
       tree-sitter-validator.ts
     App.css
@@ -8222,1146 +8228,6 @@ if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
 }
 ````
 
-## File: src/renderer/utils/bigquery-formatter.ts
-````typescript
-/**
- * Formats BigQuery values for display in the UI
- * Supports all BigQuery data types as per:
- * https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types
- */
-
-// Pre-compile regex patterns for better performance (compiled once, reused many times)
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_REGEX = /^\d{2}:\d{2}:\d{2}(\.\d+)?$/;
-const DATETIME_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/;
-const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-
-/**
- * Checks if a value is a Date object or Date-like object
- * This handles cases where Date objects might have been serialized/deserialized
- * and are no longer instanceof Date
- */
-function isDateLike(value: any): boolean {
-  if (value instanceof Date) {
-    return true;
-  }
-  // Check if it's an object with Date-like methods/properties
-  if (typeof value === 'object' && value !== null) {
-    // Check for Date-like methods
-    if (typeof value.getTime === 'function' && typeof value.toISOString === 'function') {
-      return true;
-    }
-    // Check if it has Date-like properties (from serialized Date)
-    if ('getTime' in value || 'toISOString' in value || 'getFullYear' in value) {
-      return true;
-    }
-    // CRITICAL: Check for empty objects {} that might be Date objects that were JSON serialized
-    // When Date objects are JSON.stringify'd, they become {}, so we need to check column type
-    // This is a fallback for objects that lost their Date properties during serialization
-    const keys = Object.keys(value);
-    if (keys.length === 0 && typeof value === 'object') {
-      // Empty object might be a serialized Date - we'll handle this in the formatter based on column type
-      return true; // Return true so it gets special handling
-    }
-  }
-  return false;
-}
-
-/**
- * Converts a Date-like value to a Date object for formatting
- */
-function toDate(value: any): Date | null {
-  if (value instanceof Date) {
-    return value;
-  }
-  if (typeof value === 'object' && value !== null) {
-    // Try to call getTime if available
-    if (typeof value.getTime === 'function') {
-      try {
-        const time = value.getTime();
-        if (typeof time === 'number' && !isNaN(time)) {
-          return new Date(time);
-        }
-      } catch {
-        // Ignore errors
-      }
-    }
-    // Try to create Date from ISO string if available
-    if (typeof value.toISOString === 'function') {
-      try {
-        const isoStr = value.toISOString();
-        const date = new Date(isoStr);
-        if (!isNaN(date.getTime())) {
-          return date;
-        }
-      } catch {
-        // Ignore errors
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Formats a BigQuery value based on its column type
- * @param value - The value to format
- * @param columnType - The BigQuery column type (e.g., 'STRING', 'INTEGER', 'TIMESTAMP', etc.)
- * @returns Formatted string representation of the value
- */
-export function formatBigQueryValue(value: any, columnType?: string, columnName?: string): string {
-  // Handle NULL values - early return for common case
-  if (value === null || value === undefined) {
-    return 'NULL';
-  }
-
-  // Normalize column type early so we can use it for object detection
-  const normalizedType = columnType?.toUpperCase() || '';
-  const colNameLower = (columnName || '').toLowerCase();
-  
-  // Check if this is a date type - either by type or by column name
-  // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
-  const isDateTypeByType = normalizedType === 'DATE' || normalizedType === 'DATETIME' || 
-                           normalizedType === 'TIME' || normalizedType === 'TIMESTAMP';
-  const isDateTypeByName = normalizedType === 'RECORD' && (
-    colNameLower.includes('date') || 
-    colNameLower.includes('time') || 
-    colNameLower.includes('timestamp') ||
-    colNameLower.includes('datetime')
-  );
-  const isDateType = isDateTypeByType || isDateTypeByName;
-
-  // CRITICAL: Check if value is already the string "[object Object]"
-  // This can happen if Date objects were converted to strings before reaching the formatter
-  if (typeof value === 'string' && value === '[object Object]') {
-    // CRITICAL: Even if column type is wrong (e.g., RECORD), check if column name suggests it's a date
-    // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
-    if (isDateType) {
-      return '[Invalid Date]';
-    }
-    return value; // For non-date columns, return as-is
-  }
-
-  // CRITICAL: Handle plain objects for DATE/TIME types BEFORE anything else
-  // This prevents [object Object] from being displayed
-  const isObject = typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
-  if (isDateType && isObject) {
-    // CRITICAL: Handle empty objects {} that might be Date objects that were JSON serialized
-    // When Date objects go through JSON.stringify, they become {}
-    const keys = Object.keys(value);
-    if (keys.length === 0) {
-      // Empty object for a date column - this is likely a Date that was serialized incorrectly
-      // Check if it's truly empty or if it has non-enumerable properties
-      // Try to detect if this was a Date object by checking the prototype
-      const proto = Object.getPrototypeOf(value);
-      if (proto === Object.prototype || proto === null) {
-        // This is likely a Date object that was JSON.stringify'd to {}
-        // Return a placeholder instead of [object Object]
-        return '[Invalid Date]';
-      }
-      // Might be a Date-like object with non-enumerable properties
-      // Try to convert it
-      if (isDateLike(value)) {
-        const dateObj = toDate(value);
-        if (dateObj) {
-          if (normalizedType === 'DATE') {
-            return dateObj.toISOString().split('T')[0];
-          }
-          if (normalizedType === 'TIME') {
-            const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-            const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-            const ms = dateObj.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedType === 'DATETIME') {
-            return dateObj.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return dateObj.toISOString();
-        }
-      }
-      return '[Invalid Date]';
-    }
-    // Check for wrapped value
-    if ('value' in value && Object.keys(value).length === 1) {
-      const innerValue = value.value;
-      if (innerValue !== value) {
-        return formatBigQueryValue(innerValue, columnType);
-      }
-    }
-    
-    // Try toString() first
-    if ('toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-            return str;
-          }
-          // Try to parse it as a date
-          const parsed = formatBigQueryValue(str, columnType);
-          if (parsed !== str && parsed !== '[object Object]') {
-            return parsed;
-          }
-        }
-      } catch {
-        // Continue with other checks
-      }
-    }
-    
-    // Check all properties for date-like strings
-    for (const key in value) {
-      if (Object.prototype.hasOwnProperty.call(value, key)) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-        // Check for Date instances and Date-like objects
-        if (propValue instanceof Date || isDateLike(propValue)) {
-          const dateObj = propValue instanceof Date ? propValue : toDate(propValue);
-          if (dateObj) {
-            if (normalizedType === 'DATE') {
-              return dateObj.toISOString().split('T')[0];
-            }
-            if (normalizedType === 'DATETIME') {
-              return dateObj.toISOString().replace('T', ' ').slice(0, 19);
-            }
-            return dateObj.toISOString();
-          }
-        }
-      }
-    }
-    
-    // Try JSON.stringify to extract date strings
-    try {
-      const jsonStr = JSON.stringify(value);
-      const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
-      if (dateMatch) {
-        return dateMatch[1].replace('T', ' ').replace(/Z$/, '');
-      }
-      // Try parsing JSON and looking for date strings
-      const parsed = JSON.parse(jsonStr);
-      if (typeof parsed === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed) || /^\d{2}:\d{2}:\d{2}/.test(parsed))) {
-        return parsed;
-      }
-      // Check all values in parsed object
-      for (const key in parsed) {
-        if (typeof parsed[key] === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed[key]) || /^\d{2}:\d{2}:\d{2}/.test(parsed[key]))) {
-          return parsed[key];
-        }
-      }
-    } catch {
-      // JSON operations failed
-    }
-    
-    // Check for date object with year/month/day properties
-    if ('year' in value && 'month' in value && 'day' in value) {
-      const year = value.year ?? new Date().getFullYear();
-      const monthVal = value.month ?? 1;
-      const month = String(monthVal).padStart(2, '0');
-      const day = String(value.day ?? 1).padStart(2, '0');
-      if (normalizedType === 'DATE') {
-        return `${year}-${month}-${day}`;
-      }
-      // For DATETIME/TIMESTAMP, check for time components
-      const hours = String(value.hours ?? 0).padStart(2, '0');
-      const minutes = String(value.minutes ?? 0).padStart(2, '0');
-      const seconds = String(value.seconds ?? 0).padStart(2, '0');
-      if (normalizedType === 'DATETIME') {
-        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-      }
-      return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-    }
-    
-    // Last resort: show object keys instead of [object Object]
-    // Reuse the keys variable that was already declared above
-    if (keys.length > 0) {
-      // Try one more time: check if any property value is a date string
-      for (const key of keys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-      return `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
-    }
-    // If object has no keys, return placeholder
-    return '[Date Object]';
-  }
-
-  // Handle Date objects early - regardless of column type, to prevent [object Object] display
-  // Check for both Date instances and Date-like objects (e.g., serialized Dates)
-  if (isDateLike(value)) {
-    const dateObj = toDate(value);
-    if (dateObj) {
-      // Check if it's a valid date
-      if (isNaN(dateObj.getTime())) {
-        return 'Invalid Date';
-      }
-      // Format based on column type if available, otherwise use ISO string
-      if (normalizedType === 'DATE') {
-        return dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
-      }
-      if (normalizedType === 'TIME') {
-        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-        const ms = dateObj.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      if (normalizedType === 'DATETIME') {
-        return dateObj.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-      }
-      if (normalizedType === 'TIMESTAMP') {
-        return dateObj.toISOString();
-      }
-      // Default: use ISO string for any Date object
-      return dateObj.toISOString();
-    }
-  }
-  
-  // Also check for Date instances explicitly (for compatibility)
-  if (value instanceof Date) {
-    // Check if it's a valid date
-    if (isNaN(value.getTime())) {
-      return 'Invalid Date';
-    }
-    // Format based on column type if available, otherwise use ISO string
-    if (normalizedType === 'DATE') {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (normalizedType === 'TIME') {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (normalizedType === 'DATETIME') {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    if (normalizedType === 'TIMESTAMP') {
-      return value.toISOString();
-    }
-    // Default: use ISO string for any Date object
-    return value.toISOString();
-  }
-
-  // Handle BOOL/BOOLEAN
-  if (normalizedType === 'BOOL' || normalizedType === 'BOOLEAN') {
-    if (typeof value === 'boolean') {
-      return value ? 'TRUE' : 'FALSE';
-    }
-    if (typeof value === 'string') {
-      const lower = value.toLowerCase();
-      if (lower === 'true' || lower === '1') return 'TRUE';
-      if (lower === 'false' || lower === '0') return 'FALSE';
-    }
-    return String(value);
-  }
-
-  // Handle BYTES
-  if (normalizedType === 'BYTES') {
-    if (typeof value === 'string') {
-      // BigQuery returns BYTES as base64-encoded strings
-      // Display as hex for better readability
-      try {
-        const binaryString = atob(value);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return '0x' + Array.from(bytes)
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join('');
-      } catch {
-        // If not valid base64, return as-is
-        return value;
-      }
-    }
-    if (value instanceof Uint8Array || Array.isArray(value)) {
-      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-      return '0x' + Array.from(bytes)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-    }
-    return String(value);
-  }
-
-  // Handle DATE
-  if (normalizedType === 'DATE') {
-    if (value instanceof Date) {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (typeof value === 'string') {
-      // If already in YYYY-MM-DD format, return as-is
-      if (DATE_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().split('T')[0];
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      // Handle numeric date values (days since epoch)
-      const date = new Date(value * 86400000); // Convert days to milliseconds
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().split('T')[0];
-      }
-    }
-    // Handle plain objects that might represent dates
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for date object with year/month/day properties
-      if ('year' in value && 'month' in value && 'day' in value) {
-        const year = value.year ?? new Date().getFullYear();
-        // Handle both 0-indexed (JS) and 1-indexed (BigQuery) months
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-      }
-      
-      // Try to extract any string property that looks like a date
-      for (const key in value) {
-        if (Object.prototype.hasOwnProperty.call(value, key)) {
-          const propValue = value[key];
-          if (typeof propValue === 'string' && DATE_REGEX.test(propValue)) {
-            return propValue;
-          }
-          if (typeof propValue === 'string') {
-            const date = new Date(propValue);
-            if (!isNaN(date.getTime())) {
-              return date.toISOString().split('T')[0];
-            }
-          }
-        }
-      }
-      
-      // Try JSON.stringify to see if there's a serializable date value
-      try {
-        const jsonStr = JSON.stringify(value);
-        // Check if JSON contains a date-like string
-        const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2})"/);
-        if (dateMatch) {
-          return dateMatch[1];
-        }
-        // Try parsing the JSON and looking for date strings
-        const parsed = JSON.parse(jsonStr);
-        if (typeof parsed === 'string' && DATE_REGEX.test(parsed)) {
-          return parsed;
-        }
-        // Check all values in the object
-        for (const key in parsed) {
-          if (typeof parsed[key] === 'string' && DATE_REGEX.test(parsed[key])) {
-            return parsed[key];
-          }
-        }
-      } catch {
-        // JSON operations failed, continue
-      }
-      
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-      
-      // Last resort: show object structure instead of [object Object]
-      const keys = Object.keys(value);
-      if (keys.length > 0) {
-        // Try to show first few property values that might be useful
-        const preview = keys.slice(0, 3).map(k => {
-          const v = value[k];
-          if (typeof v === 'string' && v.length < 20) return `${k}:${v}`;
-          if (typeof v === 'number') return `${k}:${v}`;
-          return k;
-        }).join(', ');
-        return `{${preview}${keys.length > 3 ? '...' : ''}}`;
-      }
-      // If object has no keys, return a placeholder instead of [object Object]
-      return '[Date Object]';
-    }
-    // If we get here with an object for a DATE column, something went wrong
-    // Return a placeholder instead of [object Object]
-    if (typeof value === 'object' && value !== null) {
-      return '[Date Object]';
-    }
-    return String(value);
-  }
-
-  // Handle TIME
-  if (normalizedType === 'TIME') {
-    if (value instanceof Date) {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (typeof value === 'string') {
-      // If already in HH:mm:ss format, return as-is
-      if (TIME_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        const hours = String(date.getUTCHours()).padStart(2, '0');
-        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-        const ms = date.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      // Handle numeric time values (milliseconds since midnight)
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        const hours = String(date.getUTCHours()).padStart(2, '0');
-        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-        const ms = date.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-    }
-    // Handle plain objects that might represent time
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for time object with hours/minutes/seconds properties
-      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    return String(value);
-  }
-
-  // Handle DATETIME
-  if (normalizedType === 'DATETIME') {
-    if (value instanceof Date) {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    if (typeof value === 'string') {
-      // If already in YYYY-MM-DD HH:mm:ss format, return as-is
-      if (DATETIME_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().replace('T', ' ').slice(0, 19);
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString().replace('T', ' ').slice(0, 19);
-      }
-    }
-    // Handle plain objects that might represent datetime
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for datetime object with date and time properties
-      if (('year' in value && 'month' in value && 'day' in value) ||
-          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-      }
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    return String(value);
-  }
-
-  // Handle TIMESTAMP
-  if (normalizedType === 'TIMESTAMP') {
-    if (value instanceof Date) {
-      return value.toISOString();
-    }
-    if (typeof value === 'string') {
-      // If already in ISO format, return as-is
-      if (ISO_TIMESTAMP_REGEX.test(value)) {
-        return value;
-      }
-      // Try to parse and format
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString();
-      }
-      return value;
-    }
-    if (typeof value === 'number') {
-      // BigQuery timestamps are in microseconds since epoch
-      // JavaScript Date uses milliseconds, so divide by 1000 if > 1e12
-      const timestampMs = value > 1e12 ? value / 1000 : value;
-      const date = new Date(timestampMs);
-      if (!isNaN(date.getTime())) {
-        return date.toISOString();
-      }
-    }
-    // Handle plain objects that might represent timestamp
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Check for wrapped value
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        return formatBigQueryValue(value.value, columnType);
-      }
-      // Check for timestamp object with date and time properties
-      if (('year' in value && 'month' in value && 'day' in value) ||
-          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      // Try toString if it's not the default
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    return String(value);
-  }
-
-  // Handle INTERVAL
-  if (normalizedType === 'INTERVAL') {
-    if (typeof value === 'string') {
-      // BigQuery INTERVAL format: "Y-M D H:M:S" or similar
-      // Return as-is since it's already formatted
-      return value;
-    }
-    if (typeof value === 'object' && value !== null) {
-      // BigQuery might return interval as an object with parts
-      if (value.years !== undefined || value.months !== undefined || 
-          value.days !== undefined || value.hours !== undefined ||
-          value.minutes !== undefined || value.seconds !== undefined) {
-        const parts: string[] = [];
-        if (value.years) parts.push(`${value.years} year${value.years !== 1 ? 's' : ''}`);
-        if (value.months) parts.push(`${value.months} month${value.months !== 1 ? 's' : ''}`);
-        if (value.days) parts.push(`${value.days} day${value.days !== 1 ? 's' : ''}`);
-        if (value.hours) parts.push(`${value.hours} hour${value.hours !== 1 ? 's' : ''}`);
-        if (value.minutes) parts.push(`${value.minutes} minute${value.minutes !== 1 ? 's' : ''}`);
-        if (value.seconds) parts.push(`${value.seconds} second${value.seconds !== 1 ? 's' : ''}`);
-        return parts.join(' ') || '0 seconds';
-      }
-    }
-    return String(value);
-  }
-
-  // Handle NUMERIC and BIGNUMERIC
-  if (normalizedType === 'NUMERIC' || normalizedType === 'BIGNUMERIC') {
-    if (typeof value === 'number') {
-      // Format with appropriate precision
-      // NUMERIC has 38 digits total, 9 after decimal
-      // BIGNUMERIC has 76 digits total, 38 after decimal
-      // For display, use toFixed to show significant digits
-      return value.toLocaleString('en-US', {
-        maximumFractionDigits: 38,
-        useGrouping: true,
-      });
-    }
-    if (typeof value === 'string') {
-      // BigQuery returns NUMERIC/BIGNUMERIC as strings to preserve precision
-      // Format with locale-aware number formatting
-      try {
-        const num = parseFloat(value);
-        if (!isNaN(num)) {
-          return num.toLocaleString('en-US', {
-            maximumFractionDigits: 38,
-            useGrouping: true,
-          });
-        }
-      } catch {
-        // If parsing fails, return as-is
-      }
-      return value;
-    }
-    return String(value);
-  }
-
-  // Handle INTEGER types (INTEGER, INT64, INT32, INT, etc.)
-  if (normalizedType === 'INTEGER' || normalizedType === 'INT' || normalizedType.includes('INT')) {
-    if (typeof value === 'number') {
-      // Ensure it's displayed as a whole number (no decimal point)
-      // Use Math.floor or Math.trunc to remove any decimal part, then convert to string
-      const intValue = Number.isInteger(value) ? value : Math.trunc(value);
-      return String(intValue); // Convert to string without commas or decimal points
-    }
-    if (typeof value === 'string') {
-      // BigQuery might return large integers as strings
-      // Return as-is if it's already a valid integer string (no decimal point, no commas)
-      if (/^-?\d+$/.test(value)) {
-        return value; // Already a valid integer string, return without commas or periods
-      }
-      // If string contains a decimal point, parse and truncate to integer
-      try {
-        const num = parseFloat(value);
-        if (!isNaN(num)) {
-          const intValue = Math.trunc(num); // Remove decimal part
-          return String(intValue); // Convert to string without commas or decimal points
-        }
-      } catch {
-        // If parsing fails, return as-is
-      }
-      return value;
-    }
-    // For other types, try to convert to integer
-    try {
-      const num = Number(value);
-      if (!isNaN(num)) {
-        const intValue = Math.trunc(num);
-        return String(intValue);
-      }
-    } catch {
-      // If conversion fails, return as string
-    }
-    return String(value);
-  }
-
-  // Handle FLOAT and FLOAT64
-  if (normalizedType === 'FLOAT' || normalizedType === 'FLOAT64') {
-    if (typeof value === 'number') {
-      // Format floats with reasonable precision
-      if (Number.isInteger(value)) {
-        return value.toLocaleString('en-US');
-      }
-      return value.toLocaleString('en-US', {
-        maximumFractionDigits: 15,
-        useGrouping: true,
-      });
-    }
-    if (typeof value === 'string') {
-      try {
-        const num = parseFloat(value);
-        if (!isNaN(num)) {
-          if (Number.isInteger(num)) {
-            return num.toLocaleString('en-US');
-          }
-          return num.toLocaleString('en-US', {
-            maximumFractionDigits: 15,
-            useGrouping: true,
-          });
-        }
-      } catch {
-        // If parsing fails, return as-is
-      }
-      return value;
-    }
-    return String(value);
-  }
-
-  // Handle GEOGRAPHY
-  if (normalizedType === 'GEOGRAPHY') {
-    if (typeof value === 'string') {
-      // BigQuery GEOGRAPHY is returned as GeoJSON strings
-      try {
-        const geoJson = JSON.parse(value);
-        // Pretty-print GeoJSON
-        return JSON.stringify(geoJson, null, 2);
-      } catch {
-        // If not valid JSON, return as-is
-        return value;
-      }
-    }
-    if (typeof value === 'object' && value !== null) {
-      // Already parsed GeoJSON object
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch {
-        return String(value);
-      }
-    }
-    return String(value);
-  }
-
-  // Handle JSON
-  if (normalizedType === 'JSON') {
-    if (typeof value === 'string') {
-      // Try to parse and pretty-print JSON
-      try {
-        const parsed = JSON.parse(value);
-        return JSON.stringify(parsed, null, 2);
-      } catch {
-        // If not valid JSON, return as-is
-        return value;
-      }
-    }
-    if (typeof value === 'object' && value !== null) {
-      // Already parsed JSON object
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch {
-        return String(value);
-      }
-    }
-    return String(value);
-  }
-
-  // Handle ARRAY
-  if (normalizedType === 'ARRAY' || Array.isArray(value)) {
-    if (Array.isArray(value)) {
-      // Format array elements recursively
-      const formatted = value.map((item, index) => {
-        // For arrays, we don't have per-item type info, so format generically
-        const formattedItem = formatBigQueryValue(item);
-        return formattedItem;
-      });
-      return `[${formatted.join(', ')}]`;
-    }
-    return String(value);
-  }
-
-  // Handle STRUCT/RECORD
-  if (normalizedType === 'STRUCT' || normalizedType === 'RECORD') {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-      // Check if it's a BigQuery date object with a value property
-      if (value.value !== undefined && Object.keys(value).length === 1) {
-        // Recursively format the inner value (but avoid infinite recursion)
-        const innerValue = value.value;
-        if (innerValue !== value) {
-          return formatBigQueryValue(innerValue, columnType);
-        }
-      }
-      // Format as JSON object
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch {
-        return String(value);
-      }
-    }
-    return String(value);
-  }
-
-  // Handle plain objects that aren't Date instances - check before STRING fallback
-  // This prevents [object Object] display for objects that might represent dates or other types
-  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it's a wrapped value object (common in some BigQuery responses)
-    if (value.value !== undefined && Object.keys(value).length === 1) {
-      // Recursively format the inner value (but avoid infinite recursion)
-      const innerValue = value.value;
-      if (innerValue !== value) {
-        return formatBigQueryValue(innerValue, columnType);
-      }
-    }
-    
-    // For date/time types, try to extract date from object properties
-    if (normalizedType === 'DATE' || normalizedType === 'DATETIME' || normalizedType === 'TIMESTAMP') {
-      // Check for common date object properties
-      if ('year' in value && 'month' in value && 'day' in value) {
-        const year = value.year;
-        const month = String(value.month || 0).padStart(2, '0');
-        const day = String(value.day || 0).padStart(2, '0');
-        if (normalizedType === 'DATE') {
-          return `${year}-${month}-${day}`;
-        }
-        // For DATETIME/TIMESTAMP, check for time components
-        const hours = String(value.hours || 0).padStart(2, '0');
-        const minutes = String(value.minutes || 0).padStart(2, '0');
-        const seconds = String(value.seconds || 0).padStart(2, '0');
-        if (normalizedType === 'DATETIME') {
-          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      // Try to find a string representation in common properties
-      if ('toString' in value && typeof value.toString === 'function') {
-        try {
-          const str = value.toString();
-          if (str !== '[object Object]') {
-            return formatBigQueryValue(str, columnType);
-          }
-        } catch {
-          // Ignore toString errors
-        }
-      }
-    }
-    
-    // For other object types, try JSON stringify
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      // If JSON.stringify fails, return a descriptive string
-      return `[Object: ${Object.keys(value).join(', ')}]`;
-    }
-  }
-
-  // CRITICAL: Before falling back to String(value), check if this is an object for a date/time type
-  // This is a final safety net to prevent [object Object] display
-  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    // Try one more time to extract a date string
-    try {
-      const jsonStr = JSON.stringify(value);
-      // Look for any date-like pattern in the JSON
-      const datePatterns = [
-        /"(\d{4}-\d{2}-\d{2})"/,  // DATE format
-        /"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/,  // TIMESTAMP format
-        /"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/,  // DATETIME format
-        /"(\d{2}:\d{2}:\d{2})/,  // TIME format
-      ];
-      
-      for (const pattern of datePatterns) {
-        const match = jsonStr.match(pattern);
-        if (match) {
-          let dateStr = match[1];
-          if (normalizedType === 'DATE' && dateStr.includes('T')) {
-            dateStr = dateStr.split('T')[0];
-          } else if (normalizedType === 'DATETIME' && dateStr.includes('T')) {
-            dateStr = dateStr.replace('T', ' ');
-          }
-          return dateStr;
-        }
-      }
-      
-      // If no date pattern found, show object structure
-      const keys = Object.keys(value);
-      if (keys.length > 0) {
-        // Try to show first property value
-        const firstKey = keys[0];
-        const firstValue = value[firstKey];
-        if (typeof firstValue === 'string' && firstValue.length < 50) {
-          return firstValue;
-        }
-        return `{${keys.slice(0, 2).join(', ')}}`;
-      }
-      return '[Date Object]';
-    } catch {
-      // JSON.stringify failed
-      const keys = Object.keys(value);
-      return keys.length > 0 ? `{${keys.slice(0, 2).join(', ')}}` : '[Date Object]';
-    }
-  }
-
-  // Handle STRING (default case)
-  if (normalizedType === 'STRING' || normalizedType === '') {
-    // CRITICAL: Before converting to string, check if it's a Date-like object
-    // This prevents [object Object] from being displayed for Date objects
-    if (isDateLike(value)) {
-      const dateObj = toDate(value);
-      if (dateObj) {
-        if (isNaN(dateObj.getTime())) {
-          return 'Invalid Date';
-        }
-        return dateObj.toISOString();
-      }
-    }
-    
-    // Before converting to string, check if it's an object
-    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-      // Try JSON.stringify for objects
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return `[Object: ${Object.keys(value).join(', ')}]`;
-      }
-    }
-    
-    // Check for Date instance one more time
-    if (value instanceof Date) {
-      if (isNaN(value.getTime())) {
-        return 'Invalid Date';
-      }
-      return value.toISOString();
-    }
-    
-    return String(value);
-  }
-
-  // Fallback for any other types
-  // CRITICAL: Before using String(value), check if it's a Date-like object
-  // This prevents [object Object] from being displayed for Date objects
-  if (isDateLike(value)) {
-    const dateObj = toDate(value);
-    if (dateObj) {
-      // Format based on column type if available, otherwise use ISO string
-      if (normalizedType === 'DATE') {
-        return dateObj.toISOString().split('T')[0];
-      }
-      if (normalizedType === 'TIME') {
-        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-        const ms = dateObj.getUTCMilliseconds();
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      if (normalizedType === 'DATETIME') {
-        return dateObj.toISOString().replace('T', ' ').slice(0, 19);
-      }
-      if (normalizedType === 'TIMESTAMP') {
-        return dateObj.toISOString();
-      }
-      return dateObj.toISOString();
-    }
-  }
-  
-  // CRITICAL: Check for empty objects {} for date types BEFORE general object handling
-  // Empty objects for date columns are likely Date objects that were JSON serialized
-  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    const objKeys = Object.keys(value);
-    if (objKeys.length === 0) {
-      // Empty object for a date column - this is a Date that was serialized incorrectly
-      return '[Invalid Date]';
-    }
-  }
-  
-  // Before using String(value), check if it's an object
-  // Exclude Date instances and Date-like objects to prevent [object Object] display
-  if (typeof value === 'object' && value !== null && !Array.isArray(value) && 
-      !(value instanceof Date) && !isDateLike(value)) {
-    // CRITICAL: For date types, never return [object Object]
-    if (isDateType) {
-      const objKeys = Object.keys(value);
-      if (objKeys.length === 0) {
-        return '[Invalid Date]';
-      }
-      // Try to extract any useful information
-      try {
-        const jsonStr = JSON.stringify(value);
-        if (jsonStr === '{}') {
-          return '[Invalid Date]';
-        }
-        return jsonStr;
-      } catch {
-        return `[Object: ${objKeys.join(', ')}]`;
-      }
-    }
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return `[Object: ${Object.keys(value).join(', ')}]`;
-    }
-  }
-  
-  // Final fallback - but check for Date and Date-like objects one more time to be safe
-  if (isDateLike(value)) {
-    const dateObj = toDate(value);
-    if (dateObj) {
-      if (isNaN(dateObj.getTime())) {
-        return 'Invalid Date';
-      }
-      return dateObj.toISOString();
-    }
-  }
-  
-  if (value instanceof Date) {
-    if (isNaN(value.getTime())) {
-      return 'Invalid Date';
-    }
-    return value.toISOString();
-  }
-  
-  // CRITICAL: Last check before String(value) - if it's a date type and an object, don't convert to string
-  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
-    return '[Invalid Date]';
-  }
-  
-  return String(value);
-}
-````
-
 ## File: src/renderer/index.tsx
 ````typescript
 /// <reference path="./types/electron-api.d.ts" />
@@ -9555,74 +8421,6 @@ pnpm-lock.yaml
   "tabWidth": 2,
   "useTabs": false
 }
-````
-
-## File: eslint.config.js
-````javascript
-const js = require('@eslint/js');
-const typescriptEslint = require('@typescript-eslint/eslint-plugin');
-const typescriptParser = require('@typescript-eslint/parser');
-const react = require('eslint-plugin-react');
-const reactHooks = require('eslint-plugin-react-hooks');
-
-module.exports = [
-  {
-    ignores: [
-      'node_modules/**',
-      'dist/**',
-      'build/**',
-      'out/**',
-      'coverage/**',
-      '**/*.min.js',
-      '**/*.bundle.js',
-      '**/*.config.js',
-    ],
-  },
-  js.configs.recommended,
-  {
-    files: ['**/*.{js,jsx,ts,tsx}'],
-    languageOptions: {
-      parser: typescriptParser,
-      parserOptions: {
-        ecmaVersion: 'latest',
-        sourceType: 'module',
-        ecmaFeatures: {
-          jsx: true,
-        },
-      },
-      globals: {
-        window: 'readonly',
-        document: 'readonly',
-        console: 'readonly',
-        process: 'readonly',
-        __dirname: 'readonly',
-        __filename: 'readonly',
-        Buffer: 'readonly',
-        global: 'readonly',
-        module: 'readonly',
-        require: 'readonly',
-        exports: 'readonly',
-      },
-    },
-    plugins: {
-      '@typescript-eslint': typescriptEslint,
-      react: react,
-      'react-hooks': reactHooks,
-    },
-    rules: {
-      ...typescriptEslint.configs.recommended.rules,
-      ...react.configs.recommended.rules,
-      ...reactHooks.configs.recommended.rules,
-      'react/react-in-jsx-scope': 'off',
-      '@typescript-eslint/no-explicit-any': 'warn',
-    },
-    settings: {
-      react: {
-        version: 'detect',
-      },
-    },
-  },
-];
 ````
 
 ## File: tsconfig.json
@@ -11971,6 +10769,357 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
 }
 ````
 
+## File: src/renderer/components/QueryEditor/EditorStatusBar.tsx
+````typescript
+import React from 'react';
+import './QueryEditor.css';
+
+interface EditorStatusBarProps {
+  saveSuccessMessage: string | null;
+  isQueryCompleted: boolean;
+  completedExecutionTime: number | null;
+  validationStatus: {
+    isValid: boolean | null;
+    errorMessage: string | null;
+    errorLine: number | null;
+  };
+  expectedQuerySize: number | null;
+  isLoadingQuerySize: boolean;
+}
+
+/**
+ * Format bytes to human-readable string.
+ */
+const formatBytes = (bytes: number): string => {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let size = bytes;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+
+  return `${size.toFixed(2)} ${units[unitIndex]}`;
+};
+
+/**
+ * Format execution time to human-readable string.
+ */
+const formatExecutionTime = (ms: number): string => {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  } else if (ms < 60000) {
+    return `${(ms / 1000).toFixed(2)}s`;
+  } else {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+};
+
+export const EditorStatusBar: React.FC<EditorStatusBarProps> = ({
+  saveSuccessMessage,
+  isQueryCompleted,
+  completedExecutionTime,
+  validationStatus,
+  expectedQuerySize,
+  isLoadingQuerySize,
+}) => {
+  const renderStatusContent = () => {
+    // Priority 1: Save success message
+    if (saveSuccessMessage) {
+      return (
+        <span className="status-text status-valid">
+          <span className="status-indicator status-indicator-valid"></span>
+          {saveSuccessMessage}
+        </span>
+      );
+    }
+
+    // Priority 2: Query completed
+    if (isQueryCompleted) {
+      return (
+        <span className="status-text status-valid">
+          <span className="status-indicator status-indicator-valid"></span>
+          Query completed
+          {completedExecutionTime !== null
+            ? ` in ${formatExecutionTime(completedExecutionTime)}`
+            : ''}
+        </span>
+      );
+    }
+
+    // Priority 3: No validation status yet (empty editor)
+    if (validationStatus.isValid === null) {
+      return <span className="status-text">✦ Type a query to get started</span>;
+    }
+
+    // Priority 4: Valid query
+    if (validationStatus.isValid) {
+      return (
+        <span className="status-text status-valid">
+          <span className="status-indicator status-indicator-valid"></span>
+          {expectedQuerySize !== null
+            ? `This query will process ${formatBytes(expectedQuerySize)} when run`
+            : isLoadingQuerySize
+            ? 'Validating query...'
+            : 'Query is valid'}
+        </span>
+      );
+    }
+
+    // Priority 5: Invalid query
+    return (
+      <span className="status-text status-invalid">
+        <span className="status-indicator status-indicator-invalid"></span>
+        <span className="status-error-message">
+          {validationStatus.errorMessage || 'SQL syntax error'}
+        </span>
+      </span>
+    );
+  };
+
+  return (
+    <div className="editor-status-bar">
+      <div className="status-left">{renderStatusContent()}</div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/QueryEditor/EditorToolbar.tsx
+````typescript
+import React, { useRef, useEffect } from 'react';
+import './QueryEditor.css';
+
+interface EditorToolbarProps {
+  onExecute: () => void;
+  onCancel: () => void;
+  onFormat: () => void;
+  onExpandSelectStar: () => void;
+  onDbtify: () => void;
+  onOpenSaveDialog: () => void;
+  isExecuting: boolean;
+  isConnected: boolean;
+  hasQuery: boolean;
+  hasDbtSyntax: boolean;
+  isQueryValid: boolean | null;
+  enableDbtSupport: boolean;
+  savedQueryId: string | null;
+}
+
+export const EditorToolbar: React.FC<EditorToolbarProps> = ({
+  onExecute,
+  onCancel,
+  onFormat,
+  onExpandSelectStar,
+  onDbtify,
+  onOpenSaveDialog,
+  isExecuting,
+  isConnected,
+  hasQuery,
+  hasDbtSyntax,
+  isQueryValid,
+  enableDbtSupport,
+  savedQueryId,
+}) => {
+  const [isToolsMenuOpen, setIsToolsMenuOpen] = React.useState(false);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close tools menu on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (toolsMenuRef.current && target && !toolsMenuRef.current.contains(target)) {
+        setIsToolsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleToolAction = (action: () => void) => {
+    action();
+    setIsToolsMenuOpen(false);
+  };
+
+  const shouldDisableRunButton = isExecuting || !isConnected;
+
+  return (
+    <div className="query-editor-toolbar">
+      <button
+        onClick={onExecute}
+        disabled={shouldDisableRunButton}
+        className="run-button"
+      >
+        {isExecuting ? (
+          'Executing...'
+        ) : (
+          <>
+            Run <span className="arrow-icon">→</span>
+          </>
+        )}
+      </button>
+      
+      {isExecuting && (
+        <button onClick={onCancel} className="cancel-button">
+          Cancel
+        </button>
+      )}
+      
+      <div className="tools-dropdown" ref={toolsMenuRef}>
+        <button
+          onClick={() => setIsToolsMenuOpen((prev) => !prev)}
+          className={`tools-button${isToolsMenuOpen ? ' open' : ''}`}
+          aria-haspopup="true"
+          aria-expanded={isToolsMenuOpen}
+        >
+          Tools <span className="arrow-icon">▾</span>
+        </button>
+        
+        {isToolsMenuOpen && (
+          <div className="tools-menu">
+            <button
+              onClick={() => handleToolAction(onFormat)}
+              disabled={!hasQuery}
+              className="tools-menu-item"
+              title="Format SQL query"
+            >
+              Format
+            </button>
+            <button
+              onClick={() => handleToolAction(onExpandSelectStar)}
+              disabled={!hasQuery || !isConnected}
+              className="tools-menu-item"
+              title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
+            >
+              Expand *
+            </button>
+            {enableDbtSupport && (
+              <button
+                onClick={() => handleToolAction(onDbtify)}
+                disabled={!hasQuery || (!hasDbtSyntax && isQueryValid !== true)}
+                className="tools-menu-item"
+                title={
+                  hasDbtSyntax
+                    ? 'Convert dbt source/ref syntax back to BigQuery table references'
+                    : 'Convert table references to dbt source syntax'
+                }
+              >
+                {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      
+      <button
+        onClick={onOpenSaveDialog}
+        disabled={!hasQuery}
+        className="save-button"
+      >
+        {savedQueryId ? 'Update' : 'Save'}
+      </button>
+      
+      {!isConnected && <span className="connection-warning">Not connected</span>}
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/QueryEditor/index.ts
+````typescript
+// QueryEditor subcomponents
+export { EditorToolbar } from './EditorToolbar';
+export { EditorStatusBar } from './EditorStatusBar';
+export { SaveQueryDialog } from './SaveQueryDialog';
+````
+
+## File: src/renderer/components/QueryEditor/SaveQueryDialog.tsx
+````typescript
+import React, { useEffect } from 'react';
+import './QueryEditor.css';
+
+interface SaveQueryDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: () => void;
+  saveName: string;
+  onNameChange: (name: string) => void;
+  saveDescription: string;
+  onDescriptionChange: (description: string) => void;
+  isUpdate: boolean;
+  isSaveDisabled: boolean;
+}
+
+export const SaveQueryDialog: React.FC<SaveQueryDialogProps> = ({
+  isOpen,
+  onClose,
+  onSave,
+  saveName,
+  onNameChange,
+  saveDescription,
+  onDescriptionChange,
+  isUpdate,
+  isSaveDisabled,
+}) => {
+  // Handle ESC key to close dialog
+  useEffect(() => {
+    if (!isOpen) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      } else if (e.key === 'Enter' && !isSaveDisabled) {
+        e.preventDefault();
+        onSave();
+      }
+    };
+    
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose, onSave, isSaveDisabled]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="save-dialog-overlay" onClick={onClose}>
+      <div className="save-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>{isUpdate ? 'Update Query' : 'Save Query'}</h3>
+        <div className="form-group">
+          <label>Name *</label>
+          <input
+            type="text"
+            value={saveName}
+            onChange={(e) => onNameChange(e.target.value)}
+            placeholder="Query name"
+            autoFocus
+          />
+        </div>
+        <div className="form-group">
+          <label>Description</label>
+          <textarea
+            value={saveDescription}
+            onChange={(e) => onDescriptionChange(e.target.value)}
+            placeholder="Optional description"
+            rows={3}
+          />
+        </div>
+        <div className="dialog-actions">
+          <button onClick={onClose}>Cancel</button>
+          <button onClick={onSave} disabled={isSaveDisabled}>
+            {isUpdate ? 'Update' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/QueryHistory/QueryHistory.css
 ````css
 .query-history {
@@ -14286,6 +13435,1420 @@ export const useQueryHistoryStore = create<QueryHistoryState>((set, get) => ({
 }));
 ````
 
+## File: src/renderer/utils/bigquery-formatter.ts
+````typescript
+/**
+ * Formats BigQuery values for display in the UI
+ * Supports all BigQuery data types as per:
+ * https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types
+ */
+
+// Pre-compile regex patterns for better performance (compiled once, reused many times)
+const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_REGEX = /^\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+const DATETIME_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/;
+const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Checks if a value is a Date object or Date-like object
+ * This handles cases where Date objects might have been serialized/deserialized
+ * and are no longer instanceof Date
+ */
+function isDateLike(value: any): boolean {
+  if (value instanceof Date) {
+    return true;
+  }
+  // Check if it's an object with Date-like methods/properties
+  if (typeof value === 'object' && value !== null) {
+    // Check for Date-like methods
+    if (typeof value.getTime === 'function' && typeof value.toISOString === 'function') {
+      return true;
+    }
+    // Check if it has Date-like properties (from serialized Date)
+    if ('getTime' in value || 'toISOString' in value || 'getFullYear' in value) {
+      return true;
+    }
+    // CRITICAL: Check for empty objects {} that might be Date objects that were JSON serialized
+    // When Date objects are JSON.stringify'd, they become {}, so we need to check column type
+    // This is a fallback for objects that lost their Date properties during serialization
+    const keys = Object.keys(value);
+    if (keys.length === 0 && typeof value === 'object') {
+      // Empty object might be a serialized Date - we'll handle this in the formatter based on column type
+      return true; // Return true so it gets special handling
+    }
+  }
+  return false;
+}
+
+/**
+ * Converts a Date-like value to a Date object for formatting
+ */
+function toDate(value: any): Date | null {
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null) {
+    // Try to call getTime if available
+    if (typeof value.getTime === 'function') {
+      try {
+        const time = value.getTime();
+        if (typeof time === 'number' && !isNaN(time)) {
+          return new Date(time);
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+    // Try to create Date from ISO string if available
+    if (typeof value.toISOString === 'function') {
+      try {
+        const isoStr = value.toISOString();
+        const date = new Date(isoStr);
+        if (!isNaN(date.getTime())) {
+          return date;
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Formats a BigQuery value based on its column type
+ * @param value - The value to format
+ * @param columnType - The BigQuery column type (e.g., 'STRING', 'INTEGER', 'TIMESTAMP', etc.)
+ * @returns Formatted string representation of the value
+ */
+export function formatBigQueryValue(value: any, columnType?: string, columnName?: string): string {
+  // Handle NULL values - early return for common case
+  if (value === null || value === undefined) {
+    return 'null';
+  }
+
+  // Normalize column type early so we can use it for object detection
+  const normalizedType = columnType?.toUpperCase() || '';
+  const colNameLower = (columnName || '').toLowerCase();
+  
+  // Check if this is a date type - either by type or by column name
+  // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
+  const isDateTypeByType = normalizedType === 'DATE' || normalizedType === 'DATETIME' || 
+                           normalizedType === 'TIME' || normalizedType === 'TIMESTAMP';
+  const isDateTypeByName = normalizedType === 'RECORD' && (
+    colNameLower.includes('date') || 
+    colNameLower.includes('time') || 
+    colNameLower.includes('timestamp') ||
+    colNameLower.includes('datetime')
+  );
+  const isDateType = isDateTypeByType || isDateTypeByName;
+
+  // CRITICAL: Check if value is already the string "[object Object]"
+  // This can happen if Date objects were converted to strings before reaching the formatter
+  if (typeof value === 'string' && value === '[object Object]') {
+    // CRITICAL: Even if column type is wrong (e.g., RECORD), check if column name suggests it's a date
+    // This handles cases where DATE/TIME columns were incorrectly typed as RECORD
+    if (isDateType) {
+      return '[Invalid Date]';
+    }
+    return value; // For non-date columns, return as-is
+  }
+
+  // CRITICAL: Handle plain objects for DATE/TIME types BEFORE anything else
+  // This prevents [object Object] from being displayed
+  const isObject = typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date);
+  if (isDateType && isObject) {
+    // CRITICAL: Handle empty objects {} that might be Date objects that were JSON serialized
+    // When Date objects go through JSON.stringify, they become {}
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      // Empty object for a date column - this is likely a Date that was serialized incorrectly
+      // Check if it's truly empty or if it has non-enumerable properties
+      // Try to detect if this was a Date object by checking the prototype
+      const proto = Object.getPrototypeOf(value);
+      if (proto === Object.prototype || proto === null) {
+        // This is likely a Date object that was JSON.stringify'd to {}
+        // Return a placeholder instead of [object Object]
+        return '[Invalid Date]';
+      }
+      // Might be a Date-like object with non-enumerable properties
+      // Try to convert it
+      if (isDateLike(value)) {
+        const dateObj = toDate(value);
+        if (dateObj) {
+          if (normalizedType === 'DATE') {
+            return dateObj.toISOString().split('T')[0];
+          }
+          if (normalizedType === 'TIME') {
+            const hours = String(dateObj.getUTCHours()).padStart(2, '0');
+            const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
+            const ms = dateObj.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedType === 'DATETIME') {
+            return dateObj.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return dateObj.toISOString();
+        }
+      }
+      return '[Invalid Date]';
+    }
+    // Check for wrapped value
+    if ('value' in value && Object.keys(value).length === 1) {
+      const innerValue = value.value;
+      if (innerValue !== value) {
+        return formatBigQueryValue(innerValue, columnType);
+      }
+    }
+    
+    // Try toString() first
+    if ('toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+            return str;
+          }
+          // Try to parse it as a date
+          const parsed = formatBigQueryValue(str, columnType);
+          if (parsed !== str && parsed !== '[object Object]') {
+            return parsed;
+          }
+        }
+      } catch {
+        // Continue with other checks
+      }
+    }
+    
+    // Check all properties for date-like strings
+    for (const key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+        // Check for Date instances and Date-like objects
+        if (propValue instanceof Date || isDateLike(propValue)) {
+          const dateObj = propValue instanceof Date ? propValue : toDate(propValue);
+          if (dateObj) {
+            if (normalizedType === 'DATE') {
+              return dateObj.toISOString().split('T')[0];
+            }
+            if (normalizedType === 'DATETIME') {
+              return dateObj.toISOString().replace('T', ' ').slice(0, 19);
+            }
+            return dateObj.toISOString();
+          }
+        }
+      }
+    }
+    
+    // Try JSON.stringify to extract date strings
+    try {
+      const jsonStr = JSON.stringify(value);
+      const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
+      if (dateMatch) {
+        return dateMatch[1].replace('T', ' ').replace(/Z$/, '');
+      }
+      // Try parsing JSON and looking for date strings
+      const parsed = JSON.parse(jsonStr);
+      if (typeof parsed === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed) || /^\d{2}:\d{2}:\d{2}/.test(parsed))) {
+        return parsed;
+      }
+      // Check all values in parsed object
+      for (const key in parsed) {
+        if (typeof parsed[key] === 'string' && (/^\d{4}-\d{2}-\d{2}/.test(parsed[key]) || /^\d{2}:\d{2}:\d{2}/.test(parsed[key]))) {
+          return parsed[key];
+        }
+      }
+    } catch {
+      // JSON operations failed
+    }
+    
+    // Check for date object with year/month/day properties
+    if ('year' in value && 'month' in value && 'day' in value) {
+      const year = value.year ?? new Date().getFullYear();
+      const monthVal = value.month ?? 1;
+      const month = String(monthVal).padStart(2, '0');
+      const day = String(value.day ?? 1).padStart(2, '0');
+      if (normalizedType === 'DATE') {
+        return `${year}-${month}-${day}`;
+      }
+      // For DATETIME/TIMESTAMP, check for time components
+      const hours = String(value.hours ?? 0).padStart(2, '0');
+      const minutes = String(value.minutes ?? 0).padStart(2, '0');
+      const seconds = String(value.seconds ?? 0).padStart(2, '0');
+      if (normalizedType === 'DATETIME') {
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      }
+      return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+    }
+    
+    // Last resort: show object keys instead of [object Object]
+    // Reuse the keys variable that was already declared above
+    if (keys.length > 0) {
+      // Try one more time: check if any property value is a date string
+      for (const key of keys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+      return `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+    }
+    // If object has no keys, return placeholder
+    return '[Date Object]';
+  }
+
+  // Handle Date objects early - regardless of column type, to prevent [object Object] display
+  // Check for both Date instances and Date-like objects (e.g., serialized Dates)
+  if (isDateLike(value)) {
+    const dateObj = toDate(value);
+    if (dateObj) {
+      // Check if it's a valid date
+      if (isNaN(dateObj.getTime())) {
+        return 'Invalid Date';
+      }
+      // Format based on column type if available, otherwise use ISO string
+      if (normalizedType === 'DATE') {
+        return dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
+      }
+      if (normalizedType === 'TIME') {
+        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
+        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
+        const ms = dateObj.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      if (normalizedType === 'DATETIME') {
+        return dateObj.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+      }
+      if (normalizedType === 'TIMESTAMP') {
+        return dateObj.toISOString();
+      }
+      // Default: use ISO string for any Date object
+      return dateObj.toISOString();
+    }
+  }
+  
+  // Also check for Date instances explicitly (for compatibility)
+  if (value instanceof Date) {
+    // Check if it's a valid date
+    if (isNaN(value.getTime())) {
+      return 'Invalid Date';
+    }
+    // Format based on column type if available, otherwise use ISO string
+    if (normalizedType === 'DATE') {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (normalizedType === 'TIME') {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (normalizedType === 'DATETIME') {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    if (normalizedType === 'TIMESTAMP') {
+      return value.toISOString();
+    }
+    // Default: use ISO string for any Date object
+    return value.toISOString();
+  }
+
+  // Handle BOOL/BOOLEAN
+  if (normalizedType === 'BOOL' || normalizedType === 'BOOLEAN') {
+    if (typeof value === 'boolean') {
+      return value ? 'TRUE' : 'FALSE';
+    }
+    if (typeof value === 'string') {
+      const lower = value.toLowerCase();
+      if (lower === 'true' || lower === '1') return 'TRUE';
+      if (lower === 'false' || lower === '0') return 'FALSE';
+    }
+    return String(value);
+  }
+
+  // Handle BYTES
+  if (normalizedType === 'BYTES') {
+    if (typeof value === 'string') {
+      // BigQuery returns BYTES as base64-encoded strings
+      // Display as hex for better readability
+      try {
+        const binaryString = atob(value);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return '0x' + Array.from(bytes)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+      } catch {
+        // If not valid base64, return as-is
+        return value;
+      }
+    }
+    if (value instanceof Uint8Array || Array.isArray(value)) {
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      return '0x' + Array.from(bytes)
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+    return String(value);
+  }
+
+  // Handle DATE
+  if (normalizedType === 'DATE') {
+    if (value instanceof Date) {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (typeof value === 'string') {
+      // If already in YYYY-MM-DD format, return as-is
+      if (DATE_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      // Handle numeric date values (days since epoch)
+      const date = new Date(value * 86400000); // Convert days to milliseconds
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+    }
+    // Handle plain objects that might represent dates
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for date object with year/month/day properties
+      if ('year' in value && 'month' in value && 'day' in value) {
+        const year = value.year ?? new Date().getFullYear();
+        // Handle both 0-indexed (JS) and 1-indexed (BigQuery) months
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+      
+      // Try to extract any string property that looks like a date
+      for (const key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          const propValue = value[key];
+          if (typeof propValue === 'string' && DATE_REGEX.test(propValue)) {
+            return propValue;
+          }
+          if (typeof propValue === 'string') {
+            const date = new Date(propValue);
+            if (!isNaN(date.getTime())) {
+              return date.toISOString().split('T')[0];
+            }
+          }
+        }
+      }
+      
+      // Try JSON.stringify to see if there's a serializable date value
+      try {
+        const jsonStr = JSON.stringify(value);
+        // Check if JSON contains a date-like string
+        const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2})"/);
+        if (dateMatch) {
+          return dateMatch[1];
+        }
+        // Try parsing the JSON and looking for date strings
+        const parsed = JSON.parse(jsonStr);
+        if (typeof parsed === 'string' && DATE_REGEX.test(parsed)) {
+          return parsed;
+        }
+        // Check all values in the object
+        for (const key in parsed) {
+          if (typeof parsed[key] === 'string' && DATE_REGEX.test(parsed[key])) {
+            return parsed[key];
+          }
+        }
+      } catch {
+        // JSON operations failed, continue
+      }
+      
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+      
+      // Last resort: show object structure instead of [object Object]
+      const keys = Object.keys(value);
+      if (keys.length > 0) {
+        // Try to show first few property values that might be useful
+        const preview = keys.slice(0, 3).map(k => {
+          const v = value[k];
+          if (typeof v === 'string' && v.length < 20) return `${k}:${v}`;
+          if (typeof v === 'number') return `${k}:${v}`;
+          return k;
+        }).join(', ');
+        return `{${preview}${keys.length > 3 ? '...' : ''}}`;
+      }
+      // If object has no keys, return a placeholder instead of [object Object]
+      return '[Date Object]';
+    }
+    // If we get here with an object for a DATE column, something went wrong
+    // Return a placeholder instead of [object Object]
+    if (typeof value === 'object' && value !== null) {
+      return '[Date Object]';
+    }
+    return String(value);
+  }
+
+  // Handle TIME
+  if (normalizedType === 'TIME') {
+    if (value instanceof Date) {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (typeof value === 'string') {
+      // If already in HH:mm:ss format, return as-is
+      if (TIME_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+        const ms = date.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      // Handle numeric time values (milliseconds since midnight)
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+        const ms = date.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+    }
+    // Handle plain objects that might represent time
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for time object with hours/minutes/seconds properties
+      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    return String(value);
+  }
+
+  // Handle DATETIME
+  if (normalizedType === 'DATETIME') {
+    if (value instanceof Date) {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    if (typeof value === 'string') {
+      // If already in YYYY-MM-DD HH:mm:ss format, return as-is
+      if (DATETIME_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().replace('T', ' ').slice(0, 19);
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().replace('T', ' ').slice(0, 19);
+      }
+    }
+    // Handle plain objects that might represent datetime
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for datetime object with date and time properties
+      if (('year' in value && 'month' in value && 'day' in value) ||
+          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      }
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    return String(value);
+  }
+
+  // Handle TIMESTAMP
+  if (normalizedType === 'TIMESTAMP') {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    if (typeof value === 'string') {
+      // If already in ISO format, return as-is
+      if (ISO_TIMESTAMP_REGEX.test(value)) {
+        return value;
+      }
+      // Try to parse and format
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+      return value;
+    }
+    if (typeof value === 'number') {
+      // BigQuery timestamps are in microseconds since epoch
+      // JavaScript Date uses milliseconds, so divide by 1000 if > 1e12
+      const timestampMs = value > 1e12 ? value / 1000 : value;
+      const date = new Date(timestampMs);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+    }
+    // Handle plain objects that might represent timestamp
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Check for wrapped value
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        return formatBigQueryValue(value.value, columnType);
+      }
+      // Check for timestamp object with date and time properties
+      if (('year' in value && 'month' in value && 'day' in value) ||
+          ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Try toString if it's not the default
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    return String(value);
+  }
+
+  // Handle INTERVAL
+  if (normalizedType === 'INTERVAL') {
+    if (typeof value === 'string') {
+      // BigQuery INTERVAL format: "Y-M D H:M:S" or similar
+      // Return as-is since it's already formatted
+      return value;
+    }
+    if (typeof value === 'object' && value !== null) {
+      // BigQuery might return interval as an object with parts
+      if (value.years !== undefined || value.months !== undefined || 
+          value.days !== undefined || value.hours !== undefined ||
+          value.minutes !== undefined || value.seconds !== undefined) {
+        const parts: string[] = [];
+        if (value.years) parts.push(`${value.years} year${value.years !== 1 ? 's' : ''}`);
+        if (value.months) parts.push(`${value.months} month${value.months !== 1 ? 's' : ''}`);
+        if (value.days) parts.push(`${value.days} day${value.days !== 1 ? 's' : ''}`);
+        if (value.hours) parts.push(`${value.hours} hour${value.hours !== 1 ? 's' : ''}`);
+        if (value.minutes) parts.push(`${value.minutes} minute${value.minutes !== 1 ? 's' : ''}`);
+        if (value.seconds) parts.push(`${value.seconds} second${value.seconds !== 1 ? 's' : ''}`);
+        return parts.join(' ') || '0 seconds';
+      }
+    }
+    return String(value);
+  }
+
+  // Handle NUMERIC and BIGNUMERIC
+  if (normalizedType === 'NUMERIC' || normalizedType === 'BIGNUMERIC') {
+    if (typeof value === 'number') {
+      // Format with appropriate precision
+      // NUMERIC has 38 digits total, 9 after decimal
+      // BIGNUMERIC has 76 digits total, 38 after decimal
+      // For display, use toFixed to show significant digits
+      return value.toLocaleString('en-US', {
+        maximumFractionDigits: 38,
+        useGrouping: true,
+      });
+    }
+    if (typeof value === 'string') {
+      // BigQuery returns NUMERIC/BIGNUMERIC as strings to preserve precision
+      // Format with locale-aware number formatting
+      try {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          return num.toLocaleString('en-US', {
+            maximumFractionDigits: 38,
+            useGrouping: true,
+          });
+        }
+      } catch {
+        // If parsing fails, return as-is
+      }
+      return value;
+    }
+    return String(value);
+  }
+
+  // Handle INTEGER types (INTEGER, INT64, INT32, INT, etc.)
+  if (normalizedType === 'INTEGER' || normalizedType === 'INT' || normalizedType.includes('INT')) {
+    if (typeof value === 'number') {
+      // Ensure it's displayed as a whole number (no decimal point)
+      // Use Math.floor or Math.trunc to remove any decimal part, then convert to string
+      const intValue = Number.isInteger(value) ? value : Math.trunc(value);
+      return String(intValue); // Convert to string without commas or decimal points
+    }
+    if (typeof value === 'string') {
+      // BigQuery might return large integers as strings
+      // Return as-is if it's already a valid integer string (no decimal point, no commas)
+      if (/^-?\d+$/.test(value)) {
+        return value; // Already a valid integer string, return without commas or periods
+      }
+      // If string contains a decimal point, parse and truncate to integer
+      try {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          const intValue = Math.trunc(num); // Remove decimal part
+          return String(intValue); // Convert to string without commas or decimal points
+        }
+      } catch {
+        // If parsing fails, return as-is
+      }
+      return value;
+    }
+    // For other types, try to convert to integer
+    try {
+      const num = Number(value);
+      if (!isNaN(num)) {
+        const intValue = Math.trunc(num);
+        return String(intValue);
+      }
+    } catch {
+      // If conversion fails, return as string
+    }
+    return String(value);
+  }
+
+  // Handle FLOAT and FLOAT64
+  if (normalizedType === 'FLOAT' || normalizedType === 'FLOAT64') {
+    if (typeof value === 'number') {
+      // Format floats with reasonable precision
+      if (Number.isInteger(value)) {
+        return value.toLocaleString('en-US');
+      }
+      return value.toLocaleString('en-US', {
+        maximumFractionDigits: 15,
+        useGrouping: true,
+      });
+    }
+    if (typeof value === 'string') {
+      try {
+        const num = parseFloat(value);
+        if (!isNaN(num)) {
+          if (Number.isInteger(num)) {
+            return num.toLocaleString('en-US');
+          }
+          return num.toLocaleString('en-US', {
+            maximumFractionDigits: 15,
+            useGrouping: true,
+          });
+        }
+      } catch {
+        // If parsing fails, return as-is
+      }
+      return value;
+    }
+    return String(value);
+  }
+
+  // Handle GEOGRAPHY
+  if (normalizedType === 'GEOGRAPHY') {
+    if (typeof value === 'string') {
+      // BigQuery GEOGRAPHY is returned as GeoJSON strings
+      try {
+        const geoJson = JSON.parse(value);
+        // Pretty-print GeoJSON
+        return JSON.stringify(geoJson, null, 2);
+      } catch {
+        // If not valid JSON, return as-is
+        return value;
+      }
+    }
+    if (typeof value === 'object' && value !== null) {
+      // Already parsed GeoJSON object
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  // Handle JSON
+  if (normalizedType === 'JSON') {
+    if (typeof value === 'string') {
+      // Try to parse and pretty-print JSON
+      try {
+        const parsed = JSON.parse(value);
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        // If not valid JSON, return as-is
+        return value;
+      }
+    }
+    if (typeof value === 'object' && value !== null) {
+      // Already parsed JSON object
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  // Handle ARRAY
+  if (normalizedType === 'ARRAY' || Array.isArray(value)) {
+    if (Array.isArray(value)) {
+      // Format array elements recursively
+      const formatted = value.map((item, index) => {
+        // For arrays, we don't have per-item type info, so format generically
+        const formattedItem = formatBigQueryValue(item);
+        return formattedItem;
+      });
+      return `[${formatted.join(', ')}]`;
+    }
+    return String(value);
+  }
+
+  // Handle STRUCT/RECORD
+  if (normalizedType === 'STRUCT' || normalizedType === 'RECORD') {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+      // Check if it's a BigQuery date object with a value property
+      if (value.value !== undefined && Object.keys(value).length === 1) {
+        // Recursively format the inner value (but avoid infinite recursion)
+        const innerValue = value.value;
+        if (innerValue !== value) {
+          return formatBigQueryValue(innerValue, columnType);
+        }
+      }
+      // Format as JSON object
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  // Handle plain objects that aren't Date instances - check before STRING fallback
+  // This prevents [object Object] display for objects that might represent dates or other types
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it's a wrapped value object (common in some BigQuery responses)
+    if (value.value !== undefined && Object.keys(value).length === 1) {
+      // Recursively format the inner value (but avoid infinite recursion)
+      const innerValue = value.value;
+      if (innerValue !== value) {
+        return formatBigQueryValue(innerValue, columnType);
+      }
+    }
+    
+    // For date/time types, try to extract date from object properties
+    if (normalizedType === 'DATE' || normalizedType === 'DATETIME' || normalizedType === 'TIMESTAMP') {
+      // Check for common date object properties
+      if ('year' in value && 'month' in value && 'day' in value) {
+        const year = value.year;
+        const month = String(value.month || 0).padStart(2, '0');
+        const day = String(value.day || 0).padStart(2, '0');
+        if (normalizedType === 'DATE') {
+          return `${year}-${month}-${day}`;
+        }
+        // For DATETIME/TIMESTAMP, check for time components
+        const hours = String(value.hours || 0).padStart(2, '0');
+        const minutes = String(value.minutes || 0).padStart(2, '0');
+        const seconds = String(value.seconds || 0).padStart(2, '0');
+        if (normalizedType === 'DATETIME') {
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Try to find a string representation in common properties
+      if ('toString' in value && typeof value.toString === 'function') {
+        try {
+          const str = value.toString();
+          if (str !== '[object Object]') {
+            return formatBigQueryValue(str, columnType);
+          }
+        } catch {
+          // Ignore toString errors
+        }
+      }
+    }
+    
+    // For other object types, try JSON stringify
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      // If JSON.stringify fails, return a descriptive string
+      return `[Object: ${Object.keys(value).join(', ')}]`;
+    }
+  }
+
+  // CRITICAL: Before falling back to String(value), check if this is an object for a date/time type
+  // This is a final safety net to prevent [object Object] display
+  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    // Try one more time to extract a date string
+    try {
+      const jsonStr = JSON.stringify(value);
+      // Look for any date-like pattern in the JSON
+      const datePatterns = [
+        /"(\d{4}-\d{2}-\d{2})"/,  // DATE format
+        /"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/,  // TIMESTAMP format
+        /"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/,  // DATETIME format
+        /"(\d{2}:\d{2}:\d{2})/,  // TIME format
+      ];
+      
+      for (const pattern of datePatterns) {
+        const match = jsonStr.match(pattern);
+        if (match) {
+          let dateStr = match[1];
+          if (normalizedType === 'DATE' && dateStr.includes('T')) {
+            dateStr = dateStr.split('T')[0];
+          } else if (normalizedType === 'DATETIME' && dateStr.includes('T')) {
+            dateStr = dateStr.replace('T', ' ');
+          }
+          return dateStr;
+        }
+      }
+      
+      // If no date pattern found, show object structure
+      const keys = Object.keys(value);
+      if (keys.length > 0) {
+        // Try to show first property value
+        const firstKey = keys[0];
+        const firstValue = value[firstKey];
+        if (typeof firstValue === 'string' && firstValue.length < 50) {
+          return firstValue;
+        }
+        return `{${keys.slice(0, 2).join(', ')}}`;
+      }
+      return '[Date Object]';
+    } catch {
+      // JSON.stringify failed
+      const keys = Object.keys(value);
+      return keys.length > 0 ? `{${keys.slice(0, 2).join(', ')}}` : '[Date Object]';
+    }
+  }
+
+  // Handle STRING (default case)
+  if (normalizedType === 'STRING' || normalizedType === '') {
+    // CRITICAL: Before converting to string, check if it's a Date-like object
+    // This prevents [object Object] from being displayed for Date objects
+    if (isDateLike(value)) {
+      const dateObj = toDate(value);
+      if (dateObj) {
+        if (isNaN(dateObj.getTime())) {
+          return 'Invalid Date';
+        }
+        return dateObj.toISOString();
+      }
+    }
+    
+    // Before converting to string, check if it's an object
+    if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+      // Try JSON.stringify for objects
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return `[Object: ${Object.keys(value).join(', ')}]`;
+      }
+    }
+    
+    // Check for Date instance one more time
+    if (value instanceof Date) {
+      if (isNaN(value.getTime())) {
+        return 'Invalid Date';
+      }
+      return value.toISOString();
+    }
+    
+    return String(value);
+  }
+
+  // Fallback for any other types
+  // CRITICAL: Before using String(value), check if it's a Date-like object
+  // This prevents [object Object] from being displayed for Date objects
+  if (isDateLike(value)) {
+    const dateObj = toDate(value);
+    if (dateObj) {
+      // Format based on column type if available, otherwise use ISO string
+      if (normalizedType === 'DATE') {
+        return dateObj.toISOString().split('T')[0];
+      }
+      if (normalizedType === 'TIME') {
+        const hours = String(dateObj.getUTCHours()).padStart(2, '0');
+        const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
+        const ms = dateObj.getUTCMilliseconds();
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      if (normalizedType === 'DATETIME') {
+        return dateObj.toISOString().replace('T', ' ').slice(0, 19);
+      }
+      if (normalizedType === 'TIMESTAMP') {
+        return dateObj.toISOString();
+      }
+      return dateObj.toISOString();
+    }
+  }
+  
+  // CRITICAL: Check for empty objects {} for date types BEFORE general object handling
+  // Empty objects for date columns are likely Date objects that were JSON serialized
+  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    const objKeys = Object.keys(value);
+    if (objKeys.length === 0) {
+      // Empty object for a date column - this is a Date that was serialized incorrectly
+      return '[Invalid Date]';
+    }
+  }
+  
+  // Before using String(value), check if it's an object
+  // Exclude Date instances and Date-like objects to prevent [object Object] display
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && 
+      !(value instanceof Date) && !isDateLike(value)) {
+    // CRITICAL: For date types, never return [object Object]
+    if (isDateType) {
+      const objKeys = Object.keys(value);
+      if (objKeys.length === 0) {
+        return '[Invalid Date]';
+      }
+      // Try to extract any useful information
+      try {
+        const jsonStr = JSON.stringify(value);
+        if (jsonStr === '{}') {
+          return '[Invalid Date]';
+        }
+        return jsonStr;
+      } catch {
+        return `[Object: ${objKeys.join(', ')}]`;
+      }
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return `[Object: ${Object.keys(value).join(', ')}]`;
+    }
+  }
+  
+  // Final fallback - but check for Date and Date-like objects one more time to be safe
+  if (isDateLike(value)) {
+    const dateObj = toDate(value);
+    if (dateObj) {
+      if (isNaN(dateObj.getTime())) {
+        return 'Invalid Date';
+      }
+      return dateObj.toISOString();
+    }
+  }
+  
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) {
+      return 'Invalid Date';
+    }
+    return value.toISOString();
+  }
+  
+  // CRITICAL: Last check before String(value) - if it's a date type and an object, don't convert to string
+  if (isDateType && typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    return '[Invalid Date]';
+  }
+  
+  return String(value);
+}
+````
+
+## File: src/renderer/utils/dbt-utils.ts
+````typescript
+/**
+ * dbt Utilities
+ *
+ * Functions for converting between BigQuery SQL syntax and dbt source/ref syntax.
+ */
+
+/**
+ * Strip SQL comments from query text.
+ * Handles both single-line (--) and multi-line comments.
+ * Preserves comments inside string literals.
+ */
+export const stripComments = (sql: string): string => {
+  let result = '';
+  let i = 0;
+  const len = sql.length;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inBacktick = false;
+
+  while (i < len) {
+    const char = sql[i];
+    const nextChar = i + 1 < len ? sql[i + 1] : '';
+
+    // Handle string literals - don't process comments inside strings
+    if (char === "'" && !inDoubleQuote && !inBacktick) {
+      inSingleQuote = !inSingleQuote;
+      result += char;
+      i++;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote && !inBacktick) {
+      inDoubleQuote = !inDoubleQuote;
+      result += char;
+      i++;
+      continue;
+    }
+    if (char === '`' && !inSingleQuote && !inDoubleQuote) {
+      inBacktick = !inBacktick;
+      result += char;
+      i++;
+      continue;
+    }
+
+    // If we're inside a string literal, just copy the character
+    if (inSingleQuote || inDoubleQuote || inBacktick) {
+      result += char;
+      i++;
+      continue;
+    }
+
+    // Handle single-line comments (--)
+    if (char === '-' && nextChar === '-') {
+      // Skip until end of line
+      while (i < len && sql[i] !== '\n' && sql[i] !== '\r') {
+        i++;
+      }
+      // Include the newline character if present
+      if (i < len && sql[i] === '\n') {
+        result += '\n';
+        i++;
+      } else if (i < len && sql[i] === '\r') {
+        result += '\r';
+        i++;
+        if (i < len && sql[i] === '\n') {
+          result += '\n';
+          i++;
+        }
+      }
+      continue;
+    }
+
+    // Handle multi-line comments (/* */)
+    if (char === '/' && nextChar === '*') {
+      i += 2; // Skip /*
+      // Skip until */
+      while (i < len) {
+        if (sql[i] === '*' && i + 1 < len && sql[i + 1] === '/') {
+          i += 2; // Skip */
+          break;
+        }
+        i++;
+      }
+      // Replace with a space to preserve word boundaries
+      result += ' ';
+      continue;
+    }
+
+    // Regular character
+    result += char;
+    i++;
+  }
+
+  return result;
+};
+
+/**
+ * Extract table references from SQL query.
+ * Returns array of { datasetId, tableId } objects.
+ */
+export const extractTableReferences = (
+  sql: string
+): Array<{ datasetId: string; tableId: string }> => {
+  const tableRefsMap = new Map<string, { datasetId: string; tableId: string }>();
+
+  // Strip comments before extracting table references
+  const sqlWithoutComments = stripComments(sql);
+  const trimmedSql = sqlWithoutComments.trim();
+
+  if (!trimmedSql) return [];
+
+  // Match FROM and JOIN clauses (including LEFT JOIN, RIGHT JOIN, INNER JOIN, etc.)
+  const fromJoinPattern =
+    /(?:FROM|(?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)\s+JOIN|JOIN)\s+((?:`[^`]+`(?:\.`[^`]+`){0,2}|`[^`]+`|["'][^"']+["']|[\w-]+(?:\.[\w-]+){0,2}))(?:\s+AS\s+[\w-]+)?/gi;
+  const matches = Array.from(trimmedSql.matchAll(fromJoinPattern));
+
+  for (const match of matches) {
+    let tableRef = match[1].trim();
+
+    // Remove quotes/backticks
+    tableRef = tableRef.replace(/[`"']/g, '');
+
+    // Parse table reference
+    const parts = tableRef.split('.').filter((p) => p.length > 0);
+
+    let datasetId: string | null = null;
+    let tableId: string | null = null;
+
+    if (parts.length === 2) {
+      // dataset.table
+      datasetId = parts[0];
+      tableId = parts[1];
+    } else if (parts.length === 3) {
+      // project.dataset.table
+      datasetId = parts[1];
+      tableId = parts[2];
+    }
+
+    // Only add if we have both dataset and table
+    if (datasetId && tableId) {
+      const key = `${datasetId}.${tableId}`;
+      if (!tableRefsMap.has(key)) {
+        tableRefsMap.set(key, { datasetId, tableId });
+      }
+    }
+  }
+
+  return Array.from(tableRefsMap.values());
+};
+
+/**
+ * Convert SQL to dbt syntax by replacing table references with {{ source('DATASET', 'TABLE') }}.
+ */
+export const convertToDbtSyntax = (sql: string): string => {
+  let result = sql;
+
+  // Only match table references that come after FROM or JOIN keywords
+  const fromJoinTablePattern =
+    /(\b(?:FROM|JOIN)\s+)((?:`[^`]+`|[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+){1,2}))(\s|$|,|\))/gi;
+
+  const matches = Array.from(result.matchAll(fromJoinTablePattern));
+
+  // Process matches in reverse order to preserve positions when replacing
+  const processedMatches: Array<{ start: number; end: number; replacement: string }> = [];
+
+  for (const match of matches) {
+    const prefix = match[1]; // FROM or JOIN with trailing space
+    const tableRef = match[2]; // The table reference
+    const suffix = match[3]; // Trailing whitespace or delimiter
+
+    // Remove backticks if present
+    const cleanRef = tableRef.replace(/`/g, '');
+
+    // Split by dots
+    const parts = cleanRef.split('.');
+
+    let datasetId: string | null = null;
+    let tableId: string | null = null;
+
+    if (parts.length === 2) {
+      // dataset.table
+      datasetId = parts[0];
+      tableId = parts[1];
+    } else if (parts.length === 3) {
+      // project.dataset.table
+      datasetId = parts[1];
+      tableId = parts[2];
+    } else {
+      // Not a valid table reference
+      continue;
+    }
+
+    // Skip if this looks like it's inside a string literal
+    const beforeMatch = result.substring(0, match.index);
+    const openSingleQuotes = (beforeMatch.match(/'/g) || []).length;
+    const openDoubleQuotes = (beforeMatch.match(/"/g) || []).length;
+
+    // If odd number of quotes, we're inside a string - skip
+    if (openSingleQuotes % 2 !== 0 || openDoubleQuotes % 2 !== 0) {
+      continue;
+    }
+
+    // Create dbt source syntax
+    const dbtSource = `{{ source('${datasetId}', '${tableId}') }}`;
+
+    // Replace just the table reference part
+    processedMatches.push({
+      start: match.index!,
+      end: match.index! + match[0].length,
+      replacement: `${prefix}${dbtSource}${suffix}`,
+    });
+  }
+
+  // Apply replacements in reverse order to preserve positions
+  processedMatches.sort((a, b) => b.start - a.start);
+
+  for (const { start, end, replacement } of processedMatches) {
+    result = result.substring(0, start) + replacement + result.substring(end);
+  }
+
+  return result;
+};
+
+/**
+ * Check if the query contains dbt source/ref syntax.
+ */
+export const hasDbtSyntax = (sql: string): boolean => {
+  return sql.includes("{{ source('") || sql.includes("{{ ref('");
+};
+
+/**
+ * Convert dbt source syntax back to BigQuery table references.
+ *
+ * @param sql - The SQL with dbt syntax
+ * @param projectId - The BigQuery project ID to use
+ * @param getAllTables - Function to get all cached tables for ref() lookup
+ */
+export const convertFromDbtSyntax = (
+  sql: string,
+  projectId: string,
+  getAllTables: () => Array<{ dataset: string; table: { id: string } }>
+): string => {
+  // Pattern to match {{ source('DATASET', 'TABLE') }}
+  const dbtSourcePattern =
+    /\{\{\s*source\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}/g;
+
+  // Pattern to match {{ ref('TABLE') }}
+  const dbtRefPattern = /\{\{\s*ref\s*\(\s*'([^']+)'\s*\)\s*\}\}/g;
+
+  let result = sql.replace(dbtSourcePattern, (_, datasetId, tableId) => {
+    return `${projectId}.${datasetId}.${tableId}`;
+  });
+
+  result = result.replace(dbtRefPattern, (match, tableId) => {
+    // Search for the table in cached metadata
+    const tableIdLower = tableId.toLowerCase();
+    const allTables = getAllTables();
+    const foundTable = allTables.find(
+      (t) => t.table.id.toLowerCase() === tableIdLower
+    );
+
+    if (foundTable) {
+      return `${projectId}.${foundTable.dataset}.${foundTable.table.id}`;
+    }
+
+    // Table not found in cache - return just the table name as fallback
+    return tableId;
+  });
+
+  return result;
+};
+````
+
 ## File: src/renderer/utils/export-utils.ts
 ````typescript
 import type { ColumnMetadata, Row } from '../../shared/types/query';
@@ -14401,6 +14964,689 @@ export async function copyResultsToClipboard(
     return { success: false, error: errorMessage };
   }
 }
+````
+
+## File: src/renderer/utils/sql-validation-helpers.ts
+````typescript
+/**
+ * SQL Validation Helper Functions
+ *
+ * Utilities for parsing and validating SQL queries, extracting column references,
+ * building table alias maps, and working with CST (Concrete Syntax Tree) nodes.
+ */
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface SqlNodeLocation {
+  start?: { line: number; column: number };
+  end?: { line: number; column: number };
+  begin?: { line: number; column: number };
+  finish?: { line: number; column: number };
+}
+
+export interface ColumnRefInfo {
+  alias: string | null;
+  column: string;
+  location?: SqlNodeLocation;
+}
+
+export interface TableAliasInfo {
+  alias: string;
+  datasetId?: string;
+  tableId?: string;
+  cteColumns?: string[];
+}
+
+export interface ColumnValidationIssue {
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+// ============================================================================
+// String Utilities
+// ============================================================================
+
+/**
+ * Remove backticks, single quotes, and double quotes from an identifier.
+ */
+export const stripIdentifierQuotes = (value: string | null | undefined): string => {
+  if (!value) return '';
+  return value.replace(/[`"']/g, '');
+};
+
+/**
+ * Escape special regex characters in a string.
+ */
+export const escapeRegExp = (value: string): string => {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
+/**
+ * Convert a character index in text to line and column numbers.
+ */
+export const indexToLineColumn = (
+  text: string,
+  index: number
+): { line: number; column: number } => {
+  let line = 1;
+  let column = 1;
+
+  for (let i = 0; i < index && i < text.length; i++) {
+    const char = text[i];
+    if (char === '\n') {
+      line += 1;
+      column = 1;
+    } else if (char === '\r') {
+      // Handle Windows-style line endings (\r\n)
+      if (i + 1 < text.length && text[i + 1] === '\n') {
+        i += 1;
+      }
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+
+  return { line, column };
+};
+
+// ============================================================================
+// CST Node Helpers
+// ============================================================================
+
+/**
+ * Get node type from CST (handles both 'type' and 'kind' properties).
+ */
+export const getCstNodeType = (node: any): string | undefined => {
+  if (!node || typeof node !== 'object') return undefined;
+  return node.type || node.kind;
+};
+
+/**
+ * Check if node is a SELECT statement (CST or converted AST).
+ */
+export const isSelectStmt = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'select_stmt' || type === 'SelectStatement' || type === 'select';
+};
+
+/**
+ * Check if node is a column reference.
+ */
+export const isColumnRef = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'column_ref' || type === 'ColumnRef';
+};
+
+/**
+ * Check if node is a binary expression.
+ */
+export const isBinaryExpr = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'binary_expr' || type === 'BinaryExpr';
+};
+
+/**
+ * Check if node is a function call.
+ */
+export const isFunctionCall = (node: any): boolean => {
+  const type = getCstNodeType(node);
+  return type === 'function' || type === 'FunctionCall' || type === 'aggr_func';
+};
+
+/**
+ * Get FROM clause tables from CST statement.
+ */
+export const getCstFromTables = (stmt: any): any[] => {
+  if (!stmt) return [];
+
+  const fromClause = stmt.fromClause || stmt.from;
+  if (!fromClause) return [];
+
+  // CST structure: fromClause.tables or array
+  if (fromClause.tables) {
+    return Array.isArray(fromClause.tables) ? fromClause.tables : [fromClause.tables];
+  }
+
+  if (Array.isArray(fromClause)) {
+    return fromClause;
+  }
+
+  // Fallback to AST structure
+  if (Array.isArray(stmt.from)) {
+    return stmt.from;
+  }
+
+  return [];
+};
+
+/**
+ * Get WITH clause CTEs from CST statement.
+ */
+export const getCstWithCtes = (stmt: any): any[] => {
+  const withClause = stmt.withClause || stmt.with;
+  if (!withClause) return [];
+
+  if (withClause.ctes) {
+    return Array.isArray(withClause.ctes) ? withClause.ctes : [withClause.ctes];
+  }
+
+  if (Array.isArray(withClause)) {
+    return withClause;
+  }
+
+  // Fallback to AST structure
+  if (Array.isArray(stmt.with)) {
+    return stmt.with;
+  }
+
+  return [];
+};
+
+// ============================================================================
+// Location Helpers
+// ============================================================================
+
+/**
+ * Get position information from a location object.
+ */
+export const getLocationPosition = (
+  location: SqlNodeLocation | undefined,
+  fallbackLength: number
+): { line: number; column: number; length: number } | null => {
+  if (!location) return null;
+
+  const start = location.start || location.begin;
+  const end = location.end || location.finish;
+
+  if (!start || start.line === undefined || start.column === undefined) {
+    return null;
+  }
+
+  let length = Math.max(1, fallbackLength);
+
+  if (end && end.line !== undefined && end.column !== undefined) {
+    if (end.line === start.line) {
+      const computedLength = end.column - start.column;
+      if (computedLength > 0) {
+        length = computedLength;
+      }
+    }
+  }
+
+  return {
+    line: start.line,
+    column: start.column,
+    length,
+  };
+};
+
+/**
+ * Find position of a column reference in text using regex search.
+ */
+export const findPositionInText = (
+  text: string,
+  alias: string | null,
+  column: string
+): { line: number; column: number; length: number } | null => {
+  const searchPatterns: Array<{ pattern: string; length: number }> = [];
+
+  const sanitizedAlias = alias ? stripIdentifierQuotes(alias) : null;
+  const sanitizedColumn = stripIdentifierQuotes(column);
+
+  if (sanitizedAlias) {
+    const aliasPattern = `${sanitizedAlias}.${sanitizedColumn}`;
+    searchPatterns.push({ pattern: aliasPattern, length: aliasPattern.length });
+  }
+
+  if (sanitizedColumn) {
+    searchPatterns.push({ pattern: sanitizedColumn, length: sanitizedColumn.length });
+  }
+
+  for (const { pattern, length } of searchPatterns) {
+    const regex = new RegExp(`\\b${escapeRegExp(pattern)}\\b`, 'i');
+    const match = regex.exec(text);
+    if (match && match.index !== undefined) {
+      const { line, column: col } = indexToLineColumn(text, match.index);
+      return { line, column: col, length: Math.max(1, length) };
+    }
+  }
+
+  return null;
+};
+
+// ============================================================================
+// Column Reference Collection
+// ============================================================================
+
+/**
+ * Recursively collect column references from an expression node.
+ */
+export const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]): void => {
+  if (!node) return;
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectColumnRefsFromExpression(child, refs);
+    }
+    return;
+  }
+
+  if (typeof node !== 'object') {
+    return;
+  }
+
+  // Skip subqueries - they have their own scope and should be validated separately
+  if (node.type === 'select') {
+    return;
+  }
+
+  if (node.type === 'column_ref') {
+    // Handle both string columns and object columns
+    let columnName: string;
+    if (typeof node.column === 'string') {
+      columnName = stripIdentifierQuotes(node.column);
+    } else if (node.column && typeof node.column === 'object') {
+      // Handle nested column structure
+      if (node.column.expr && typeof node.column.expr.value === 'string') {
+        columnName = stripIdentifierQuotes(node.column.expr.value);
+      } else if (typeof node.column.column === 'string') {
+        columnName = stripIdentifierQuotes(node.column.column);
+      } else {
+        columnName = '';
+      }
+    } else {
+      columnName = '';
+    }
+
+    // Collect column refs for validation
+    const hasAlias = node.table ? true : false;
+    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
+
+    if (shouldCollect) {
+      refs.push({
+        alias: node.table ? stripIdentifierQuotes(node.table) : null,
+        column: columnName,
+        location: node.location || node.loc,
+      });
+    }
+    return;
+  }
+
+  // Recursively inspect child properties
+  for (const key of Object.keys(node)) {
+    if (key === 'location' || key === 'loc') {
+      continue;
+    }
+    collectColumnRefsFromExpression(node[key], refs);
+  }
+};
+
+/**
+ * Collect all column references from a SELECT AST.
+ */
+export const collectColumnRefsForSelect = (
+  selectAst: any,
+  includeCteBodies = false
+): ColumnRefInfo[] => {
+  const refs: ColumnRefInfo[] = [];
+
+  if (!selectAst || typeof selectAst !== 'object') {
+    return refs;
+  }
+
+  const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
+
+  // Optionally collect from CTE bodies (for full query validation)
+  if (includeCteBodies && Array.isArray(selectAst.with)) {
+    for (const cte of selectAst.with) {
+      const cteAst = cte?.stmt?.ast;
+      if (cteAst) {
+        // Recursively collect from CTE body (but not nested CTEs within CTEs)
+        const cteRefs = collectColumnRefsForSelect(cteAst, false);
+        refs.push(...cteRefs);
+      }
+    }
+  }
+
+  if (Array.isArray(selectAst.columns)) {
+    for (const col of selectAst.columns) {
+      collect(col?.expr ?? col);
+    }
+  }
+
+  if (selectAst.where) {
+    collect(selectAst.where);
+  }
+
+  if (Array.isArray(selectAst.groupby)) {
+    for (const groupExpr of selectAst.groupby) {
+      collect(groupExpr);
+    }
+  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
+    for (const groupExpr of selectAst.groupby.value) {
+      collect(groupExpr);
+    }
+  }
+
+  if (Array.isArray(selectAst.orderby)) {
+    for (const orderItem of selectAst.orderby) {
+      collect(orderItem?.expr ?? orderItem);
+    }
+  }
+
+  if (selectAst.having) {
+    collect(selectAst.having);
+  }
+
+  if (Array.isArray(selectAst.from)) {
+    for (const fromItem of selectAst.from) {
+      if (fromItem?.on) {
+        collect(fromItem.on);
+      }
+    }
+  }
+
+  return refs;
+};
+
+// ============================================================================
+// CTE Column Extraction
+// ============================================================================
+
+/**
+ * Extract output column names from a CTE's SELECT clause.
+ */
+export const extractCteColumnNames = (cteAst: any): string[] => {
+  const columns: string[] = [];
+
+  if (!cteAst || !Array.isArray(cteAst.columns)) {
+    return columns;
+  }
+
+  for (const col of cteAst.columns) {
+    // Skip SELECT * - we can't determine column names without schema
+    if (col === '*' || col?.expr?.type === 'star') {
+      continue;
+    }
+
+    // Check for explicit alias (AS clause)
+    const alias = col?.as || col?.alias;
+    if (alias) {
+      const aliasName = typeof alias === 'string' ? alias : alias?.value;
+      if (aliasName) {
+        columns.push(stripIdentifierQuotes(aliasName));
+        continue;
+      }
+    }
+
+    // No alias - try to get column name from expression
+    const expr = col?.expr ?? col;
+
+    // Column reference
+    if (expr?.type === 'column_ref') {
+      let columnName: string | undefined;
+      if (typeof expr.column === 'string') {
+        columnName = expr.column;
+      } else if (expr.column?.expr?.value) {
+        columnName = expr.column.expr.value;
+      } else if (expr.column?.column) {
+        columnName = expr.column.column;
+      }
+      if (columnName) {
+        columns.push(stripIdentifierQuotes(columnName));
+      }
+    }
+  }
+
+  return columns;
+};
+
+// ============================================================================
+// Table Alias Map Building
+// ============================================================================
+
+/**
+ * Build a map of table aliases and unique tables from a SELECT AST.
+ */
+export const buildTableAliasMapFromSelect = (
+  selectAst: any
+): {
+  aliasMap: Map<string, TableAliasInfo>;
+  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
+} => {
+  const aliasMap = new Map<string, TableAliasInfo>();
+  const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
+
+  const registerAlias = (
+    aliasName: string | null | undefined,
+    info: { datasetId?: string; tableId?: string; cteColumns?: string[] }
+  ) => {
+    const cleanAlias = stripIdentifierQuotes(aliasName);
+    if (!cleanAlias) return;
+    const key = cleanAlias.toLowerCase();
+    const existing = aliasMap.get(key);
+    if (!existing || (!existing.datasetId && info.datasetId) || (!existing.tableId && info.tableId)) {
+      aliasMap.set(key, {
+        alias: cleanAlias,
+        datasetId: info.datasetId,
+        tableId: info.tableId,
+        cteColumns: info.cteColumns ?? existing?.cteColumns,
+      });
+    }
+  };
+
+  const processFromItem = (item: any) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        processFromItem(child);
+      }
+      return;
+    }
+
+    // Handle subqueries - register alias name but skip schema mapping
+    if (item.expr && item.expr.type === 'select') {
+      registerAlias(item.as || item.alias, {});
+      return;
+    }
+
+    let datasetId: string | undefined;
+    let tableId: string | undefined;
+
+    if (typeof item.catalog === 'string') {
+      // Project ID from catalog (not used in alias registration)
+      stripIdentifierQuotes(item.catalog);
+    }
+
+    if (typeof item.db === 'string') {
+      const dbValue = stripIdentifierQuotes(item.db);
+      if (!datasetId) {
+        datasetId = dbValue;
+      }
+    }
+
+    if (typeof item.schema === 'string') {
+      datasetId = stripIdentifierQuotes(item.schema);
+    }
+
+    if (typeof item.dataset === 'string') {
+      datasetId = stripIdentifierQuotes(item.dataset);
+    }
+
+    const registerTableName = (raw: string | undefined) => {
+      if (!raw) return;
+      const cleaned = stripIdentifierQuotes(raw);
+      if (!cleaned) return;
+      const parts = cleaned.split('.').filter(Boolean);
+
+      let resolvedDataset = datasetId;
+      let resolvedTable = tableId;
+
+      if (parts.length >= 2) {
+        const potentialDataset = parts[parts.length - 2];
+        const potentialProject = parts.length >= 3 ? parts[parts.length - 3] : undefined;
+        if (!resolvedDataset || resolvedDataset === potentialProject) {
+          resolvedDataset = potentialDataset;
+        }
+        resolvedTable = parts[parts.length - 1];
+      } else if (parts.length === 1) {
+        resolvedTable = parts[0];
+      }
+
+      if (resolvedDataset) {
+        datasetId = resolvedDataset;
+      }
+      if (resolvedTable) {
+        tableId = resolvedTable;
+      }
+
+      if (resolvedDataset && resolvedTable) {
+        const key = `${resolvedDataset}.${resolvedTable}`.toLowerCase();
+        if (!uniqueTables.has(key)) {
+          uniqueTables.set(key, { datasetId: resolvedDataset, tableId: resolvedTable });
+        }
+      }
+
+      registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
+    };
+
+    if (typeof item.table === 'string') {
+      registerTableName(item.table);
+    } else if (item.table && typeof item.table === 'object') {
+      if (typeof item.table.table === 'string') {
+        registerTableName(item.table.table);
+      }
+      if (typeof item.table.name === 'string') {
+        registerTableName(item.table.name);
+      }
+      if (typeof item.table.db === 'string' && !datasetId) {
+        datasetId = stripIdentifierQuotes(item.table.db);
+      }
+    }
+
+    // Register alias variations for lookup
+    registerAlias(item.as || item.alias, { datasetId, tableId });
+
+    if (tableId) {
+      registerAlias(tableId, { datasetId, tableId });
+    }
+
+    if (datasetId && tableId) {
+      registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
+    }
+  };
+
+  // Process CTEs (WITH clause) - register CTE names as valid aliases
+  if (Array.isArray(selectAst?.with)) {
+    for (const cte of selectAst.with) {
+      const cteName = cte?.name?.value || cte?.name;
+      if (cteName) {
+        const cteAst = cte?.stmt?.ast;
+        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
+        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
+      }
+    }
+  }
+
+  if (Array.isArray(selectAst?.from)) {
+    for (const fromItem of selectAst.from) {
+      processFromItem(fromItem);
+    }
+  } else {
+    processFromItem(selectAst?.from);
+  }
+
+  return { aliasMap, uniqueTables };
+};
+
+// ============================================================================
+// SELECT Statement Counter
+// ============================================================================
+
+/**
+ * Count SELECT statements in SQL text (ignoring comments and strings).
+ * Only counts top-level SELECT statements, not subqueries.
+ */
+export const countSelectStatements = (sql: string): number => {
+  // Remove comments first
+  let cleanedSql = sql;
+
+  // Remove single-line comments (--)
+  cleanedSql = cleanedSql.replace(/--.*$/gm, '');
+
+  // Remove multi-line comments
+  cleanedSql = cleanedSql.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Remove string literals
+  cleanedSql = cleanedSql.replace(/'([^'\\]|\\.)*'/g, "''");
+  cleanedSql = cleanedSql.replace(/"([^"\\]|\\.)*"/g, '""');
+  cleanedSql = cleanedSql.replace(/`([^`\\]|\\.)*`/g, '``');
+
+  // Track parenthesis depth
+  let depth = 0;
+  let topLevelCount = 0;
+  let i = 0;
+  let inWithClause = false;
+
+  // Normalize whitespace
+  cleanedSql = cleanedSql.replace(/\s+/g, ' ').trim();
+
+  while (i < cleanedSql.length) {
+    const char = cleanedSql[i];
+
+    if (char === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+
+    if (char === ')') {
+      depth--;
+      i++;
+      continue;
+    }
+
+    if (depth === 0) {
+      const remainingUpper = cleanedSql.substring(i).toUpperCase();
+
+      if (remainingUpper.match(/^WITH\b/)) {
+        inWithClause = true;
+        i += 4;
+        continue;
+      }
+
+      if (remainingUpper.match(/^SELECT\b/)) {
+        if (inWithClause) {
+          topLevelCount++;
+          inWithClause = false;
+        } else {
+          topLevelCount++;
+        }
+        i += 6;
+        continue;
+      }
+
+      if (char === ';') {
+        inWithClause = false;
+        i++;
+        continue;
+      }
+    }
+
+    i++;
+  }
+
+  return topLevelCount;
+};
 ````
 
 ## File: src/renderer/utils/tree-sitter-validator.ts
@@ -18704,229 +19950,6 @@ describe('bigquery-formatter - additional coverage', () => {
 });
 ````
 
-## File: tests/unit/renderer/bigquery-formatter.test.ts
-````typescript
-import { formatBigQueryValue } from '../../../src/renderer/utils/bigquery-formatter';
-
-describe('bigquery-formatter', () => {
-  describe('formatBigQueryValue', () => {
-    describe('NULL handling', () => {
-      it('should return "NULL" for null values', () => {
-        expect(formatBigQueryValue(null)).toBe('NULL');
-        expect(formatBigQueryValue(null, 'STRING')).toBe('NULL');
-        expect(formatBigQueryValue(null, 'INTEGER')).toBe('NULL');
-      });
-
-      it('should return "NULL" for undefined values', () => {
-        expect(formatBigQueryValue(undefined)).toBe('NULL');
-        expect(formatBigQueryValue(undefined, 'STRING')).toBe('NULL');
-      });
-    });
-
-    describe('BOOLEAN formatting', () => {
-      it('should format boolean true as "TRUE"', () => {
-        expect(formatBigQueryValue(true, 'BOOL')).toBe('TRUE');
-        expect(formatBigQueryValue(true, 'BOOLEAN')).toBe('TRUE');
-      });
-
-      it('should format boolean false as "FALSE"', () => {
-        expect(formatBigQueryValue(false, 'BOOL')).toBe('FALSE');
-        expect(formatBigQueryValue(false, 'BOOLEAN')).toBe('FALSE');
-      });
-
-      it('should handle string boolean values', () => {
-        expect(formatBigQueryValue('true', 'BOOL')).toBe('TRUE');
-        expect(formatBigQueryValue('false', 'BOOL')).toBe('FALSE');
-        expect(formatBigQueryValue('TRUE', 'BOOL')).toBe('TRUE');
-        expect(formatBigQueryValue('FALSE', 'BOOL')).toBe('FALSE');
-      });
-    });
-
-    describe('STRING formatting', () => {
-      it('should return strings as-is', () => {
-        expect(formatBigQueryValue('hello', 'STRING')).toBe('hello');
-        expect(formatBigQueryValue('hello world', 'STRING')).toBe('hello world');
-      });
-
-      it('should handle empty strings', () => {
-        expect(formatBigQueryValue('', 'STRING')).toBe('');
-      });
-    });
-
-    describe('INTEGER/INT64 formatting', () => {
-      it('should format integers', () => {
-        expect(formatBigQueryValue(123, 'INTEGER')).toBe('123');
-        expect(formatBigQueryValue(123, 'INT64')).toBe('123');
-        expect(formatBigQueryValue(-456, 'INT64')).toBe('-456');
-      });
-
-      it('should format large integers', () => {
-        expect(formatBigQueryValue(9007199254740991, 'INT64')).toBe('9007199254740991');
-      });
-
-      it('should format zero', () => {
-        expect(formatBigQueryValue(0, 'INTEGER')).toBe('0');
-      });
-    });
-
-    describe('FLOAT64/FLOAT formatting', () => {
-      it('should format floats', () => {
-        expect(formatBigQueryValue(3.14159, 'FLOAT64')).toBe('3.14159');
-        expect(formatBigQueryValue(3.14159, 'FLOAT')).toBe('3.14159');
-      });
-
-      it('should format negative floats', () => {
-        expect(formatBigQueryValue(-2.5, 'FLOAT64')).toBe('-2.5');
-      });
-    });
-
-    describe('DATE formatting', () => {
-      it('should format date strings', () => {
-        expect(formatBigQueryValue('2024-01-15', 'DATE')).toBe('2024-01-15');
-      });
-
-      it('should format Date objects for DATE type', () => {
-        const date = new Date('2024-01-15T00:00:00Z');
-        const result = formatBigQueryValue(date, 'DATE');
-        expect(result).toBe('2024-01-15');
-      });
-    });
-
-    describe('TIMESTAMP formatting', () => {
-      it('should format timestamp strings', () => {
-        expect(formatBigQueryValue('2024-01-15T10:30:00Z', 'TIMESTAMP')).toBe('2024-01-15T10:30:00Z');
-      });
-
-      it('should format Date objects for TIMESTAMP type', () => {
-        const date = new Date('2024-01-15T10:30:00Z');
-        const result = formatBigQueryValue(date, 'TIMESTAMP');
-        expect(result).toMatch(/2024-01-15T10:30:00/);
-      });
-    });
-
-    describe('DATETIME formatting', () => {
-      it('should format datetime strings', () => {
-        expect(formatBigQueryValue('2024-01-15 10:30:00', 'DATETIME')).toBe('2024-01-15 10:30:00');
-      });
-
-      it('should format Date objects for DATETIME type', () => {
-        const date = new Date('2024-01-15T10:30:00Z');
-        const result = formatBigQueryValue(date, 'DATETIME');
-        expect(result).toBe('2024-01-15 10:30:00');
-      });
-    });
-
-    describe('TIME formatting', () => {
-      it('should format time strings', () => {
-        expect(formatBigQueryValue('10:30:00', 'TIME')).toBe('10:30:00');
-      });
-
-      it('should format Date objects for TIME type', () => {
-        const date = new Date('2024-01-15T10:30:00Z');
-        const result = formatBigQueryValue(date, 'TIME');
-        expect(result).toBe('10:30:00');
-      });
-    });
-
-    describe('ARRAY formatting', () => {
-      it('should format arrays as JSON', () => {
-        const result = formatBigQueryValue([1, 2, 3], 'ARRAY');
-        expect(result).toBe('[1, 2, 3]');
-      });
-
-      it('should format arrays of strings', () => {
-        const result = formatBigQueryValue(['a', 'b', 'c'], 'ARRAY');
-        // The formatter joins elements without quoting individual strings
-        expect(result).toBe('[a, b, c]');
-      });
-
-      it('should format empty arrays', () => {
-        const result = formatBigQueryValue([], 'ARRAY');
-        expect(result).toBe('[]');
-      });
-    });
-
-    describe('STRUCT/RECORD formatting', () => {
-      it('should format objects as JSON', () => {
-        const result = formatBigQueryValue({ name: 'John', age: 30 }, 'STRUCT');
-        expect(JSON.parse(result)).toEqual({ name: 'John', age: 30 });
-      });
-
-      it('should format nested objects', () => {
-        const value = { user: { name: 'John', address: { city: 'NYC' } } };
-        const result = formatBigQueryValue(value, 'RECORD');
-        expect(JSON.parse(result)).toEqual(value);
-      });
-    });
-
-    describe('BYTES formatting', () => {
-      it('should format byte arrays', () => {
-        // BYTES are formatted as hex strings (0x...)
-        const result = formatBigQueryValue('SGVsbG8=', 'BYTES');
-        // Base64 'SGVsbG8=' decodes to 'Hello' which is 0x48656c6c6f
-        expect(result).toBe('0x48656c6c6f');
-      });
-    });
-
-    describe('GEOGRAPHY formatting', () => {
-      it('should format geography strings', () => {
-        const geoJson = 'POINT(-122.4194 37.7749)';
-        expect(formatBigQueryValue(geoJson, 'GEOGRAPHY')).toBe(geoJson);
-      });
-    });
-
-    describe('JSON formatting', () => {
-      it('should format JSON strings', () => {
-        const jsonStr = '{"key": "value"}';
-        // JSON is pretty-printed with 2-space indentation
-        const expected = '{\n  "key": "value"\n}';
-        expect(formatBigQueryValue(jsonStr, 'JSON')).toBe(expected);
-      });
-
-      it('should format JSON objects', () => {
-        const value = { key: 'value' };
-        const result = formatBigQueryValue(value, 'JSON');
-        expect(JSON.parse(result)).toEqual(value);
-      });
-    });
-
-    describe('NUMERIC/BIGNUMERIC formatting', () => {
-      it('should format numeric strings', () => {
-        expect(formatBigQueryValue('123.456', 'NUMERIC')).toBe('123.456');
-        expect(formatBigQueryValue('123.456', 'BIGNUMERIC')).toBe('123.456');
-        expect(formatBigQueryValue('123.456', 'DECIMAL')).toBe('123.456');
-      });
-    });
-
-    describe('Unknown types', () => {
-      it('should handle values without column type', () => {
-        expect(formatBigQueryValue('hello')).toBe('hello');
-        expect(formatBigQueryValue(123)).toBe('123');
-        expect(formatBigQueryValue(true)).toBe('true');
-      });
-    });
-
-    describe('Edge cases', () => {
-      it('should handle [object Object] string for date columns', () => {
-        const result = formatBigQueryValue('[object Object]', 'DATE');
-        expect(result).toBe('[Invalid Date]');
-      });
-
-      it('should handle empty objects for date columns', () => {
-        const result = formatBigQueryValue({}, 'DATE');
-        expect(result).toBe('[Invalid Date]');
-      });
-
-      it('should handle invalid Date objects', () => {
-        const invalidDate = new Date('invalid');
-        const result = formatBigQueryValue(invalidDate, 'DATE');
-        expect(result).toBe('Invalid Date');
-      });
-    });
-  });
-});
-````
-
 ## File: tests/unit/shared/connection-validation.test.ts
 ````typescript
 import {
@@ -19119,6 +20142,75 @@ describe('connection-validation', () => {
     });
   });
 });
+````
+
+## File: .gitignore
+````
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+PROJECT_REFERENCE.md
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Electron
+*.asar
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.AppImage
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+coverage/
+.nyc_output/
+*.test.js.snap
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Electron specific
+app/dist/
+release/
 ````
 
 ## File: bigquery_query_syntax_rules.md
@@ -19820,6 +20912,97 @@ for (let i = 0; i < selectColumns.length; i++) {
   
   console.log(`  Position ${position} (${nodeType}): ${status}`);
 }
+````
+
+## File: eslint.config.js
+````javascript
+const js = require('@eslint/js');
+const typescriptEslint = require('@typescript-eslint/eslint-plugin');
+const typescriptParser = require('@typescript-eslint/parser');
+const react = require('eslint-plugin-react');
+const reactHooks = require('eslint-plugin-react-hooks');
+
+module.exports = [
+  {
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      'build/**',
+      'out/**',
+      'coverage/**',
+      '**/*.min.js',
+      '**/*.bundle.js',
+      '**/*.config.js',
+    ],
+  },
+  js.configs.recommended,
+  {
+    files: ['**/*.{js,jsx,ts,tsx}'],
+    languageOptions: {
+      parser: typescriptParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+        ecmaFeatures: {
+          jsx: true,
+        },
+      },
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        Buffer: 'readonly',
+        global: 'readonly',
+        module: 'readonly',
+        require: 'readonly',
+        exports: 'readonly',
+        // Browser globals
+        HTMLDivElement: 'readonly',
+        MouseEvent: 'readonly',
+        KeyboardEvent: 'readonly',
+        Node: 'readonly',
+        ResizeObserver: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        CustomEvent: 'readonly',
+        EventListener: 'readonly',
+        Promise: 'readonly',
+        Map: 'readonly',
+        Set: 'readonly',
+        Array: 'readonly',
+        Object: 'readonly',
+        JSON: 'readonly',
+        Math: 'readonly',
+        Date: 'readonly',
+        RegExp: 'readonly',
+        Error: 'readonly',
+        alert: 'readonly',
+      },
+    },
+    plugins: {
+      '@typescript-eslint': typescriptEslint,
+      react: react,
+      'react-hooks': reactHooks,
+    },
+    rules: {
+      ...typescriptEslint.configs.recommended.rules,
+      ...react.configs.recommended.rules,
+      ...reactHooks.configs.recommended.rules,
+      'react/react-in-jsx-scope': 'off',
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
+    settings: {
+      react: {
+        version: 'detect',
+      },
+    },
+  },
+];
 ````
 
 ## File: jest.config.js
@@ -22405,1307 +23588,643 @@ describe('App', () => {
 });
 ````
 
-## File: .gitignore
-````
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-yarn.lock
-pnpm-lock.yaml
-PROJECT_REFERENCE.md
-
-# Build outputs
-dist/
-build/
-out/
-*.tsbuildinfo
-
-# Electron
-*.asar
-*.dmg
-*.exe
-*.deb
-*.rpm
-*.AppImage
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-*.log.*
-
-# Testing
-coverage/
-.nyc_output/
-*.test.js.snap
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Desktop.ini
-
-# Electron specific
-app/dist/
-release/
-````
-
-## File: src/renderer/components/QueryResults/CanvasTable.tsx
+## File: tests/unit/renderer/bigquery-formatter.test.ts
 ````typescript
-import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
-import { ColumnSortMenu } from './ColumnSortMenu';
+import { formatBigQueryValue } from '../../../src/renderer/utils/bigquery-formatter';
 
-// Helper to read CSS custom property values
-const getCSSVar = (name: string): string => {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-};
+describe('bigquery-formatter', () => {
+  describe('formatBigQueryValue', () => {
+    describe('NULL handling', () => {
+      it('should return "null" for null values', () => {
+        expect(formatBigQueryValue(null)).toBe('null');
+        expect(formatBigQueryValue(null, 'STRING')).toBe('null');
+        expect(formatBigQueryValue(null, 'INTEGER')).toBe('null');
+      });
 
-// Theme colors derived from CSS variables
-const getThemeColors = () => ({
-  bgColor: getCSSVar('--bg-primary') || '#1e1e1e',
-  headerBgColor: getCSSVar('--bg-tertiary') || '#2d2d30',
-  borderColor: getCSSVar('--border-primary') || '#3e3e42',
-  textColor: getCSSVar('--text-primary') || '#cccccc',
-  headerTextColor: getCSSVar('--text-primary') || '#cccccc',
-  hoverColor: getCSSVar('--bg-hover') || '#2a2d2e',
-  evenRowColor: getCSSVar('--bg-secondary') || '#252526',
-  oddRowColor: getCSSVar('--bg-primary') || '#1e1e1e',
-  accentColor: getCSSVar('--accent-primary') || '#007acc',
-  secondaryTextColor: getCSSVar('--text-secondary') || '#858585',
-  scrollbarThumb: getCSSVar('--bg-scrollbar-thumb') || '#424242',
-  scrollbarTrack: getCSSVar('--bg-scrollbar') || '#1e1e1e',
+      it('should return "null" for undefined values', () => {
+        expect(formatBigQueryValue(undefined)).toBe('null');
+        expect(formatBigQueryValue(undefined, 'STRING')).toBe('null');
+      });
+    });
+
+    describe('BOOLEAN formatting', () => {
+      it('should format boolean true as "TRUE"', () => {
+        expect(formatBigQueryValue(true, 'BOOL')).toBe('TRUE');
+        expect(formatBigQueryValue(true, 'BOOLEAN')).toBe('TRUE');
+      });
+
+      it('should format boolean false as "FALSE"', () => {
+        expect(formatBigQueryValue(false, 'BOOL')).toBe('FALSE');
+        expect(formatBigQueryValue(false, 'BOOLEAN')).toBe('FALSE');
+      });
+
+      it('should handle string boolean values', () => {
+        expect(formatBigQueryValue('true', 'BOOL')).toBe('TRUE');
+        expect(formatBigQueryValue('false', 'BOOL')).toBe('FALSE');
+        expect(formatBigQueryValue('TRUE', 'BOOL')).toBe('TRUE');
+        expect(formatBigQueryValue('FALSE', 'BOOL')).toBe('FALSE');
+      });
+    });
+
+    describe('STRING formatting', () => {
+      it('should return strings as-is', () => {
+        expect(formatBigQueryValue('hello', 'STRING')).toBe('hello');
+        expect(formatBigQueryValue('hello world', 'STRING')).toBe('hello world');
+      });
+
+      it('should handle empty strings', () => {
+        expect(formatBigQueryValue('', 'STRING')).toBe('');
+      });
+    });
+
+    describe('INTEGER/INT64 formatting', () => {
+      it('should format integers', () => {
+        expect(formatBigQueryValue(123, 'INTEGER')).toBe('123');
+        expect(formatBigQueryValue(123, 'INT64')).toBe('123');
+        expect(formatBigQueryValue(-456, 'INT64')).toBe('-456');
+      });
+
+      it('should format large integers', () => {
+        expect(formatBigQueryValue(9007199254740991, 'INT64')).toBe('9007199254740991');
+      });
+
+      it('should format zero', () => {
+        expect(formatBigQueryValue(0, 'INTEGER')).toBe('0');
+      });
+    });
+
+    describe('FLOAT64/FLOAT formatting', () => {
+      it('should format floats', () => {
+        expect(formatBigQueryValue(3.14159, 'FLOAT64')).toBe('3.14159');
+        expect(formatBigQueryValue(3.14159, 'FLOAT')).toBe('3.14159');
+      });
+
+      it('should format negative floats', () => {
+        expect(formatBigQueryValue(-2.5, 'FLOAT64')).toBe('-2.5');
+      });
+    });
+
+    describe('DATE formatting', () => {
+      it('should format date strings', () => {
+        expect(formatBigQueryValue('2024-01-15', 'DATE')).toBe('2024-01-15');
+      });
+
+      it('should format Date objects for DATE type', () => {
+        const date = new Date('2024-01-15T00:00:00Z');
+        const result = formatBigQueryValue(date, 'DATE');
+        expect(result).toBe('2024-01-15');
+      });
+    });
+
+    describe('TIMESTAMP formatting', () => {
+      it('should format timestamp strings', () => {
+        expect(formatBigQueryValue('2024-01-15T10:30:00Z', 'TIMESTAMP')).toBe('2024-01-15T10:30:00Z');
+      });
+
+      it('should format Date objects for TIMESTAMP type', () => {
+        const date = new Date('2024-01-15T10:30:00Z');
+        const result = formatBigQueryValue(date, 'TIMESTAMP');
+        expect(result).toMatch(/2024-01-15T10:30:00/);
+      });
+    });
+
+    describe('DATETIME formatting', () => {
+      it('should format datetime strings', () => {
+        expect(formatBigQueryValue('2024-01-15 10:30:00', 'DATETIME')).toBe('2024-01-15 10:30:00');
+      });
+
+      it('should format Date objects for DATETIME type', () => {
+        const date = new Date('2024-01-15T10:30:00Z');
+        const result = formatBigQueryValue(date, 'DATETIME');
+        expect(result).toBe('2024-01-15 10:30:00');
+      });
+    });
+
+    describe('TIME formatting', () => {
+      it('should format time strings', () => {
+        expect(formatBigQueryValue('10:30:00', 'TIME')).toBe('10:30:00');
+      });
+
+      it('should format Date objects for TIME type', () => {
+        const date = new Date('2024-01-15T10:30:00Z');
+        const result = formatBigQueryValue(date, 'TIME');
+        expect(result).toBe('10:30:00');
+      });
+    });
+
+    describe('ARRAY formatting', () => {
+      it('should format arrays as JSON', () => {
+        const result = formatBigQueryValue([1, 2, 3], 'ARRAY');
+        expect(result).toBe('[1, 2, 3]');
+      });
+
+      it('should format arrays of strings', () => {
+        const result = formatBigQueryValue(['a', 'b', 'c'], 'ARRAY');
+        // The formatter joins elements without quoting individual strings
+        expect(result).toBe('[a, b, c]');
+      });
+
+      it('should format empty arrays', () => {
+        const result = formatBigQueryValue([], 'ARRAY');
+        expect(result).toBe('[]');
+      });
+    });
+
+    describe('STRUCT/RECORD formatting', () => {
+      it('should format objects as JSON', () => {
+        const result = formatBigQueryValue({ name: 'John', age: 30 }, 'STRUCT');
+        expect(JSON.parse(result)).toEqual({ name: 'John', age: 30 });
+      });
+
+      it('should format nested objects', () => {
+        const value = { user: { name: 'John', address: { city: 'NYC' } } };
+        const result = formatBigQueryValue(value, 'RECORD');
+        expect(JSON.parse(result)).toEqual(value);
+      });
+    });
+
+    describe('BYTES formatting', () => {
+      it('should format byte arrays', () => {
+        // BYTES are formatted as hex strings (0x...)
+        const result = formatBigQueryValue('SGVsbG8=', 'BYTES');
+        // Base64 'SGVsbG8=' decodes to 'Hello' which is 0x48656c6c6f
+        expect(result).toBe('0x48656c6c6f');
+      });
+    });
+
+    describe('GEOGRAPHY formatting', () => {
+      it('should format geography strings', () => {
+        const geoJson = 'POINT(-122.4194 37.7749)';
+        expect(formatBigQueryValue(geoJson, 'GEOGRAPHY')).toBe(geoJson);
+      });
+    });
+
+    describe('JSON formatting', () => {
+      it('should format JSON strings', () => {
+        const jsonStr = '{"key": "value"}';
+        // JSON is pretty-printed with 2-space indentation
+        const expected = '{\n  "key": "value"\n}';
+        expect(formatBigQueryValue(jsonStr, 'JSON')).toBe(expected);
+      });
+
+      it('should format JSON objects', () => {
+        const value = { key: 'value' };
+        const result = formatBigQueryValue(value, 'JSON');
+        expect(JSON.parse(result)).toEqual(value);
+      });
+    });
+
+    describe('NUMERIC/BIGNUMERIC formatting', () => {
+      it('should format numeric strings', () => {
+        expect(formatBigQueryValue('123.456', 'NUMERIC')).toBe('123.456');
+        expect(formatBigQueryValue('123.456', 'BIGNUMERIC')).toBe('123.456');
+        expect(formatBigQueryValue('123.456', 'DECIMAL')).toBe('123.456');
+      });
+    });
+
+    describe('Unknown types', () => {
+      it('should handle values without column type', () => {
+        expect(formatBigQueryValue('hello')).toBe('hello');
+        expect(formatBigQueryValue(123)).toBe('123');
+        expect(formatBigQueryValue(true)).toBe('true');
+      });
+    });
+
+    describe('Edge cases', () => {
+      it('should handle [object Object] string for date columns', () => {
+        const result = formatBigQueryValue('[object Object]', 'DATE');
+        expect(result).toBe('[Invalid Date]');
+      });
+
+      it('should handle empty objects for date columns', () => {
+        const result = formatBigQueryValue({}, 'DATE');
+        expect(result).toBe('[Invalid Date]');
+      });
+
+      it('should handle invalid Date objects', () => {
+        const invalidDate = new Date('invalid');
+        const result = formatBigQueryValue(invalidDate, 'DATE');
+        expect(result).toBe('Invalid Date');
+      });
+    });
+  });
 });
+````
 
-interface CanvasTableProps {
-  results: QueryResult;
-  columnWidths: { [key: number]: number };
-  onColumnResize: (columnIndex: number, width: number) => void;
-  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
-  onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
-  formatValue: (value: any, columnType?: string, columnName?: string) => string;
-  currentPage: number;
-  rowsPerPage: number;
-  sortColumn: number | null;
-  sortDirection: 'asc' | 'desc' | null;
-  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-primary);
 }
 
-const ROW_HEIGHT = 24;
-const HEADER_HEIGHT = 28;
-const ROW_NUMBER_COLUMN_WIDTH = 80;
-const MIN_COLUMN_WIDTH = 50;
-const CELL_PADDING = 8;
-const RESIZE_HANDLE_WIDTH = 4;
-const SORT_ARROW_WIDTH = 16;
-const SORT_ARROW_HEIGHT = 16;
-
-export const CanvasTable: React.FC<CanvasTableProps> = ({
-  results,
-  columnWidths,
-  onColumnResize,
-  onRowContextMenu,
-  onColumnContextMenu,
-  formatValue,
-  currentPage,
-  rowsPerPage,
-  sortColumn,
-  sortDirection,
-  onSortColumn,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const canvasOverlayRef = useRef<HTMLDivElement>(null);
-  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
-  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
-  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
-  const resizeStartXRef = useRef(0);
-  const resizeStartWidthRef = useRef(0);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
-  
-  // Text selection state
-  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
-  const [isSelecting, setIsSelecting] = useState(false);
-  const selectionOverlayRef = useRef<HTMLDivElement>(null);
-  
-  // Sort menu state
-  const [sortMenu, setSortMenu] = useState<{
-    columnIndex: number;
-    x: number;
-    y: number;
-  } | null>(null);
-
-  // Results already contain only the current page rows (loaded from cache)
-  // Calculate startIndex for row numbering
-  const startIndex = (currentPage - 1) * rowsPerPage;
-  const paginatedRows = useMemo(() => {
-    // Results.rows already contains only the current page, so use it directly
-    return results.rows || [];
-  }, [results.rows]);
-
-  // Theme colors state - re-read when theme changes
-  const [themeColors, setThemeColors] = useState(getThemeColors);
-  
-  // Watch for theme changes via data-theme attribute
-  useEffect(() => {
-    const updateColors = () => {
-      setThemeColors(getThemeColors());
-    };
-    
-    // Initial update
-    updateColors();
-    
-    // Watch for attribute changes on document.documentElement
-    const observer = new MutationObserver(updateColors);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    
-    return () => observer.disconnect();
-  }, []);
-
-  // Memory management: Limit cache size and clear when data changes significantly
-  const formattedCellsRef = useRef<Map<string, string>>(new Map());
-  const MAX_FORMATTED_CACHE_SIZE = 100000; // Limit to 10k cells to prevent memory issues
-  
-  // Pre-format all cell values to avoid expensive formatting during render
-  // This is the key optimization - format values once when data changes, not on every render
-  const formattedCells = useMemo(() => {
-    const formatted = new Map<string, string>();
-    paginatedRows.forEach((row, rowIdx) => {
-      row.values.forEach((value, colIdx) => {
-        const column = results.columns[colIdx];
-        const key = `${rowIdx}-${colIdx}`;
-        // Only format if within cache size limit
-        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
-          formatted.set(key, formatValue(value, column?.type, column?.name));
-        }
-      });
-    });
-    // Update ref for cleanup tracking
-    formattedCellsRef.current = formatted;
-    return formatted;
-  }, [paginatedRows, results.columns, formatValue]);
-  
-  // Clear caches when results change significantly (new jobId)
-  useEffect(() => {
-    formattedCellsRef.current.clear();
-    textMeasurementCache.current.clear();
-  }, [results.jobId]);
-
-  // Helper to get formatted value (with fallback for safety)
-  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
-    const key = `${rowIdx}-${colIdx}`;
-    const column = results.columns[colIdx];
-    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
-  }, [formattedCells, formatValue, results.columns]);
-
-  // Calculate column widths
-  const getColumnWidth = useCallback(
-    (columnIndex: number): number => {
-      if (columnIndex === -1) {
-        return columnWidths[-1] || ROW_NUMBER_COLUMN_WIDTH;
-      }
-      return columnWidths[columnIndex] || 150;
-    },
-    [columnWidths]
-  );
-
-  // Calculate total width - ensure it's at least as wide as viewport to enable scrolling
-  const totalWidth = useMemo(() => {
-    let width = getColumnWidth(-1);
-    results.columns.forEach((_, idx) => {
-      width += getColumnWidth(idx);
-    });
-    // Ensure minimum width to enable horizontal scrolling when content is wide
-    return Math.max(width, 100);
-  }, [results.columns, getColumnWidth]);
-
-  const totalHeight = HEADER_HEIGHT + paginatedRows.length * ROW_HEIGHT;
-
-  // Track container dimensions to determine if scrolling is needed
-  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
-
-  // Update container dimensions when it changes
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const updateDimensions = () => {
-      setContainerDimensions({
-        width: container.clientWidth,
-        height: container.clientHeight,
-      });
-    };
-
-    updateDimensions();
-    const resizeObserver = new ResizeObserver(updateDimensions);
-    resizeObserver.observe(container);
-
-    return () => resizeObserver.disconnect();
-  }, []);
-
-  // Cache for text measurements to avoid repeated measureText calls
-  const textMeasurementCache = useRef<Map<string, number>>(new Map());
-  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
-
-  // Measure text width with caching
-  const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
-    // Update context ref if changed
-    if (measureTextContextRef.current !== ctx) {
-      measureTextContextRef.current = ctx;
-      // Clear cache when context changes (e.g., font changes)
-      textMeasurementCache.current.clear();
-    }
-
-    // Use cache key based on text content
-    const cacheKey = text;
-    if (textMeasurementCache.current.has(cacheKey)) {
-      return textMeasurementCache.current.get(cacheKey)!;
-    }
-
-    const width = ctx.measureText(text).width;
-    // Limit cache size to prevent memory issues (keep last 1000 measurements)
-    if (textMeasurementCache.current.size > 1000) {
-      const firstKey = textMeasurementCache.current.keys().next().value;
-      if (firstKey !== undefined) {
-        textMeasurementCache.current.delete(firstKey);
-      }
-    }
-    textMeasurementCache.current.set(cacheKey, width);
-    return width;
-  }, []);
-
-  // Convert viewport coordinates to cell position
-  const getCellFromCoordinates = useCallback(
-    (x: number, y: number): { row: number; col: number } | null => {
-      // Don't allow selection in header
-      if (y < HEADER_HEIGHT) return null;
-      
-      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-      if (row < 0 || row >= paginatedRows.length) return null;
-
-      // Find column
-      let currentX = 0;
-      
-      // Check row number column
-      const rowNumWidth = getColumnWidth(-1);
-      if (x >= currentX && x < currentX + rowNumWidth) {
-        return { row, col: -1 };
-      }
-      currentX += rowNumWidth;
-
-      // Check data columns
-      for (let idx = 0; idx < results.columns.length; idx++) {
-        const colWidth = getColumnWidth(idx);
-        if (x >= currentX && x < currentX + colWidth) {
-          return { row, col: idx };
-        }
-        currentX += colWidth;
-      }
-
-      return null;
-    },
-    [paginatedRows.length, getColumnWidth, results.columns]
-  );
-
-  // Draw cell text with ellipsis - optimized with binary search for truncation
-  const drawCellText = useCallback(
-    (
-      ctx: CanvasRenderingContext2D,
-      text: string,
-      x: number,
-      y: number,
-      width: number,
-      color: string = '#cccccc',
-      align: 'left' | 'right' = 'left'
-    ) => {
-      ctx.fillStyle = color;
-      ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      const maxWidth = width - CELL_PADDING * 2;
-      const ellipsis = '...';
-      const ellipsisWidth = measureText(ellipsis, ctx);
-      
-      // Quick check - if text fits, draw it directly
-      const textWidth = measureText(text, ctx);
-      if (textWidth <= maxWidth) {
-        // Calculate x position based on alignment
-        const textX = align === 'right' 
-          ? x + width - CELL_PADDING - textWidth 
-          : x + CELL_PADDING;
-        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
-        return;
-      }
-      
-      // Binary search for optimal truncation point (much faster than linear character-by-character)
-      let left = 0;
-      let right = text.length;
-      let bestFit = 0;
-      
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        const testText = text.substring(0, mid);
-        const testWidth = measureText(testText, ctx);
-        
-        if (testWidth + ellipsisWidth <= maxWidth) {
-          bestFit = mid;
-          left = mid + 1;
-        } else {
-          right = mid - 1;
-        }
-      }
-      
-      const truncated = text.substring(0, bestFit);
-      const truncatedWidth = measureText(truncated + ellipsis, ctx);
-      // Calculate x position based on alignment for truncated text
-      const truncatedX = align === 'right'
-        ? x + width - CELL_PADDING - truncatedWidth
-        : x + CELL_PADDING;
-      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
-    },
-    [measureText]
-  );
-
-  // Render the canvas
-  const render = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const container = containerRef.current;
-    const wrapper = wrapperRef.current;
-    if (!container || !wrapper) return;
-
-    // Get viewport size from the scrolling container (accounts for scrollbars)
-    // Use clientWidth/clientHeight which excludes scrollbar width
-    const containerWidth = Math.max(1, container.clientWidth);
-    const containerHeight = Math.max(1, container.clientHeight);
-    
-    // Early return if dimensions are invalid
-    if (containerWidth <= 0 || containerHeight <= 0) {
-      return;
-    }
-
-    // Always set canvas size to match viewport exactly
-    const dpr = window.devicePixelRatio || 1;
-    const canvasWidth = Math.ceil(containerWidth * dpr);
-    const canvasHeight = Math.ceil(containerHeight * dpr);
-    
-    // Set canvas internal resolution and display size
-    // Only update if size actually changed to avoid unnecessary redraws
-    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
-      canvas.width = canvasWidth;
-      canvas.height = canvasHeight;
-    }
-    canvas.style.width = `${containerWidth}px`;
-    canvas.style.height = `${containerHeight}px`;
-    
-    // Update canvas overlay size to match canvas (excludes scrollbar area)
-    const canvasOverlay = canvasOverlayRef.current;
-    if (canvasOverlay) {
-      canvasOverlay.style.width = `${containerWidth}px`;
-      canvasOverlay.style.height = `${containerHeight}px`;
-    }
-    
-    // Update selection overlay size to match container
-    const selectionOverlay = selectionOverlayRef.current;
-    if (selectionOverlay) {
-      selectionOverlay.style.width = `${containerWidth}px`;
-      selectionOverlay.style.height = `${containerHeight}px`;
-    }
-    
-    // Reset transform and scale for high DPI
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-
-    // Clear canvas and fill with background color
-    ctx.fillStyle = themeColors.bgColor;
-    ctx.fillRect(0, 0, containerWidth, containerHeight);
-
-    // Use theme colors
-    const { bgColor, headerBgColor, borderColor, textColor, headerTextColor, hoverColor, evenRowColor, oddRowColor, accentColor, secondaryTextColor } = themeColors;
-
-    // Calculate visible area - account for header height
-    // Only rows that would be visible below the header should be considered
-    // Add small buffer (2 rows) for smoother scrolling
-    const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
-    const bufferRows = 2;
-    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
-    const visibleEndRow = Math.min(
-      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
-      paginatedRows.length
-    );
-
-    // Calculate column positions (relative to scroll position)
-    let currentX = 0;
-    const columnPositions: { [key: number]: number } = {};
-    
-    // Row number column
-    columnPositions[-1] = currentX - scrollLeft;
-    currentX += getColumnWidth(-1);
-
-    results.columns.forEach((_, idx) => {
-      columnPositions[idx] = currentX - scrollLeft;
-      currentX += getColumnWidth(idx);
-    });
-
-    // Draw rows first - ensure they never draw above the header
-    for (let rowIdx = visibleStartRow; rowIdx < visibleEndRow; rowIdx++) {
-      const row = paginatedRows[rowIdx];
-      if (!row) continue;
-
-      // Calculate row Y position relative to the canvas
-      const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
-      const actualRowNumber = startIndex + rowIdx + 1;
-      
-      // Skip rows that would be drawn above or overlapping the header
-      if (rowY < HEADER_HEIGHT) continue;
-
-      // Row background
-      const isEven = rowIdx % 2 === 0;
-      const isHovered = hoveredRow === rowIdx;
-      ctx.fillStyle = isHovered ? hoverColor : isEven ? evenRowColor : oddRowColor;
-      ctx.fillRect(0, rowY, containerWidth, ROW_HEIGHT);
-
-      // Row number cell
-      const rowNumX = columnPositions[-1];
-      if (rowNumX + getColumnWidth(-1) > 0 && rowNumX < containerWidth) {
-        ctx.strokeStyle = borderColor;
-        ctx.beginPath();
-        ctx.moveTo(rowNumX + getColumnWidth(-1), rowY);
-        ctx.lineTo(rowNumX + getColumnWidth(-1), rowY + ROW_HEIGHT);
-        ctx.stroke();
-
-        ctx.fillStyle = textColor;
-        drawCellText(
-          ctx,
-          actualRowNumber.toLocaleString(),
-          rowNumX,
-          rowY,
-          getColumnWidth(-1),
-          textColor,
-          'right' // Right-align row numbers
-        );
-      }
-
-      // Data cells - draw all columns that are at least partially visible
-      row.values.forEach((value, colIdx) => {
-        const colX = columnPositions[colIdx];
-        const colWidth = getColumnWidth(colIdx);
-
-        // Column is visible if any part of it is in the viewport
-        // Check if right edge is to the right of left edge of viewport AND
-        // left edge is to the left of right edge of viewport
-        if (colX + colWidth > 0 && colX < containerWidth) {
-          // Calculate visible portion of column
-          const visibleX = Math.max(0, colX);
-          const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
-          
-          // Draw vertical border on the right side of the cell
-          ctx.strokeStyle = borderColor;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(colX + colWidth, rowY);
-          ctx.lineTo(colX + colWidth, rowY + ROW_HEIGHT);
-          ctx.stroke();
-
-          // Draw left border if column starts off-screen
-          if (colX < 0 && colIdx === 0) {
-            ctx.beginPath();
-            ctx.moveTo(0, rowY);
-            ctx.lineTo(0, rowY + ROW_HEIGHT);
-            ctx.stroke();
-          }
-
-          // Draw cell content - use pre-formatted value
-          const column = results.columns[colIdx];
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
-          ctx.fillStyle = textColor;
-          // Check if column is INTEGER type for right alignment
-          const columnType = (column?.type || '').toUpperCase();
-          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
-          const textAlign = isIntegerColumn ? 'right' : 'left';
-          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign);
-        }
-      });
-
-      // Draw bottom border
-      ctx.strokeStyle = borderColor;
-      ctx.beginPath();
-      ctx.moveTo(0, rowY + ROW_HEIGHT);
-      ctx.lineTo(containerWidth, rowY + ROW_HEIGHT);
-      ctx.stroke();
-    }
-
-    // Draw selection highlights
-    if (selectionStart && selectionEnd) {
-      const startRow = Math.min(selectionStart.row, selectionEnd.row);
-      const endRow = Math.max(selectionStart.row, selectionEnd.row);
-      const startCol = Math.min(selectionStart.col, selectionEnd.col);
-      const endCol = Math.max(selectionStart.col, selectionEnd.col);
-
-      // Only draw selection for visible rows
-      const visibleStart = Math.max(startRow, visibleStartRow);
-      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
-
-      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
-        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
-        if (rowY < HEADER_HEIGHT) continue;
-
-        // Draw selection for each selected column in this row
-        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
-          const colX = columnPositions[colIdx];
-          const colWidth = getColumnWidth(colIdx);
-
-          // Only draw if column is visible
-          if (colX + colWidth > 0 && colX < containerWidth) {
-            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
-            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
-          }
-        }
-      }
-    }
-
-    // Draw header last so it's always on top (fixed position)
-    // Draw header background
-    ctx.fillStyle = headerBgColor;
-    ctx.fillRect(0, 0, containerWidth, HEADER_HEIGHT);
-
-    // Draw header border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, HEADER_HEIGHT);
-    ctx.lineTo(containerWidth, HEADER_HEIGHT);
-    ctx.stroke();
-
-    // Draw header cells
-    ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = headerTextColor;
-
-    // Row number header
-    const rowNumX = columnPositions[-1];
-    const rowNumWidth = getColumnWidth(-1);
-    // Check if column is visible (any part of it is in viewport)
-    if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
-      ctx.fillStyle = headerTextColor;
-      ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      // Draw header text at correct vertical position, right-aligned
-      const rowHeaderText = 'Row';
-      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
-      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
-      
-      // Draw resize handle
-      if (resizingColumn === -1 || hoveredColumn === -1) {
-        ctx.fillStyle = resizingColumn === -1 ? accentColor : `${accentColor}80`;
-        ctx.fillRect(
-          rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
-          0,
-          RESIZE_HANDLE_WIDTH,
-          HEADER_HEIGHT
-        );
-      }
-    }
-
-    // Column headers - draw all columns that are at least partially visible
-    results.columns.forEach((col, idx) => {
-      const colX = columnPositions[idx];
-      const colWidth = getColumnWidth(idx);
-
-      // Column is visible if any part of it is in the viewport
-      // Check if right edge is to the right of left edge of viewport AND
-      // left edge is to the left of right edge of viewport
-      if (colX + colWidth > 0 && colX < containerWidth) {
-        // Calculate visible portion of column
-        const visibleX = Math.max(0, colX);
-        const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
-        
-        // Draw vertical border on the right side of the header
-        ctx.strokeStyle = borderColor;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(colX + colWidth, 0);
-        ctx.lineTo(colX + colWidth, HEADER_HEIGHT);
-        ctx.stroke();
-
-        // Draw left border if column starts off-screen
-        if (colX < 0) {
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(0, HEADER_HEIGHT);
-          ctx.stroke();
-        }
-
-        ctx.fillStyle = headerTextColor;
-        ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        // Column headers are always left-aligned regardless of data type
-        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
-        
-        // Draw header text directly with proper alignment and truncation
-        // Reserve space for dropdown arrow
-        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
-        const textWidth = measureText(col.name, ctx);
-        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
-        
-        if (textWidth <= maxWidth) {
-          // Text fits - always left-aligned
-          const textX = colX + CELL_PADDING;
-          ctx.fillText(col.name, textX, headerTextY);
-        } else {
-          // Truncate with ellipsis
-          const ellipsis = '...';
-          const ellipsisWidth = measureText(ellipsis, ctx);
-          let truncated = col.name;
-          let truncatedWidth = textWidth;
-          
-          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
-            truncated = truncated.slice(0, -1);
-            truncatedWidth = measureText(truncated, ctx);
-          }
-          
-          const finalWidth = truncatedWidth + ellipsisWidth;
-          // Always left-aligned
-          const textX = colX + CELL_PADDING;
-          ctx.fillText(truncated + ellipsis, textX, headerTextY);
-        }
-        
-        // Draw dropdown arrow indicator (always visible)
-        ctx.fillStyle = sortColumn === idx ? accentColor : secondaryTextColor;
-        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        const dropdownIcon = sortColumn === idx 
-          ? (sortDirection === 'asc' ? '↑' : '↓')
-          : '▼';
-        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
-        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
-
-        // Draw resize handle
-        if (resizingColumn === idx || hoveredColumn === idx) {
-          ctx.fillStyle = resizingColumn === idx ? accentColor : `${accentColor}80`;
-          const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
-          ctx.fillRect(
-            handleX,
-            0,
-            RESIZE_HANDLE_WIDTH,
-            HEADER_HEIGHT
-          );
-        }
-      }
-    });
-  }, [
-    paginatedRows,
-    results.columns,
-    scrollTop,
-    scrollLeft,
-    hoveredRow,
-    hoveredColumn,
-    resizingColumn,
-    getColumnWidth,
-    getFormattedValue,
-    startIndex,
-    drawCellText,
-    selectionStart,
-    selectionEnd,
-    themeColors,
-    sortColumn,
-    sortDirection,
-  ]);
-
-  // Handle scroll
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-    setScrollLeft(e.currentTarget.scrollLeft);
-    // Close sort menu when scrolling (position would be incorrect)
-    setSortMenu(null);
-  }, []);
-
-  // Handle mouse move
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      // Check if over header
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        // Check which column
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        // Check row number column
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          foundColumn = -1;
-        }
-        currentX += rowNumWidth;
-
-        // Check data columns
-        if (foundColumn === null) {
-          results.columns.forEach((_, idx) => {
-            const colWidth = getColumnWidth(idx);
-            if (x >= currentX && x < currentX + colWidth) {
-              foundColumn = idx;
-            }
-            currentX += colWidth;
-          });
-        }
-
-        setHoveredColumn(foundColumn);
-        setHoveredRow(null);
-
-        // Update cursor for resize or sort
-        if (foundColumn !== null) {
-          let colX = 0;
-          if (foundColumn === -1) {
-            colX = 0;
-          } else {
-            colX = getColumnWidth(-1);
-            for (let i = 0; i < foundColumn; i++) {
-              colX += getColumnWidth(i);
-            }
-          }
-          const colWidth = getColumnWidth(foundColumn);
-          const handleX = colX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-          
-          if (x >= handleX - 5 && x <= handleX + 5) {
-            container.style.cursor = 'col-resize';
-          } else if (foundColumn !== -1) {
-            // Show pointer cursor for data column headers (to indicate sortable)
-            container.style.cursor = 'pointer';
-          } else {
-            container.style.cursor = 'default';
-          }
-        } else {
-          container.style.cursor = 'default';
-        }
-      } else if (y >= HEADER_HEIGHT) {
-        // Check which row
-        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          setHoveredRow(rowIndex);
-        } else {
-          setHoveredRow(null);
-        }
-        setHoveredColumn(null);
-        container.style.cursor = 'default';
-      }
-    },
-    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length]
-  );
-
-  // Handle mouse leave
-  const handleMouseLeave = useCallback(() => {
-    setHoveredRow(null);
-    setHoveredColumn(null);
-    const container = containerRef.current;
-    if (container) {
-      container.style.cursor = 'default';
-    }
-  }, []);
-
-  // Handle mouse down for resizing and selection
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      // Don't handle right-click (context menu) - let handleContextMenu deal with it
-      if (e.button === 2) return;
-      
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      // Handle selection in data area (not header)
-      if (y >= HEADER_HEIGHT) {
-        // Check if this is a data cell click (not a scrollbar click)
-        const cell = getCellFromCoordinates(x, y);
-        if (cell) {
-          setIsSelecting(true);
-          const cellPos = { ...cell, x, y };
-          setSelectionStart(cellPos);
-          setSelectionEnd(cellPos);
-          // Don't prevent default - allow normal behavior
-          return;
-        } else {
-          // Click outside cells - clear selection
-          setSelectionStart(null);
-          setSelectionEnd(null);
-          return;
-        }
-      }
-
-      // Handle sort menu click in header (but not on resize handle)
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        // Check row number column
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          // Row number column doesn't have sort menu
-          return;
-        }
-        currentX += rowNumWidth;
-
-        // Check data columns
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          if (x >= currentX && x < currentX + colWidth) {
-            // Check if click is on resize handle
-            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-            if (x < handleX - 5 || x > handleX + 5) {
-              // Not on resize handle - show sort menu for any click on header
-              foundColumn = idx;
-            }
-          }
-          currentX += colWidth;
-        });
-
-        if (foundColumn !== null) {
-          e.preventDefault();
-          e.stopPropagation();
-          const container = containerRef.current;
-          if (container) {
-            const rect = container.getBoundingClientRect();
-            // Calculate position for sort menu
-            // colX is in scroll coordinates, need to convert to viewport coordinates
-            let colX = getColumnWidth(-1);
-            for (let i = 0; i < foundColumn; i++) {
-              colX += getColumnWidth(i);
-            }
-            const colWidth = getColumnWidth(foundColumn);
-            // Convert scroll coordinates to viewport coordinates
-            const viewportColX = colX - scrollLeft;
-            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
-            const menuY = rect.top + HEADER_HEIGHT + 2;
-            setSortMenu({
-              columnIndex: foundColumn,
-              x: menuX,
-              y: menuY,
-            });
-          }
-          return;
-        }
-      }
-
-      // Only handle resize in header
-
-      // Check which column
-      let currentX = 0;
-      let foundColumn: number | null = null;
-
-      // Check row number column
-      const rowNumWidth = getColumnWidth(-1);
-      if (x >= currentX && x < currentX + rowNumWidth) {
-        const handleX = currentX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2;
-        if (x >= handleX - 5 && x <= handleX + 5) {
-          foundColumn = -1;
-        }
-      }
-      currentX += rowNumWidth;
-
-      // Check data columns
-      if (foundColumn === null) {
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-          if (x >= handleX - 5 && x <= handleX + 5) {
-            foundColumn = idx;
-          }
-          currentX += colWidth;
-        });
-      }
-
-      if (foundColumn !== null) {
-        e.preventDefault();
-        resizeStartXRef.current = e.clientX;
-        resizeStartWidthRef.current = getColumnWidth(foundColumn);
-        setResizingColumn(foundColumn);
-        // Clear selection when starting resize
-        setSelectionStart(null);
-        setSelectionEnd(null);
-        setIsSelecting(false);
-      } else {
-        // Click on header but not on resize handle - clear selection
-        setSelectionStart(null);
-        setSelectionEnd(null);
-        setIsSelecting(false);
-      }
-    },
-    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
-  );
-
-  // Handle context menu
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        // Header context menu
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          // Row number column doesn't have context menu
-          return;
-        }
-        currentX += rowNumWidth;
-
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          if (x >= currentX && x < currentX + colWidth) {
-            foundColumn = idx;
-          }
-          currentX += colWidth;
-        });
-
-        if (foundColumn !== null) {
-          onColumnContextMenu(e, foundColumn);
-        }
-      } else if (y >= HEADER_HEIGHT) {
-        // Row context menu
-        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          // Check if click is on the row number column
-          const rowNumWidth = getColumnWidth(-1);
-          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
-          onRowContextMenu(e, rowIndex, isRowNumberColumn);
-        }
-      }
-    },
-    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
-  );
-
-  // Extract selected text
-  const getSelectedText = useCallback((): string => {
-    if (!selectionStart || !selectionEnd) return '';
-
-    const startRow = Math.min(selectionStart.row, selectionEnd.row);
-    const endRow = Math.max(selectionStart.row, selectionEnd.row);
-    const startCol = Math.min(selectionStart.col, selectionEnd.col);
-    const endCol = Math.max(selectionStart.col, selectionEnd.col);
-
-    const selectedCells: string[] = [];
-
-    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
-      const row = paginatedRows[rowIdx];
-      if (!row) continue;
-
-      const rowValues: string[] = [];
-      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
-        if (colIdx === -1) {
-          // Row number
-          const actualRowNumber = startIndex + rowIdx + 1;
-          rowValues.push(actualRowNumber.toLocaleString());
-        } else {
-          const value = row.values[colIdx];
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
-          rowValues.push(formattedValue);
-        }
-      }
-      selectedCells.push(rowValues.join('\t'));
-    }
-
-    return selectedCells.join('\n');
-  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
-
-  // Handle copy to clipboard
-  useEffect(() => {
-    const handleCopy = (e: KeyboardEvent) => {
-      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (selectionStart && selectionEnd) {
-          // Check if user is trying to copy from an input field or Monaco editor
-          const target = e.target as HTMLElement;
-          const isInputField = 
-            target.tagName === 'INPUT' || 
-            target.tagName === 'TEXTAREA' || 
-            target.isContentEditable ||
-            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
-            target.closest('.monaco-editor') !== null ||
-            target.closest('.editor-container') !== null;
-          
-          // Only handle copy from canvas if not copying from an input/editor
-          if (!isInputField) {
-            const text = getSelectedText();
-            if (text) {
-              e.preventDefault();
-              navigator.clipboard.writeText(text).catch((err) => {
-                console.error('Failed to copy to clipboard:', err);
-              });
-            }
-          }
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleCopy);
-    return () => window.removeEventListener('keydown', handleCopy);
-  }, [selectionStart, selectionEnd, getSelectedText]);
-
-
-  // Handle selection mouse move
-  const handleSelectionMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isSelecting || resizingColumn !== null) return;
-
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const viewportX = e.clientX - rect.left;
-      const viewportY = e.clientY - rect.top;
-      const x = viewportX + scrollLeft;
-      const y = viewportY + scrollTop;
-
-      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
-      const edgeThreshold = 20;
-      const isNearTop = viewportY < edgeThreshold;
-      const isNearBottom = viewportY > rect.height - edgeThreshold;
-      const isNearLeft = viewportX < edgeThreshold;
-      const isNearRight = viewportX > rect.width - edgeThreshold;
-
-      // Update selection if we can determine a cell
-      const cell = getCellFromCoordinates(x, y);
-      if (cell && selectionStart) {
-        setSelectionEnd({ ...cell, x, y });
-      } else if (selectionStart) {
-        // If outside cells but still selecting, extend selection to edge
-        // This allows selection to continue when dragging outside viewport
-        const lastCell = selectionEnd || selectionStart;
-        setSelectionEnd(lastCell);
-      }
-    },
-    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
-  );
-
-  // Handle selection mouse up
-  const handleSelectionMouseUp = useCallback(() => {
-    setIsSelecting(false);
-  }, []);
-
-  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
-  useEffect(() => {
-    if (!isSelecting) return;
-
-    const handleDocumentMouseUp = () => {
-      setIsSelecting(false);
-    };
-
-    document.addEventListener('mouseup', handleDocumentMouseUp);
-    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
-  }, [isSelecting]);
-
-  // Handle selection mouse leave
-  const handleSelectionMouseLeave = useCallback(() => {
-    setIsSelecting(false);
-  }, []);
-
-  // Handle resize mouse move
-  useEffect(() => {
-    if (resizingColumn === null) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const diff = e.clientX - resizeStartXRef.current;
-      const newWidth = Math.max(MIN_COLUMN_WIDTH, resizeStartWidthRef.current + diff);
-      onColumnResize(resizingColumn, newWidth);
-    };
-
-    const handleMouseUp = () => {
-      setResizingColumn(null);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove, { passive: false });
-    document.addEventListener('mouseup', handleMouseUp, { passive: false });
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [resizingColumn, onColumnResize]);
-
-  // Initial render when component mounts
-  useEffect(() => {
-    // Small delay to ensure DOM is ready
-    const timer = setTimeout(() => {
-      render();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Render on changes (including scroll) with throttling to reduce CPU usage
-  const renderTimeoutRef = useRef<number | null>(null);
-  useEffect(() => {
-    // Clear any pending render
-    if (renderTimeoutRef.current !== null) {
-      cancelAnimationFrame(renderTimeoutRef.current);
-    }
-
-    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
-    // but batch rapid scroll events
-    renderTimeoutRef.current = requestAnimationFrame(() => {
-      render();
-      renderTimeoutRef.current = null;
-    });
-
-    return () => {
-      if (renderTimeoutRef.current !== null) {
-        cancelAnimationFrame(renderTimeoutRef.current);
-        renderTimeoutRef.current = null;
-      }
-    };
-  }, [render, scrollTop, scrollLeft]);
-
-  // Handle window resize
-  useEffect(() => {
-    const handleResize = () => {
-      render();
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [render]);
-
-  return (
-    <div
-      ref={wrapperRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        position: 'relative',
-        overflow: 'hidden',
-        backgroundColor: themeColors.bgColor,
-      }}
-    >
-      {/* Scrollable container - this handles all scrolling */}
-      {/* Ensure scrollbars are always visible when content overflows */}
-      <div
-        ref={containerRef}
-        className="canvas-table-container"
-        onScroll={handleScroll}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-        onMouseDown={handleMouseDown}
-        onContextMenu={handleContextMenu}
-        style={{
-          width: '100%',
-          height: '100%',
-          overflowX: 'scroll',
-          overflowY: 'scroll',
-          position: 'relative',
-          // Ensure scrollbars are always visible
-          scrollbarWidth: 'thin',
-          scrollbarColor: `${themeColors.scrollbarThumb} ${themeColors.scrollbarTrack}`,
-          // Force scrollbars to be visible (especially on macOS)
-          WebkitOverflowScrolling: 'touch',
-        }}
-      >
-        {/* Spacer div to create scrollable area - this scrolls */}
-        <div
-          style={{
-            width: totalWidth,
-            height: totalHeight,
-            position: 'relative',
-            pointerEvents: 'none',
-          }}
-        />
-      </div>
-      {/* Canvas overlay - positioned fixed to outer container, does NOT scroll */}
-      {/* pointerEvents: 'none' allows scrolling and scrollbar interaction to work through it */}
-      {/* Size matches container.clientWidth/Height to exclude scrollbar area */}
-      <div
-        ref={canvasOverlayRef}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: 'none',
-          overflow: 'hidden',
-          backgroundColor: themeColors.bgColor,
-        }}
-      >
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            pointerEvents: 'none',
-            width: '100%',
-            height: '100%',
-          }}
-        />
-      </div>
-      {/* Selection overlay - captures mouse events for text selection */}
-      {/* Only active when actively selecting to allow scrolling otherwise */}
-      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
-      <div
-        ref={selectionOverlayRef}
-        onMouseMove={handleSelectionMouseMove}
-        onMouseUp={handleSelectionMouseUp}
-        onMouseLeave={handleSelectionMouseLeave}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
-          cursor: isSelecting ? 'text' : 'default',
-          userSelect: 'none',
-        }}
-      />
-      {/* Sort menu */}
-      {sortMenu && (
-        <ColumnSortMenu
-          x={sortMenu.x}
-          y={sortMenu.y}
-          columnIndex={sortMenu.columnIndex}
-          currentSortColumn={sortColumn}
-          currentSortDirection={sortDirection}
-          onClose={() => setSortMenu(null)}
-          onSort={onSortColumn}
-        />
-      )}
-    </div>
-  );
-};
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
+}
+
+.tools-dropdown {
+  position: relative;
+}
+
+.query-editor-toolbar .tools-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar .tools-button.open {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
+  min-width: 170px;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 5;
+}
+
+.tools-menu .tools-menu-item {
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0.5rem 0.75rem;
+}
+
+.tools-menu .tools-menu-item:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu .tools-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+
+.query-editor-toolbar .run-button {
+  background-color: var(--accent-primary);
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: var(--accent-orange);
+  color: var(--text-white);
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: var(--accent-orange-hover);
+}
+
+.query-editor-toolbar .save-button {
+  background-color: var(--accent-success);
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: var(--accent-success-hover);
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: var(--accent-danger);
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.connection-warning {
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: var(--text-success);
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: var(--text-error);
+}
+
+.editor-status-bar .status-valid {
+  color: var(--text-success);
+}
+
+.editor-status-bar .status-invalid {
+  color: var(--text-error);
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-white);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
 ````
 
 ## File: src/renderer/components/QueryResults/QueryResults.css
@@ -24625,2584 +25144,1242 @@ jest.mock('@monaco-editor/react', () => ({
 }));
 ````
 
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: var(--bg-primary);
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background-color: var(--button-secondary);
-  color: var(--text-disabled);
-}
-
-.tools-dropdown {
-  position: relative;
-}
-
-.query-editor-toolbar .tools-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar .tools-button.open {
-  background-color: var(--button-secondary-hover);
-}
-
-.tools-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
-  min-width: 170px;
-  padding: 0.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  z-index: 5;
-}
-
-.tools-menu .tools-menu-item {
-  background: transparent;
-  color: var(--text-primary);
-  width: 100%;
-  justify-content: flex-start;
-  padding: 0.5rem 0.75rem;
-}
-
-.tools-menu .tools-menu-item:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.tools-menu .tools-menu-item:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
-
-.query-editor-toolbar .run-button {
-  background-color: var(--accent-primary);
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: var(--accent-orange);
-  color: var(--text-white);
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: var(--accent-orange-hover);
-}
-
-.query-editor-toolbar .save-button {
-  background-color: var(--accent-success);
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: var(--accent-success-hover);
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: var(--accent-danger);
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: var(--accent-danger-hover);
-}
-
-.connection-warning {
-  color: var(--text-warning);
-  background-color: var(--button-secondary);
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: var(--text-success);
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: var(--text-error);
-}
-
-.editor-status-bar .status-valid {
-  color: var(--text-success);
-}
-
-.editor-status-bar .status-invalid {
-  color: var(--text-error);
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: var(--text-white);
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
-````
-
-## File: README.md
-````markdown
-# QueryForge
-
-A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
-
-## Features
-
-### Connection Management
-- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
-- **Connection Persistence**: Connection settings persist across sessions
-- **Connection Testing**: Validate credentials before establishing connection
-
-### Query Execution
-- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
-- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
-- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
-- **Query Validation**: Syntax validation before execution
-- **Query Cancellation**: Cancel long-running queries
-- **Progress Indication**: Visual feedback during query execution
-
-### Multi-Tab Workflow
-- **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
-- **Tab Persistence**: Tabs and their content persist across sessions
-- **Drag & Drop Reordering**: Reorganize tabs by dragging
-- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
-- **Modified Indicator**: Blue dot shows unsaved changes
-
-### Query Management
-- **Save Queries**: Save frequently used queries locally with names and descriptions
-- **Saved Queries Tree**: Browse saved queries in the sidebar
-- **Search Queries**: Find saved queries by name or SQL content
-- **Load Queries**: Open saved queries in new tabs with one click
-
-### Dataset Explorer
-- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
-- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
-- **Quick Actions**: Right-click context menu for table operations
-- **Search**: Filter datasets and tables
-
-### Schema Inspection
-- **Schema Sidebar**: View detailed table schemas in a dedicated panel
-- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
-- **Table Metadata**: View row count, table size, and creation time
-- **View Definitions**: Inspect SQL definitions for views
-
-### Query Results
-- **High-Performance Table**: Canvas-based rendering for large datasets
-- **Large Dataset Support**: Handle up to 500,000 rows with SQLite-backed storage
-- **SQLite Caching**: Results stored in local SQLite database for memory-efficient handling of large datasets
-- **Live Loading Progress**: Real-time progress indicator shows rows fetched during large query execution
-- **Pagination**: Navigate through results with 200 rows per page
-- **Column Sorting**: Sort results by any column
-- **Column Resizing**: Adjust column widths by dragging
-- **Copy Values**: Right-click to copy cell values
-
-### Sample Data
-- **Quick Preview**: View sample data from any table
-- **One-Click Access**: Right-click table and select "View Sample Data"
-
-### UI Customization
-- **Resizable Panels**: Adjust sidebar and editor/results split
-- **Collapsible Sidebar**: Maximize editor space when needed
-- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
-- **Dark/Light Mode**: Toggle between dark and light themes to suit your preference
-
-## Prerequisites
-
-- Node.js 18+ and npm
-- Google Cloud Platform account with BigQuery API enabled
-- GCP project with BigQuery access
-- Service account key file (JSON) OR Application Default Credentials configured
-
-### Installing Node.js and npm
-
-npm (Node Package Manager) comes bundled with Node.js. To install both:
-
-1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
-2. **Install Node.js**: Run the installer and follow the installation wizard
-3. **Verify installation**: Open a terminal and run:
-   ```bash
-   node --version
-   npm --version
-   ```
-   Both commands should display version numbers (Node.js 18+ and npm 9+)
-
-Alternatively, you can use a package manager:
-- **macOS**: `brew install node` (using Homebrew)
-- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
-- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
-
-### Setting Up Google Application Default Credentials
-
-Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
-
-#### Option 1: Using gcloud CLI (Recommended)
-
-1. **Install Google Cloud SDK**:
-   - **macOS**: `brew install google-cloud-sdk`
-   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
-   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
-
-2. **Authenticate with your Google account**:
-   ```bash
-   gcloud auth login
-   ```
-   This will open a browser window for you to sign in with your Google account.
-
-3. **Set your default project** (optional but recommended):
-   ```bash
-   gcloud config set project YOUR_PROJECT_ID
-   ```
-
-4. **Set up Application Default Credentials**:
-   ```bash
-   gcloud auth application-default login
-   ```
-   This command will:
-   - Open a browser for authentication
-   - Store credentials in a well-known location that QueryForge can automatically find
-
-#### Option 2: Using Service Account Key File
-
-If you prefer to use a service account key file, you can set it as Application Default Credentials:
-
-1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
-
-2. **Set the environment variable**:
-   ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
-   ```
-
-   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
-   ```bash
-   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
-   source ~/.zshrc
-   ```
-
-   **Windows (PowerShell)**:
-   ```powershell
-   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
-   ```
-
-#### Verifying Your Setup
-
-To verify that Application Default Credentials are configured correctly:
-
-```bash
-gcloud auth application-default print-access-token
-```
-
-If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
-
-**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd QueryForge
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Build the application:
-```bash
-npm run build
-```
-
-4. Start the application:
-```bash
-npm start
-```
-
-## Development
-
-For development with hot reload:
-```bash
-npm run dev
-```
-
-## Usage
-
-### Connecting to BigQuery
-
-1. Launch the application 
-2. Click "Configure Connection" in the header
-3. Enter your GCP Project ID
-4. Select authentication method:
-   - **Service Account Key**: Provide path to JSON key file or paste key content
-   - **Application Default Credentials**: Uses your local gcloud credentials
-5. Click "Connect"
-
-### Executing Queries
-
-1. Type your SQL query in the editor
-2. Click "Execute" or press Cmd/Ctrl+Enter
-3. View results in the table below
-4. Use "Cancel" to stop a running query
-5. Format your SQL with Cmd/Ctrl+Shift+F
-
-### Browsing Datasets
-
-1. Connect to BigQuery
-2. Browse datasets in the left sidebar
-3. Click a dataset to expand and view tables
-4. Right-click a table for options:
-   - **Open in new tab**: Generate a SELECT * query
-   - **View Schema**: Open schema details in sidebar
-   - **View Sample Data**: Preview table contents
-   - **View Definition**: See SQL for views
-
-### Managing Tabs
-
-- Click "+" button to create a new tab
-- Click on a tab to switch between queries
-- Drag tabs to reorder them
-- Click "×" on a tab to close it
-- Modified tabs show a blue dot indicator
-- Use Cmd/Ctrl+1-9 to quickly switch tabs
-
-### Saving Queries
-
-1. Write your query in the editor
-2. Click "Save" button
-3. Enter a name and optional description
-4. Click "Save" to persist the query
-
-### Loading Saved Queries
-
-1. Switch to "SAVED QUERIES" view in the sidebar
-2. Search or browse your saved queries
-3. Click a query to load it in a new tab
-4. Right-click for additional options
-
-## Keyboard Shortcuts
-
-| Action | macOS | Windows/Linux |
-|--------|-------|---------------|
-| New Tab | Cmd+T | Ctrl+T |
-| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
-| Execute Query | Cmd+Enter | Ctrl+Enter |
-| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
-| Show Help | Cmd+? | Ctrl+? |
-| Quit | Cmd+Q | Alt+F4 |
-
-## Project Structure
-
-```
-src/
-├── main/           # Electron main process
-│   ├── ipc/        # IPC handlers
-│   └── storage/    # Local storage
-├── renderer/       # React renderer process
-│   ├── components/ # UI components
-│   ├── hooks/      # React hooks
-│   └── stores/     # State management
-└── shared/         # Shared types/utilities
-```
-
-## Building for Production
-
-Build for your platform:
-```bash
-npm run package
-```
-
-Build for specific platforms:
-```bash
-npm run package:mac    # macOS
-npm run package:win    # Windows
-npm run package:linux  # Linux
-```
-
-## Donate
-
-If you find QueryForge useful, please consider supporting its development:
-
-![Donation QR Code](donation_qr.png)
-
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
-
-## License
-
-MIT
-````
-
-## File: src/main/ipc/bigquery.ts
+## File: src/renderer/components/QueryResults/CanvasTable.tsx
 ````typescript
-import { ipcMain } from 'electron';
-import { getBigQueryClient, getActiveConnection } from './connection';
-import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
-import { BigQueryErrorCode } from '../../shared/types/bigquery';
-import { saveResults, createStreamingSaver } from '../storage/results-cache-sqlite';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
+import { ColumnSortMenu } from './ColumnSortMenu';
 
-/**
- * Serializes a value to ensure it can be cloned and sent through IPC.
- * Handles Date objects, BigNumber objects, Buffers, and nested structures.
- * Uses a WeakSet to track visited objects to prevent circular reference issues.
- * @param value - The value to serialize
- * @param visited - WeakSet to track visited objects (for circular reference detection)
- * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
- */
-function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
-  // Normalize column type early so it's available throughout the function
-  const normalizedColumnType = columnType?.toUpperCase() || '';
-  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
-                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
-  
-  // Handle null and undefined
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
-  // These objects have a 'value' property containing the string representation
-  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it's a BigQuery date/time object with a 'value' property
-    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
-    if ('value' in value && typeof value.value === 'string') {
-      const valueStr = value.value;
-      // Verify it looks like a date/time string
-      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
-          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-        return valueStr;
-      }
-    }
-  }
-
-  // Handle Date objects - convert to ISO string
-  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
-  if (value instanceof Date) {
-    // Check if it's a valid date
-    if (isNaN(value.getTime())) {
-      return null; // Invalid dates become null
-    }
-    // Format based on column type if available
-    if (normalizedColumnType === 'DATE') {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (normalizedColumnType === 'TIME') {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (normalizedColumnType === 'DATETIME') {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    // Default: ISO string for TIMESTAMP or unknown
-    return value.toISOString();
-  }
-  
-  // CRITICAL: Check for Date-like objects BEFORE general object handling
-  // BigQuery might return Date objects that aren't instanceof Date
-  // Check for objects with Date-like methods or properties
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
-    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-      try {
-        // Try to convert to Date
-        let date: Date | null = null;
-        if (typeof value.getTime === 'function') {
-          const time = value.getTime();
-          if (typeof time === 'number' && !isNaN(time)) {
-            date = new Date(time);
-          }
-        } else if (typeof value.toISOString === 'function') {
-          const isoStr = value.toISOString();
-          date = new Date(isoStr);
-        }
-        
-        if (date && !isNaN(date.getTime())) {
-          // Format based on column type
-          if (normalizedColumnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            const ms = date.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return date.toISOString();
-        }
-      } catch {
-        // If conversion fails, continue with normal handling
-      }
-    }
-  }
-
-  // Handle Buffer objects - convert to base64 string
-  if (Buffer.isBuffer(value)) {
-    return value.toString('base64');
-  }
-
-  // Handle BigNumber-like objects (from @google-cloud/bigquery)
-  // Check for common BigNumber properties
-  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
-    // Check if it's a BigNumber by looking for valueOf or toNumber methods
-    if ('valueOf' in value || 'toNumber' in value) {
-      try {
-        // Try to convert to number first, fallback to string
-        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
-        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
-          return numValue;
-        }
-        return String(value);
-      } catch {
-        return String(value);
-      }
-    }
-  }
-
-  // Handle arrays - recursively serialize each element
-  if (Array.isArray(value)) {
-    return value.map((item) => serializeValue(item, visited, columnType));
-  }
-
-  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
-  // BigQuery may return these as objects with special properties or methods
-  // This must come after array check but before general object handling
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
-    // BigQuery might return DATE as objects in various formats
-    if (isDateType) {
-      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
-      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
-      // This check should be very lenient - just check if 'value' exists and is a string
-      if ('value' in value) {
-        const innerValue = value.value;
-        // If inner value is a string, return it directly (this is the most common case)
-        if (typeof innerValue === 'string') {
-          return innerValue;
-        }
-        // If inner value is a Date, convert to ISO string
-        if (innerValue instanceof Date) {
-          if (normalizedColumnType === 'DATE') {
-            return innerValue.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
-            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
-            const ms = innerValue.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return innerValue.toISOString();
-        }
-        // Recursively serialize the inner value
-        return serializeValue(innerValue, visited, columnType);
-      }
-      
-      // Check for BigQuery Date object structure - might have year, month, day properties
-      if ('year' in value || 'month' in value || 'day' in value) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        if (normalizedColumnType === 'DATE') {
-          return `${year}-${month}-${day}`;
-        }
-        // For DATETIME/TIMESTAMP, check for time components
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        if (normalizedColumnType === 'DATETIME') {
-          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      
-      // Check for TIME object structure
-      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      
-      // For any other object structure for DATE/TIME, try to extract a string value
-      // Check all properties for date-like strings
-      const objKeys = Object.keys(value);
-      for (const key of objKeys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-      
-      // If we can't extract a date string, return a placeholder instead of serializing to {}
-      return '[Invalid Date Object]';
-    }
-    
-    // For non-date types, check if it's a BigQuery date object with a value property
-    if ('value' in value && Object.keys(value).length === 1) {
-      const innerValue = value.value;
-      // If inner value is a string that looks like a date, return it
-      if (typeof innerValue === 'string') {
-        return innerValue;
-      }
-      // If inner value is a Date, convert to ISO string
-      if (innerValue instanceof Date) {
-        return innerValue.toISOString();
-      }
-      // Recursively serialize the inner value
-      return serializeValue(innerValue, visited, columnType);
-    }
-    
-    // For DATE/TIME columns, try toString() first before checking properties
-    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-            return str;
-          }
-        }
-      } catch {
-        // Continue with property checking if toString fails
-      }
-      
-      // Also check if any property value is a date-like string
-      const keys = Object.keys(value);
-      for (const key of keys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-    }
-    
-    // Check for date-like objects with year/month/day properties
-    if ('year' in value && 'month' in value && 'day' in value) {
-      const year = value.year;
-      const month = String(value.month ?? 1).padStart(2, '0');
-      const day = String(value.day ?? 1).padStart(2, '0');
-      // Check if it also has time components (DATETIME/TIMESTAMP)
-      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      // Just date components (DATE)
-      return `${year}-${month}-${day}`;
-    }
-    
-    // Check for time-only objects (TIME)
-    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
-        !('year' in value || 'month' in value || 'day' in value)) {
-      const hours = String(value.hours ?? 0).padStart(2, '0');
-      const minutes = String(value.minutes ?? 0).padStart(2, '0');
-      const seconds = String(value.seconds ?? 0).padStart(2, '0');
-      const ms = value.milliseconds ?? 0;
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    
-    // Try to call toString() if it exists and might give us a useful string
-    // (Only if we haven't already tried it above for date types)
-    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        // If toString gives us something useful (not [object Object]), use it
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
-            return str;
-          }
-        }
-      } catch {
-        // Ignore toString errors
-      }
-    }
-  }
-
-  // Handle objects - recursively serialize each property
-  if (typeof value === 'object') {
-    // Check for circular references
-    if (visited.has(value)) {
-      return '[Circular]';
-    }
-    visited.add(value);
-
-    try {
-      // Check if it's a plain object (not a class instance)
-      const proto = Object.getPrototypeOf(value);
-      if (proto === null || proto === Object.prototype) {
-        // For DATE/TIME columns, be very aggressive about converting objects to strings
-        if (isDateType) {
-          // Try toString() first
-          if ('toString' in value && typeof value.toString === 'function') {
-            try {
-              const str = value.toString();
-              if (str && str !== '[object Object]' && typeof str === 'string') {
-                // Check if it looks like a date/time string
-                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-                  return str;
-                }
-              }
-            } catch {
-              // Continue with property checking if toString fails
-            }
-          }
-          
-          // Check all properties for date-like strings
-          const keys = Object.keys(value);
-          for (const key of keys) {
-            const propValue = value[key];
-            if (typeof propValue === 'string') {
-              // Check if it looks like a date/time string
-              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                return propValue;
-              }
-            }
-            // If property is a Date, convert it
-            if (propValue instanceof Date) {
-              if (normalizedColumnType === 'DATE') {
-                return propValue.toISOString().split('T')[0];
-              }
-              return propValue.toISOString();
-            }
-          }
-          
-          // If we still haven't found a date string, try JSON.stringify to extract it
-          try {
-            const jsonStr = JSON.stringify(value);
-            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
-            if (dateMatch) {
-              const dateStr = dateMatch[1];
-              if (normalizedColumnType === 'DATE') {
-                return dateStr.split('T')[0]; // Just the date part
-              }
-              return dateStr.replace('T', ' ').replace(/Z$/, '');
-            }
-            // Also try to find any date-like string in the JSON
-            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
-            for (const match of allDateMatches) {
-              const dateStr = match[1];
-              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
-                return dateStr;
-              }
-              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
-                return dateStr.replace('T', ' ').replace(/Z$/, '');
-              }
-            }
-          } catch {
-            // JSON.stringify failed, continue with normal serialization
-          }
-          
-          // Last resort for DATE columns: convert object to string representation
-          // This prevents [object Object] from being sent through IPC
-          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
-              normalizedColumnType === 'TIMESTAMP') {
-            // Try to create a meaningful string from the object
-            const keys = Object.keys(value);
-            if (keys.length === 0) {
-              return '[Empty Date Object]';
-            }
-            // Return first property value if it's a string or number
-            const firstKey = keys[0];
-            const firstValue = value[firstKey];
-            if (typeof firstValue === 'string') {
-              return firstValue;
-            }
-            if (typeof firstValue === 'number') {
-              // Try to interpret as date
-              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
-              if (!isNaN(date.getTime())) {
-                if (normalizedColumnType === 'DATE') {
-                  return date.toISOString().split('T')[0];
-                }
-                return date.toISOString();
-              }
-            }
-            // Return object structure as string
-            return `{${keys.slice(0, 2).join(', ')}}`;
-          }
-        } else {
-          // For non-date types, check if this might be a date-like object
-          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
-          const keys = Object.keys(value);
-          // If object has very few keys and one looks date-like, try toString first
-          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
-            try {
-              const str = value.toString();
-              if (str && str !== '[object Object]' && typeof str === 'string') {
-                // Check if it looks like a date/time string
-                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
-                  return str;
-                }
-              }
-            } catch {
-              // Continue with normal serialization if toString fails
-            }
-          }
-        }
-        
-        const serialized: any = {};
-        for (const key in value) {
-          if (Object.prototype.hasOwnProperty.call(value, key)) {
-            serialized[key] = serializeValue(value[key], visited, columnType);
-          }
-        }
-        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
-        // This prevents empty objects from being stored and later displayed as "[object Object]"
-        if (Object.keys(serialized).length === 0 && isDateType) {
-          return '[Invalid Date]';
-        }
-        return serialized;
-      } else {
-        // For non-plain objects (class instances), try to serialize
-        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
-        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
-        if (value instanceof Date) {
-          if (isNaN(value.getTime())) {
-            return null;
-          }
-          if (normalizedColumnType === 'DATE') {
-            return value.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(value.getUTCHours()).padStart(2, '0');
-            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-            const ms = value.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return value.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return value.toISOString();
-        }
-        
-        // Check for Date-like objects (objects with Date methods)
-        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-          try {
-            let date: Date | null = null;
-            if (typeof value.getTime === 'function') {
-              const time = value.getTime();
-              if (typeof time === 'number' && !isNaN(time)) {
-                date = new Date(time);
-              }
-            } else if (typeof value.toISOString === 'function') {
-              const isoStr = value.toISOString();
-              date = new Date(isoStr);
-            }
-            
-            if (date && !isNaN(date.getTime())) {
-              if (normalizedColumnType === 'DATE') {
-                return date.toISOString().split('T')[0];
-              }
-              if (normalizedColumnType === 'TIME') {
-                const hours = String(date.getUTCHours()).padStart(2, '0');
-                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-                const ms = date.getUTCMilliseconds();
-                if (ms > 0) {
-                  const msStr = String(ms).padStart(3, '0');
-                  return `${hours}:${minutes}:${seconds}.${msStr}`;
-                }
-                return `${hours}:${minutes}:${seconds}`;
-              }
-              if (normalizedColumnType === 'DATETIME') {
-                return date.toISOString().replace('T', ' ').slice(0, 19);
-              }
-              return date.toISOString();
-            }
-          } catch {
-            // If conversion fails, continue with normal serialization
-          }
-        }
-        
-        // First try JSON.stringify/parse which handles most cases
-        // BUT: This will convert Date objects to {}, so we check for Dates above
-        try {
-          const jsonStr = JSON.stringify(value);
-          // Check if JSON.stringify produced an empty object for a date type
-          // This happens when Date objects are stringified
-          if (jsonStr === '{}' && isDateType) {
-            // This is likely a Date object that was stringified to {}
-            return '[Invalid Date]';
-          }
-          return JSON.parse(jsonStr);
-        } catch {
-          // If JSON serialization fails (e.g., circular refs, functions),
-          // try to extract enumerable properties
-          const serialized: any = {};
-          for (const key in value) {
-            if (Object.prototype.hasOwnProperty.call(value, key)) {
-              serialized[key] = serializeValue(value[key], visited, columnType);
-            }
-          }
-          // If we got nothing, check if it's a date type before converting to string
-          if (Object.keys(serialized).length === 0 && isDateType) {
-            return '[Invalid Date]';
-          }
-          // If we got nothing, convert to string as last resort
-          return Object.keys(serialized).length > 0 ? serialized : String(value);
-        }
-      }
-    } catch (error) {
-      // If anything goes wrong, check if it's a Date object before converting to string
-      // This prevents [object Object] from being returned for Date objects
-      if (value instanceof Date) {
-        if (isNaN(value.getTime())) {
-          return null;
-        }
-        if (normalizedColumnType === 'DATE') {
-          return value.toISOString().split('T')[0];
-        }
-        if (normalizedColumnType === 'TIME') {
-          const hours = String(value.getUTCHours()).padStart(2, '0');
-          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-          const ms = value.getUTCMilliseconds();
-          if (ms > 0) {
-            const msStr = String(ms).padStart(3, '0');
-            return `${hours}:${minutes}:${seconds}.${msStr}`;
-          }
-          return `${hours}:${minutes}:${seconds}`;
-        }
-        if (normalizedColumnType === 'DATETIME') {
-          return value.toISOString().replace('T', ' ').slice(0, 19);
-        }
-        return value.toISOString();
-      }
-      // For date types, return a placeholder instead of [object Object]
-      if (isDateType && typeof value === 'object' && value !== null) {
-        return '[Invalid Date]';
-      }
-      // Last resort: convert to string
-      return String(value);
-    }
-  }
-
-  // For primitives (string, number, boolean), return as-is
-  return value;
-}
-
-// Helper function to transform raw BigQuery rows to our Row format
-function transformRows(rows: any[], columns: ColumnMetadata[]): Row[] {
-  return rows.map((row: any) => ({
-    values: columns.map((col) => {
-      const value = row[col.name];
-      
-      // Pass column type to serializeValue to help with date/time serialization
-      let serialized = serializeValue(value, new WeakSet(), col.type);
-      
-      // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
-      const colTypeUpper = (col.type || '').toUpperCase();
-      if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
-          colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
-        if (typeof serialized === 'object' && serialized !== null) {
-          const keys = Object.keys(serialized);
-          for (const key of keys) {
-            const propValue = serialized[key];
-            if (typeof propValue === 'string') {
-              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                serialized = propValue;
-                break;
-              }
-            }
-          }
-          if (typeof serialized === 'object' && serialized !== null) {
-            serialized = '[Invalid Date]';
-          }
-        }
-        if (typeof serialized === 'string' && serialized === '[object Object]') {
-          serialized = '[Invalid Date]';
-        }
-        if (typeof serialized !== 'string') {
-          if (serialized === null || serialized === undefined) {
-            serialized = '[Invalid Date]';
-          } else {
-            serialized = String(serialized);
-            if (serialized === '[object Object]') {
-              serialized = '[Invalid Date]';
-            }
-          }
-        }
-      }
-      
-      return serialized;
-    }),
-  }));
-}
-
-export function registerBigQueryHandlers(): void {
-  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string, tabId?: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    // Get the sender's webContents for streaming updates
-    const sender = _event.sender;
-
-    try {
-      const startTime = Date.now();
-
-      // Get location from active connection, default to EU
-      const connection = getActiveConnection();
-      const location = connection?.location || 'EU';
-
-      // Create query job
-      const [job] = await client.createQueryJob({
-        query: queryText,
-        location,
-      });
-
-      // Wait for the job to complete first
-      const [jobResult] = await job.getMetadata();
-      
-      // Poll until job is done (getQueryResults should do this, but let's be explicit)
-      if (jobResult.status?.state !== 'DONE') {
-        await job.promise(); // This waits for the job to complete
-      }
-
-      // Get job metadata early to get schema and total row count
-      const [jobMetadata] = await job.getMetadata();
-      
-      // Get schema from job metadata
-      let schema = jobMetadata.configuration?.query?.schema || 
-                   jobMetadata.statistics?.query?.schema ||
-                   jobMetadata.schema;
-
-      // Build columns from schema
-      let columns: ColumnMetadata[] = [];
-      if (schema?.fields && schema.fields.length > 0) {
-        columns = schema.fields.map((field: any) => ({
-          name: field.name,
-          type: field.type,
-          mode: field.mode,
-        }));
-      }
-
-      // Fetch first page of results
-      const [firstPageRows, firstNextQuery] = await job.getQueryResults({ maxResults: 10000 });
-      const hasMorePages = !!firstNextQuery?.pageToken;
-      
-      // Get total row count from multiple possible sources:
-      // 1. Query results metadata (firstNextQuery.totalRows) - most reliable for SELECT queries
-      // 2. Job statistics (query.numDmlAffectedRows) - for DML queries
-      // 3. Fall back to first page length if neither available (will be updated after fetching all pages)
-      const queryMetadata = firstNextQuery as any;
-      const jobStats = jobMetadata.statistics as any;
-      
-      const totalRowCount = queryMetadata?.totalRows 
-        ? parseInt(String(queryMetadata.totalRows), 10) 
-        : (jobStats?.query?.numDmlAffectedRows 
-          ? parseInt(String(jobStats.query.numDmlAffectedRows), 10)
-          : undefined);
-
-      // If no schema from metadata, extract from first row
-      if (columns.length === 0 && firstPageRows.length > 0) {
-        const firstRow = firstPageRows[0];
-        columns = Object.keys(firstRow).map((key) => {
-          const value = firstRow[key];
-          let type = 'STRING';
-          if (typeof value === 'number') {
-            type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
-          } else if (typeof value === 'boolean') {
-            type = 'BOOLEAN';
-          } else if (value instanceof Date) {
-            type = 'TIMESTAMP';
-          } else if (Array.isArray(value)) {
-            type = 'ARRAY';
-          } else if (value && typeof value === 'object') {
-            type = 'RECORD';
-          }
-          return { name: key, type, mode: 'NULLABLE' };
-        });
-      }
-
-      const executionTimeMs = Date.now() - startTime;
-      const bytesProcessed = parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10);
-
-      // Transform first page rows
-      const transformedFirstPage = transformRows(firstPageRows, columns);
-
-      // Build initial result with first page
-      // Use totalRowCount from BigQuery metadata if available (gives accurate count immediately)
-      // Otherwise fall back to first page length (will be updated after fetching all pages)
-      const initialResult: QueryResult = {
-        columns,
-        rows: transformedFirstPage,
-        totalRows: totalRowCount ?? transformedFirstPage.length,
-        rowsReturned: transformedFirstPage.length,
-        executionTimeMs,
-        bytesProcessed,
-        jobId: job.id || '',
-        hasMore: hasMorePages,
-      };
-
-      // If there are more pages, fetch them in background and send updates
-      // With SQLite-backed cache, we can handle much larger datasets
-      // 500,000 rows is a good balance between usefulness and fetch time (~1-2 min)
-      const MAX_ROWS = 500000;
-      
-      // Save first page to SQLite immediately if we have a tabId
-      if (tabId) {
-        saveResults(tabId, initialResult);
-      }
-      
-      if (hasMorePages) {
-        // Start background fetch - don't await, let it run async
-        (async () => {
-          try {
-            let pageToken = firstNextQuery?.pageToken;
-            let allRows = [...firstPageRows];
-            let pageCount = 1;
-            
-            // Fetch additional pages up to the max limit
-            while (pageToken && allRows.length < MAX_ROWS) {
-              const [rows, nextQuery] = await job.getQueryResults({ 
-                maxResults: 10000, 
-                pageToken 
-              });
-              allRows.push(...rows);
-              pageToken = nextQuery?.pageToken;
-              pageCount++;
-              
-              // Only send lightweight progress updates during fetching (no row data)
-              sender.send('bigquery:progress', {
-                jobId: job.id,
-                rowsFetched: allRows.length,
-                isComplete: false,
-                message: totalRowCount 
-                  ? `Loading... ${allRows.length.toLocaleString()} of ${Math.min(totalRowCount, MAX_ROWS).toLocaleString()} rows`
-                  : `Loading... ${allRows.length.toLocaleString()} rows`,
-              });
-              
-              // Stop if we've reached the max
-              if (allRows.length >= MAX_ROWS) {
-                break;
-              }
-            }
-            
-            // Transform all rows only once at the end
-            const transformedRows = transformRows(allRows, columns);
-            
-            // Determine if there are more rows than we fetched
-            const hitLimit = allRows.length >= MAX_ROWS && !!pageToken;
-            const actualTotalRows = totalRowCount ?? transformedRows.length;
-            
-            // Save complete results to SQLite cache (this is fast!)
-            if (tabId) {
-              const completeResult: QueryResult = {
-                columns,
-                rows: transformedRows,
-                totalRows: actualTotalRows,
-                rowsReturned: transformedRows.length,
-                executionTimeMs,
-                bytesProcessed,
-                jobId: job.id || '',
-                hasMore: hitLimit,
-              };
-              saveResults(tabId, completeResult);
-            }
-            
-            // Send lightweight notification that more rows are available
-            // No row data over IPC - renderer will read from SQLite cache
-            sender.send('bigquery:rows-update', {
-              jobId: job.id,
-              columns,
-              rows: [], // Don't send rows over IPC - they're in SQLite
-              totalRows: actualTotalRows,
-              rowsReturned: transformedRows.length,
-              executionTimeMs,
-              bytesProcessed,
-              hasMore: hitLimit, // True if we hit the limit
-              message: hitLimit 
-                ? `Showing ${transformedRows.length.toLocaleString()} of ${actualTotalRows.toLocaleString()} rows (limited to ${MAX_ROWS.toLocaleString()})`
-                : `Complete: ${transformedRows.length.toLocaleString()} rows`,
-            });
-          } catch (err) {
-            console.error('[BigQuery] Background fetch error:', err);
-            sender.send('bigquery:rows-error', {
-              jobId: job.id,
-              error: (err as Error).message || 'Failed to fetch additional rows',
-            });
-          }
-        })();
-      }
-
-      return initialResult;
-    } catch (error: any) {
-      console.error(`[BigQuery] Query execution error:`, error);
-      
-      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-        const err = new Error('Network error: Unable to connect to BigQuery');
-        (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      if (error.code === 403 || error.code === 401) {
-        const err = new Error('Authentication error');
-        (err as any).code = BigQueryErrorCode.AUTH_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      
-      // Extract error message from BigQuery error
-      let errorMessage = error.message || 'Query execution failed';
-      
-      // If error has details array, try to extract message from first detail
-      if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
-        const firstError = error.errors[0];
-        if (firstError.message) {
-          errorMessage = firstError.message;
-        } else if (typeof firstError === 'string') {
-          errorMessage = firstError;
-        }
-      }
-      
-      const err = new Error(errorMessage);
-      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-      (err as any).details = error.errors || error;
-      throw err;
-    }
-  });
-
-  ipcMain.handle('bigquery:cancel', async (_event, jobId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const job = client.job(jobId);
-      await job.cancel();
-    } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.JOB_NOT_FOUND,
-          message: 'Job not found or already completed',
-        };
-      }
-      throw {
-        code: BigQueryErrorCode.CANCEL_FAILED,
-        message: 'Failed to cancel job',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('bigquery:listDatasets', async () => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const [datasets] = await client.getDatasets();
-      return datasets.map((dataset) => ({
-        id: dataset.id,
-        name: dataset.id,
-        location: dataset.metadata?.location || 'US',
-      }));
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to list datasets',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  ipcMain.handle('bigquery:listTables', async (_event, datasetId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const dataset = client.dataset(datasetId);
-      const [tables] = await dataset.getTables();
-      return tables.map((table) => ({
-        id: table.id,
-        name: table.id,
-        type: table.metadata?.type || 'TABLE',
-      }));
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to list tables',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  // Wrap handler to suppress error logging for table not found errors
-  ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
-    try {
-      return await (async () => {
-        const client = getBigQueryClient();
-        if (!client) {
-          throw {
-            code: BigQueryErrorCode.CONNECTION_FAILED,
-            message: 'No active BigQuery connection',
-          };
-        }
-
-        try {
-          const table = client.dataset(datasetId).table(tableId);
-          const [metadata] = await table.getMetadata();
-          
-          // Extract schema fields
-          const schema = metadata.schema;
-          if (!schema || !schema.fields) {
-            return {
-              fields: [],
-            };
-          }
-
-          // Recursively transform fields to include nested structures
-          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
-            const result: ColumnMetadata & { fields?: any[] } = {
-              name: field.name,
-              type: field.type,
-              mode: field.mode || 'NULLABLE',
-            };
-            
-            if (field.fields && field.fields.length > 0) {
-              result.fields = field.fields.map(transformField);
-            }
-            
-            return result;
-          };
-
-          // Extract table metadata
-          // BigQuery timestamps are in milliseconds, can be string or number
-          const creationTime = metadata.creationTime 
-            ? (typeof metadata.creationTime === 'string' 
-                ? parseInt(metadata.creationTime, 10) 
-                : metadata.creationTime)
-            : undefined;
-          const lastModifiedTime = metadata.lastModifiedTime
-            ? (typeof metadata.lastModifiedTime === 'string'
-                ? parseInt(metadata.lastModifiedTime, 10)
-                : metadata.lastModifiedTime)
-            : undefined;
-          const numRows = metadata.numRows
-            ? (typeof metadata.numRows === 'string'
-                ? parseInt(metadata.numRows, 10)
-                : metadata.numRows)
-            : undefined;
-          const numBytes = metadata.numBytes
-            ? (typeof metadata.numBytes === 'string'
-                ? parseInt(metadata.numBytes, 10)
-                : metadata.numBytes)
-            : undefined;
-
-          return {
-            fields: schema.fields.map(transformField),
-            metadata: {
-              creationTime,
-              lastModifiedTime,
-              numRows,
-              numBytes,
-            },
-          };
-        } catch (error: any) {
-          if (error.code === 404) {
-            // Create error but suppress Electron's automatic logging for table not found errors
-            // These errors are handled in the UI and don't need to be logged
-            const err = new Error('Table not found');
-            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-            (err as any).details = error.message;
-            // Mark error to suppress logging
-            (err as any).suppressLogging = true;
-            throw err;
-          }
-          const err = new Error(error.message || 'Failed to get table schema');
-          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-          (err as any).details = error.errors || error;
-          throw err;
-        }
-      })();
-    } catch (error: any) {
-      // Suppress Electron's automatic error logging for table not found errors
-      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
-          error?.message === 'Table not found') {
-        // Re-throw without Electron logging by using a custom error handler
-        // Electron will still pass the error to the renderer, but won't log it
-        const err = new Error('Table not found');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        (err as any).details = error.details || error.message;
-        // Use a custom property to signal this shouldn't be logged
-        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
-        throw err;
-      }
-      // Re-throw other errors normally
-      throw error;
-    }
-  });
-
-  ipcMain.handle('bigquery:getViewDefinition', async (_event, datasetId: string, tableId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const table = client.dataset(datasetId).table(tableId);
-      const [metadata] = await table.getMetadata();
-      
-      // Check if this is actually a view
-      if (metadata.type !== 'VIEW' && metadata.type !== 'MATERIALIZED_VIEW') {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'Table is not a view',
-        };
-      }
-
-      // Get view definition from metadata
-      // For regular views: metadata.view.query
-      // For materialized views: metadata.materializedView.query
-      let viewDefinition = '';
-      if (metadata.type === 'VIEW' && metadata.view) {
-        viewDefinition = metadata.view.query || '';
-      } else if (metadata.type === 'MATERIALIZED_VIEW' && metadata.materializedView) {
-        viewDefinition = metadata.materializedView.query || '';
-      }
-      
-      if (!viewDefinition) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'View definition not found',
-        };
-      }
-
-      return {
-        definition: viewDefinition,
-      };
-    } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'View not found',
-          details: error.message,
-        };
-      }
-      if (error.code) {
-        throw error;
-      }
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to get view definition',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  /**
-   * Perform a dry run of a query to estimate bytes processed without executing.
-   * This uses BigQuery's native dry run feature which accounts for:
-   * - Column selection (only selected columns count)
-   * - Partitioning (only scanned partitions count)
-   * - Clustering benefits
-   * - Query optimization
-   */
-  ipcMain.handle('bigquery:dryRun', async (_event, queryText: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      // Get location from active connection, default to EU
-      const connection = getActiveConnection();
-      const location = connection?.location || 'EU';
-
-      // Create a dry run query job - this validates and estimates without executing
-      // For dry runs, the job is not actually created in BigQuery, so we can't call getMetadata()
-      // The statistics are returned directly in job.metadata
-      const [job] = await client.createQueryJob({
-        query: queryText,
-        location,
-        dryRun: true,
-      });
-
-      // For dry runs, metadata is available directly on the job object
-      // Don't call getMetadata() as dry run jobs don't actually exist in BigQuery
-      const metadata = job.metadata;
-      
-      // totalBytesProcessed is in statistics
-      const totalBytesProcessed = parseInt(
-        metadata?.statistics?.totalBytesProcessed || '0', 
-        10
-      );
-
-      return {
-        totalBytesProcessed,
-        // Include additional useful statistics if available
-        cacheHit: metadata?.statistics?.query?.cacheHit || false,
-        statementType: metadata?.statistics?.query?.statementType || null,
-      };
-    } catch (error: any) {
-      // Electron IPC requires Error objects with message property to serialize properly
-      // Plain objects thrown will appear as [object Object]
-      
-      // Handle specific BigQuery errors
-      if (error.code === 404) {
-        const err = new Error('Table not found');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      
-      // Handle syntax errors and other query errors
-      // BigQuery errors include location info (line, column) which we pass through
-      if (error.errors && error.errors.length > 0) {
-        const firstError = error.errors[0];
-        const err = new Error(firstError.message || 'Query validation failed');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        // Include location info if available
-        if (firstError.location) {
-          (err as any).location = {
-            line: firstError.location.line,
-            column: firstError.location.column,
-          };
-        }
-        (err as any).details = JSON.stringify(error.errors);
-        throw err;
-      }
-      
-      const err = new Error(error.message || 'Dry run failed');
-      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-      (err as any).details = error.errors ? JSON.stringify(error.errors) : String(error);
-      throw err;
-    }
-  });
-}
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { registerExportHandlers } from './ipc/export';
-import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
+// Helper to read CSS custom property values
+const getCSSVar = (name: string): string => {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 };
 
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-registerExportHandlers();
-registerQueryHistoryHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
+// Theme colors derived from CSS variables
+const getThemeColors = () => ({
+  bgColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  headerBgColor: getCSSVar('--bg-tertiary') || '#2d2d30',
+  borderColor: getCSSVar('--border-primary') || '#3e3e42',
+  textColor: getCSSVar('--text-primary') || '#cccccc',
+  headerTextColor: getCSSVar('--text-primary') || '#cccccc',
+  hoverColor: getCSSVar('--bg-hover') || '#2a2d2e',
+  evenRowColor: getCSSVar('--bg-secondary') || '#252526',
+  oddRowColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  accentColor: getCSSVar('--accent-primary') || '#007acc',
+  secondaryTextColor: getCSSVar('--text-secondary') || '#858585',
+  scrollbarThumb: getCSSVar('--bg-scrollbar-thumb') || '#424242',
+  scrollbarTrack: getCSSVar('--bg-scrollbar') || '#1e1e1e',
 });
 
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        {
-          label: 'Save Query',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => {
-            mainWindow?.webContents.send('menu:save-query');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
+interface CanvasTableProps {
+  results: QueryResult;
+  columnWidths: { [key: number]: number };
+  onColumnResize: (columnIndex: number, width: number) => void;
+  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
+  onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
+  formatValue: (value: any, columnType?: string, columnName?: string) => string;
+  currentPage: number;
+  rowsPerPage: number;
+  sortColumn: number | null;
+  sortDirection: 'asc' | 'desc' | null;
+  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
 }
 
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
+const ROW_HEIGHT = 24;
+const HEADER_HEIGHT = 28;
+const ROW_NUMBER_COLUMN_WIDTH = 80;
+const MIN_COLUMN_WIDTH = 50;
+const CELL_PADDING = 8;
+const RESIZE_HANDLE_WIDTH = 4;
+const SORT_ARROW_WIDTH = 16;
+const SORT_ARROW_HEIGHT = 16;
 
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
+export const CanvasTable: React.FC<CanvasTableProps> = ({
+  results,
+  columnWidths,
+  onColumnResize,
+  onRowContextMenu,
+  onColumnContextMenu,
+  formatValue,
+  currentPage,
+  rowsPerPage,
+  sortColumn,
+  sortDirection,
+  onSortColumn,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasOverlayRef = useRef<HTMLDivElement>(null);
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
+  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
   
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+  // Text selection state
+  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const selectionOverlayRef = useRef<HTMLDivElement>(null);
+  
+  // Sort menu state
+  const [sortMenu, setSortMenu] = useState<{
+    columnIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Results already contain only the current page rows (loaded from cache)
+  // Calculate startIndex for row numbering
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const paginatedRows = useMemo(() => {
+    // Results.rows already contains only the current page, so use it directly
+    return results.rows || [];
+  }, [results.rows]);
+
+  // Theme colors state - re-read when theme changes
+  const [themeColors, setThemeColors] = useState(getThemeColors);
+  
+  // Watch for theme changes via data-theme attribute
+  useEffect(() => {
+    const updateColors = () => {
+      setThemeColors(getThemeColors());
+    };
     
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
+    // Initial update
+    updateColors();
+    
+    // Watch for attribute changes on document.documentElement
+    const observer = new MutationObserver(updateColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
+
+  // Memory management: Limit cache size and clear when data changes significantly
+  const formattedCellsRef = useRef<Map<string, string>>(new Map());
+  const MAX_FORMATTED_CACHE_SIZE = 100000; // Limit to 10k cells to prevent memory issues
   
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
+  // Pre-format all cell values to avoid expensive formatting during render
+  // This is the key optimization - format values once when data changes, not on every render
+  const formattedCells = useMemo(() => {
+    const formatted = new Map<string, string>();
+    paginatedRows.forEach((row, rowIdx) => {
+      row.values.forEach((value, colIdx) => {
+        const column = results.columns[colIdx];
+        const key = `${rowIdx}-${colIdx}`;
+        // Only format if within cache size limit
+        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
+          formatted.set(key, formatValue(value, column?.type, column?.name));
+        }
       });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
+    });
+    // Update ref for cleanup tracking
+    formattedCellsRef.current = formatted;
+    return formatted;
+  }, [paginatedRows, results.columns, formatValue]);
   
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
+  // Clear caches when results change significantly (new jobId)
+  useEffect(() => {
+    formattedCellsRef.current.clear();
+    textMeasurementCache.current.clear();
+  }, [results.jobId]);
+
+  // Helper to get formatted value (with fallback for safety)
+  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
+    const key = `${rowIdx}-${colIdx}`;
+    const column = results.columns[colIdx];
+    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
+  }, [formattedCells, formatValue, results.columns]);
+
+  // Calculate column widths
+  const getColumnWidth = useCallback(
+    (columnIndex: number): number => {
+      if (columnIndex === -1) {
+        return columnWidths[-1] || ROW_NUMBER_COLUMN_WIDTH;
+      }
+      return columnWidths[columnIndex] || 150;
+    },
+    [columnWidths]
+  );
+
+  // Calculate total width - ensure it's at least as wide as viewport to enable scrolling
+  const totalWidth = useMemo(() => {
+    let width = getColumnWidth(-1);
+    results.columns.forEach((_, idx) => {
+      width += getColumnWidth(idx);
+    });
+    // Ensure minimum width to enable horizontal scrolling when content is wide
+    return Math.max(width, 100);
+  }, [results.columns, getColumnWidth]);
+
+  const totalHeight = HEADER_HEIGHT + paginatedRows.length * ROW_HEIGHT;
+
+  // Track container dimensions to determine if scrolling is needed
+  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
+
+  // Update container dimensions when it changes
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateDimensions = () => {
+      setContainerDimensions({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    };
+
+    updateDimensions();
+    const resizeObserver = new ResizeObserver(updateDimensions);
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  // Cache for text measurements to avoid repeated measureText calls
+  const textMeasurementCache = useRef<Map<string, number>>(new Map());
+  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  // Measure text width with caching
+  const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
+    // Update context ref if changed
+    if (measureTextContextRef.current !== ctx) {
+      measureTextContextRef.current = ctx;
+      // Clear cache when context changes (e.g., font changes)
+      textMeasurementCache.current.clear();
     }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
+
+    // Use cache key based on text content
+    const cacheKey = text;
+    if (textMeasurementCache.current.has(cacheKey)) {
+      return textMeasurementCache.current.get(cacheKey)!;
     }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+
+    const width = ctx.measureText(text).width;
+    // Limit cache size to prevent memory issues (keep last 1000 measurements)
+    if (textMeasurementCache.current.size > 1000) {
+      const firstKey = textMeasurementCache.current.keys().next().value;
+      if (firstKey !== undefined) {
+        textMeasurementCache.current.delete(firstKey);
+      }
+    }
+    textMeasurementCache.current.set(cacheKey, width);
+    return width;
+  }, []);
+
+  // Convert viewport coordinates to cell position
+  const getCellFromCoordinates = useCallback(
+    (x: number, y: number): { row: number; col: number } | null => {
+      // Don't allow selection in header
+      if (y < HEADER_HEIGHT) return null;
       
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
+      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+      if (row < 0 || row >= paginatedRows.length) return null;
+
+      // Find column
+      let currentX = 0;
+      
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        return { row, col: -1 };
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      for (let idx = 0; idx < results.columns.length; idx++) {
+        const colWidth = getColumnWidth(idx);
+        if (x >= currentX && x < currentX + colWidth) {
+          return { row, col: idx };
+        }
+        currentX += colWidth;
+      }
+
+      return null;
+    },
+    [paginatedRows.length, getColumnWidth, results.columns]
+  );
+
+  // Draw cell text with ellipsis - optimized with binary search for truncation
+  const drawCellText = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      text: string,
+      x: number,
+      y: number,
+      width: number,
+      color: string = '#cccccc',
+      align: 'left' | 'right' = 'left',
+      isNull: boolean = false
+    ) => {
+      ctx.fillStyle = isNull ? '#888888' : color;
+      ctx.font = isNull 
+        ? 'italic 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        : '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      const maxWidth = width - CELL_PADDING * 2;
+      const ellipsis = '...';
+      const ellipsisWidth = measureText(ellipsis, ctx);
+      
+      // Quick check - if text fits, draw it directly
+      const textWidth = measureText(text, ctx);
+      if (textWidth <= maxWidth) {
+        // Calculate x position based on alignment
+        const textX = align === 'right' 
+          ? x + width - CELL_PADDING - textWidth 
+          : x + CELL_PADDING;
+        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
         return;
       }
       
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
+      // Binary search for optimal truncation point (much faster than linear character-by-character)
+      let left = 0;
+      let right = text.length;
+      let bestFit = 0;
+      
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        const testText = text.substring(0, mid);
+        const testWidth = measureText(testText, ctx);
+        
+        if (testWidth + ellipsisWidth <= maxWidth) {
+          bestFit = mid;
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
       }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
+      
+      const truncated = text.substring(0, bestFit);
+      const truncatedWidth = measureText(truncated + ellipsis, ctx);
+      // Calculate x position based on alignment for truncated text
+      const truncatedX = align === 'right'
+        ? x + width - CELL_PADDING - truncatedWidth
+        : x + CELL_PADDING;
+      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
+    },
+    [measureText]
+  );
 
-// Set icon early
-setAppIcon();
+  // Render the canvas
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const container = containerRef.current;
+    const wrapper = wrapperRef.current;
+    if (!container || !wrapper) return;
+
+    // Get viewport size from the scrolling container (accounts for scrollbars)
+    // Use clientWidth/clientHeight which excludes scrollbar width
+    const containerWidth = Math.max(1, container.clientWidth);
+    const containerHeight = Math.max(1, container.clientHeight);
+    
+    // Early return if dimensions are invalid
+    if (containerWidth <= 0 || containerHeight <= 0) {
       return;
     }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    // Always set canvas size to match viewport exactly
+    const dpr = window.devicePixelRatio || 1;
+    const canvasWidth = Math.ceil(containerWidth * dpr);
+    const canvasHeight = Math.ceil(containerHeight * dpr);
+    
+    // Set canvas internal resolution and display size
+    // Only update if size actually changed to avoid unnecessary redraws
+    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
     }
-  });
-});
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerHeight}px`;
+    
+    // Update canvas overlay size to match canvas (excludes scrollbar area)
+    const canvasOverlay = canvasOverlayRef.current;
+    if (canvasOverlay) {
+      canvasOverlay.style.width = `${containerWidth}px`;
+      canvasOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Update selection overlay size to match container
+    const selectionOverlay = selectionOverlayRef.current;
+    if (selectionOverlay) {
+      selectionOverlay.style.width = `${containerWidth}px`;
+      selectionOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Reset transform and scale for high DPI
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
 
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+    // Clear canvas and fill with background color
+    ctx.fillStyle = themeColors.bgColor;
+    ctx.fillRect(0, 0, containerWidth, containerHeight);
 
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-  closeHistoryDatabase();
-});
-````
+    // Use theme colors
+    const { bgColor, headerBgColor, borderColor, textColor, headerTextColor, hoverColor, evenRowColor, oddRowColor, accentColor, secondaryTextColor } = themeColors;
 
-## File: src/main/preload.ts
-````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
+    // Calculate visible area - account for header height
+    // Only rows that would be visible below the header should be considered
+    // Add small buffer (2 rows) for smoother scrolling
+    const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
+    const bufferRows = 2;
+    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
+    const visibleEndRow = Math.min(
+      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
+      paginatedRows.length
+    );
 
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
+    // Calculate column positions (relative to scroll position)
+    let currentX = 0;
+    const columnPositions: { [key: number]: number } = {};
+    
+    // Row number column
+    columnPositions[-1] = currentX - scrollLeft;
+    currentX += getColumnWidth(-1);
 
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
+    results.columns.forEach((_, idx) => {
+      columnPositions[idx] = currentX - scrollLeft;
+      currentX += getColumnWidth(idx);
+    });
 
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
+    // Draw rows first - ensure they never draw above the header
+    for (let rowIdx = visibleStartRow; rowIdx < visibleEndRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
 
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
+      // Calculate row Y position relative to the canvas
+      const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+      const actualRowNumber = startIndex + rowIdx + 1;
+      
+      // Skip rows that would be drawn above or overlapping the header
+      if (rowY < HEADER_HEIGHT) continue;
 
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
+      // Row background
+      const isEven = rowIdx % 2 === 0;
+      const isHovered = hoveredRow === rowIdx;
+      ctx.fillStyle = isHovered ? hoverColor : isEven ? evenRowColor : oddRowColor;
+      ctx.fillRect(0, rowY, containerWidth, ROW_HEIGHT);
 
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
+      // Row number cell
+      const rowNumX = columnPositions[-1];
+      if (rowNumX + getColumnWidth(-1) > 0 && rowNumX < containerWidth) {
+        ctx.strokeStyle = borderColor;
+        ctx.beginPath();
+        ctx.moveTo(rowNumX + getColumnWidth(-1), rowY);
+        ctx.lineTo(rowNumX + getColumnWidth(-1), rowY + ROW_HEIGHT);
+        ctx.stroke();
 
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-  };
+        ctx.fillStyle = textColor;
+        drawCellText(
+          ctx,
+          actualRowNumber.toLocaleString(),
+          rowNumX,
+          rowY,
+          getColumnWidth(-1),
+          textColor,
+          'right' // Right-align row numbers
+        );
+      }
 
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
+      // Data cells - draw all columns that are at least partially visible
+      row.values.forEach((value, colIdx) => {
+        const colX = columnPositions[colIdx];
+        const colWidth = getColumnWidth(colIdx);
 
-  // Export operations
-  export: {
-    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
-  };
+        // Column is visible if any part of it is in the viewport
+        // Check if right edge is to the right of left edge of viewport AND
+        // left edge is to the left of right edge of viewport
+        if (colX + colWidth > 0 && colX < containerWidth) {
+          // Calculate visible portion of column
+          const visibleX = Math.max(0, colX);
+          const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
+          
+          // Draw vertical border on the right side of the cell
+          ctx.strokeStyle = borderColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(colX + colWidth, rowY);
+          ctx.lineTo(colX + colWidth, rowY + ROW_HEIGHT);
+          ctx.stroke();
 
-  // Query history
-  queryHistory: {
-    add(entry: QueryHistoryEntry): Promise<void>;
-    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
-    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
-    get(id: string): Promise<QueryHistoryEntry | undefined>;
-    delete(id: string): Promise<void>;
-    updateByJobId(jobId: string, totalRows: number): Promise<void>;
-    clear(): Promise<void>;
-    count(): Promise<number>;
-  };
-}
+          // Draw left border if column starts off-screen
+          if (colX < 0 && colIdx === 0) {
+            ctx.beginPath();
+            ctx.moveTo(0, rowY);
+            ctx.lineTo(0, rowY + ROW_HEIGHT);
+            ctx.stroke();
+          }
 
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string, tabId?: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:progress', handler);
-      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+          // Draw cell content - use pre-formatted value
+          const column = results.columns[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
+          const isNullValue = value === null || value === undefined;
+          ctx.fillStyle = textColor;
+          // Check if column is INTEGER type for right alignment
+          const columnType = (column?.type || '').toUpperCase();
+          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
+          const textAlign = isIntegerColumn ? 'right' : 'left';
+          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign, isNullValue);
+        }
+      });
+
+      // Draw bottom border
+      ctx.strokeStyle = borderColor;
+      ctx.beginPath();
+      ctx.moveTo(0, rowY + ROW_HEIGHT);
+      ctx.lineTo(containerWidth, rowY + ROW_HEIGHT);
+      ctx.stroke();
+    }
+
+    // Draw selection highlights
+    if (selectionStart && selectionEnd) {
+      const startRow = Math.min(selectionStart.row, selectionEnd.row);
+      const endRow = Math.max(selectionStart.row, selectionEnd.row);
+      const startCol = Math.min(selectionStart.col, selectionEnd.col);
+      const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+      // Only draw selection for visible rows
+      const visibleStart = Math.max(startRow, visibleStartRow);
+      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
+
+      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
+        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+        if (rowY < HEADER_HEIGHT) continue;
+
+        // Draw selection for each selected column in this row
+        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+          const colX = columnPositions[colIdx];
+          const colWidth = getColumnWidth(colIdx);
+
+          // Only draw if column is visible
+          if (colX + colWidth > 0 && colX < containerWidth) {
+            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
+            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
+          }
+        }
+      }
+    }
+
+    // Draw header last so it's always on top (fixed position)
+    // Draw header background
+    ctx.fillStyle = headerBgColor;
+    ctx.fillRect(0, 0, containerWidth, HEADER_HEIGHT);
+
+    // Draw header border
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, HEADER_HEIGHT);
+    ctx.lineTo(containerWidth, HEADER_HEIGHT);
+    ctx.stroke();
+
+    // Draw header cells
+    ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = headerTextColor;
+
+    // Row number header
+    const rowNumX = columnPositions[-1];
+    const rowNumWidth = getColumnWidth(-1);
+    // Check if column is visible (any part of it is in viewport)
+    if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
+      ctx.fillStyle = headerTextColor;
+      ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      // Draw header text at correct vertical position, right-aligned
+      const rowHeaderText = 'Row';
+      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
+      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
+      
+      // Draw resize handle
+      if (resizingColumn === -1 || hoveredColumn === -1) {
+        ctx.fillStyle = resizingColumn === -1 ? accentColor : `${accentColor}80`;
+        ctx.fillRect(
+          rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
+          0,
+          RESIZE_HANDLE_WIDTH,
+          HEADER_HEIGHT
+        );
+      }
+    }
+
+    // Column headers - draw all columns that are at least partially visible
+    results.columns.forEach((col, idx) => {
+      const colX = columnPositions[idx];
+      const colWidth = getColumnWidth(idx);
+
+      // Column is visible if any part of it is in the viewport
+      // Check if right edge is to the right of left edge of viewport AND
+      // left edge is to the left of right edge of viewport
+      if (colX + colWidth > 0 && colX < containerWidth) {
+        // Calculate visible portion of column
+        const visibleX = Math.max(0, colX);
+        const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
+        
+        // Draw vertical border on the right side of the header
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(colX + colWidth, 0);
+        ctx.lineTo(colX + colWidth, HEADER_HEIGHT);
+        ctx.stroke();
+
+        // Draw left border if column starts off-screen
+        if (colX < 0) {
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, HEADER_HEIGHT);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = headerTextColor;
+        ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        // Column headers are always left-aligned regardless of data type
+        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
+        
+        // Draw header text directly with proper alignment and truncation
+        // Reserve space for dropdown arrow
+        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
+        const textWidth = measureText(col.name, ctx);
+        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
+        
+        if (textWidth <= maxWidth) {
+          // Text fits - always left-aligned
+          const textX = colX + CELL_PADDING;
+          ctx.fillText(col.name, textX, headerTextY);
+        } else {
+          // Truncate with ellipsis
+          const ellipsis = '...';
+          const ellipsisWidth = measureText(ellipsis, ctx);
+          let truncated = col.name;
+          let truncatedWidth = textWidth;
+          
+          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
+            truncated = truncated.slice(0, -1);
+            truncatedWidth = measureText(truncated, ctx);
+          }
+          
+          const finalWidth = truncatedWidth + ellipsisWidth;
+          // Always left-aligned
+          const textX = colX + CELL_PADDING;
+          ctx.fillText(truncated + ellipsis, textX, headerTextY);
+        }
+        
+        // Draw dropdown arrow indicator (always visible)
+        ctx.fillStyle = sortColumn === idx ? accentColor : secondaryTextColor;
+        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const dropdownIcon = sortColumn === idx 
+          ? (sortDirection === 'asc' ? '↑' : '↓')
+          : '▼';
+        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
+        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
+
+        // Draw resize handle
+        if (resizingColumn === idx || hoveredColumn === idx) {
+          ctx.fillStyle = resizingColumn === idx ? accentColor : `${accentColor}80`;
+          const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
+          ctx.fillRect(
+            handleX,
+            0,
+            RESIZE_HANDLE_WIDTH,
+            HEADER_HEIGHT
+          );
+        }
+      }
+    });
+  }, [
+    paginatedRows,
+    results.columns,
+    scrollTop,
+    scrollLeft,
+    hoveredRow,
+    hoveredColumn,
+    resizingColumn,
+    getColumnWidth,
+    getFormattedValue,
+    startIndex,
+    drawCellText,
+    selectionStart,
+    selectionEnd,
+    themeColors,
+    sortColumn,
+    sortDirection,
+  ]);
+
+  // Handle scroll
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+    setScrollLeft(e.currentTarget.scrollLeft);
+    // Close sort menu when scrolling (position would be incorrect)
+    setSortMenu(null);
+  }, []);
+
+  // Handle mouse move
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      // Check if over header
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        // Check which column
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          foundColumn = -1;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        if (foundColumn === null) {
+          results.columns.forEach((_, idx) => {
+            const colWidth = getColumnWidth(idx);
+            if (x >= currentX && x < currentX + colWidth) {
+              foundColumn = idx;
+            }
+            currentX += colWidth;
+          });
+        }
+
+        setHoveredColumn(foundColumn);
+        setHoveredRow(null);
+
+        // Update cursor for resize or sort
+        if (foundColumn !== null) {
+          let colX = 0;
+          if (foundColumn === -1) {
+            colX = 0;
+          } else {
+            colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+          }
+          const colWidth = getColumnWidth(foundColumn);
+          const handleX = colX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+          
+          if (x >= handleX - 5 && x <= handleX + 5) {
+            container.style.cursor = 'col-resize';
+          } else if (foundColumn !== -1) {
+            // Show pointer cursor for data column headers (to indicate sortable)
+            container.style.cursor = 'pointer';
+          } else {
+            container.style.cursor = 'default';
+          }
+        } else {
+          container.style.cursor = 'default';
+        }
+      } else if (y >= HEADER_HEIGHT) {
+        // Check which row
+        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
+          setHoveredRow(rowIndex);
+        } else {
+          setHoveredRow(null);
+        }
+        setHoveredColumn(null);
+        container.style.cursor = 'default';
+      }
     },
-    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:rows-update', handler);
-      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
-    },
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
-    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    getRange: (tabId: string, startIndex: number, count: number) =>
-      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-    stats: () => ipcRenderer.invoke('results-cache:stats'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-    onToggleTheme: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:toggle-theme', handler);
-      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
-    },
-    onSaveQuery: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:save-query', handler);
-      return () => ipcRenderer.removeListener('menu:save-query', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-  export: {
-    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
-      ipcRenderer.invoke('export:saveFile', content, options),
-  },
-  queryHistory: {
-    add: (entry: QueryHistoryEntry) => ipcRenderer.invoke('query-history:add', entry),
-    list: (limit?: number, offset?: number) => ipcRenderer.invoke('query-history:list', limit, offset),
-    search: (searchTerm: string, limit?: number) => ipcRenderer.invoke('query-history:search', searchTerm, limit),
-    get: (id: string) => ipcRenderer.invoke('query-history:get', id),
-    delete: (id: string) => ipcRenderer.invoke('query-history:delete', id),
-    updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
-    clear: () => ipcRenderer.invoke('query-history:clear'),
-    count: () => ipcRenderer.invoke('query-history:count'),
-  },
-} as ElectronAPI);
+    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length]
+  );
 
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
+  // Handle mouse leave
+  const handleMouseLeave = useCallback(() => {
+    setHoveredRow(null);
+    setHoveredColumn(null);
+    const container = containerRef.current;
+    if (container) {
+      container.style.cursor = 'default';
+    }
+  }, []);
+
+  // Handle mouse down for resizing and selection
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // Don't handle right-click (context menu) - let handleContextMenu deal with it
+      if (e.button === 2) return;
+      
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      // Handle selection in data area (not header)
+      if (y >= HEADER_HEIGHT) {
+        // Check if this is a data cell click (not a scrollbar click)
+        const cell = getCellFromCoordinates(x, y);
+        if (cell) {
+          setIsSelecting(true);
+          const cellPos = { ...cell, x, y };
+          setSelectionStart(cellPos);
+          setSelectionEnd(cellPos);
+          // Don't prevent default - allow normal behavior
+          return;
+        } else {
+          // Click outside cells - clear selection
+          setSelectionStart(null);
+          setSelectionEnd(null);
+          return;
+        }
+      }
+
+      // Handle sort menu click in header (but not on resize handle)
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have sort menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            // Check if click is on resize handle
+            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+            if (x < handleX - 5 || x > handleX + 5) {
+              // Not on resize handle - show sort menu for any click on header
+              foundColumn = idx;
+            }
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          const container = containerRef.current;
+          if (container) {
+            const rect = container.getBoundingClientRect();
+            // Calculate position for sort menu
+            // colX is in scroll coordinates, need to convert to viewport coordinates
+            let colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+            const colWidth = getColumnWidth(foundColumn);
+            // Convert scroll coordinates to viewport coordinates
+            const viewportColX = colX - scrollLeft;
+            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
+            const menuY = rect.top + HEADER_HEIGHT + 2;
+            setSortMenu({
+              columnIndex: foundColumn,
+              x: menuX,
+              y: menuY,
+            });
+          }
+          return;
+        }
+      }
+
+      // Only handle resize in header
+
+      // Check which column
+      let currentX = 0;
+      let foundColumn: number | null = null;
+
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        const handleX = currentX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2;
+        if (x >= handleX - 5 && x <= handleX + 5) {
+          foundColumn = -1;
+        }
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      if (foundColumn === null) {
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+          if (x >= handleX - 5 && x <= handleX + 5) {
+            foundColumn = idx;
+          }
+          currentX += colWidth;
+        });
+      }
+
+      if (foundColumn !== null) {
+        e.preventDefault();
+        resizeStartXRef.current = e.clientX;
+        resizeStartWidthRef.current = getColumnWidth(foundColumn);
+        setResizingColumn(foundColumn);
+        // Clear selection when starting resize
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      } else {
+        // Click on header but not on resize handle - clear selection
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      }
+    },
+    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
+  );
+
+  // Handle context menu
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        // Header context menu
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have context menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            foundColumn = idx;
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          onColumnContextMenu(e, foundColumn);
+        }
+      } else if (y >= HEADER_HEIGHT) {
+        // Row context menu
+        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
+          // Check if click is on the row number column
+          const rowNumWidth = getColumnWidth(-1);
+          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
+          onRowContextMenu(e, rowIndex, isRowNumberColumn);
+        }
+      }
+    },
+    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
+  );
+
+  // Extract selected text
+  const getSelectedText = useCallback((): string => {
+    if (!selectionStart || !selectionEnd) return '';
+
+    const startRow = Math.min(selectionStart.row, selectionEnd.row);
+    const endRow = Math.max(selectionStart.row, selectionEnd.row);
+    const startCol = Math.min(selectionStart.col, selectionEnd.col);
+    const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+    const selectedCells: string[] = [];
+
+    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
+
+      const rowValues: string[] = [];
+      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+        if (colIdx === -1) {
+          // Row number
+          const actualRowNumber = startIndex + rowIdx + 1;
+          rowValues.push(actualRowNumber.toLocaleString());
+        } else {
+          const value = row.values[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
+          rowValues.push(formattedValue);
+        }
+      }
+      selectedCells.push(rowValues.join('\t'));
+    }
+
+    return selectedCells.join('\n');
+  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
+
+  // Handle copy to clipboard
+  useEffect(() => {
+    const handleCopy = (e: KeyboardEvent) => {
+      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectionStart && selectionEnd) {
+          // Check if user is trying to copy from an input field or Monaco editor
+          const target = e.target as HTMLElement;
+          const isInputField = 
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' || 
+            target.isContentEditable ||
+            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
+            target.closest('.monaco-editor') !== null ||
+            target.closest('.editor-container') !== null;
+          
+          // Only handle copy from canvas if not copying from an input/editor
+          if (!isInputField) {
+            const text = getSelectedText();
+            if (text) {
+              e.preventDefault();
+              navigator.clipboard.writeText(text).catch((err) => {
+                console.error('Failed to copy to clipboard:', err);
+              });
+            }
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleCopy);
+    return () => window.removeEventListener('keydown', handleCopy);
+  }, [selectionStart, selectionEnd, getSelectedText]);
+
+
+  // Handle selection mouse move
+  const handleSelectionMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isSelecting || resizingColumn !== null) return;
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const viewportX = e.clientX - rect.left;
+      const viewportY = e.clientY - rect.top;
+      const x = viewportX + scrollLeft;
+      const y = viewportY + scrollTop;
+
+      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
+      const edgeThreshold = 20;
+      const isNearTop = viewportY < edgeThreshold;
+      const isNearBottom = viewportY > rect.height - edgeThreshold;
+      const isNearLeft = viewportX < edgeThreshold;
+      const isNearRight = viewportX > rect.width - edgeThreshold;
+
+      // Update selection if we can determine a cell
+      const cell = getCellFromCoordinates(x, y);
+      if (cell && selectionStart) {
+        setSelectionEnd({ ...cell, x, y });
+      } else if (selectionStart) {
+        // If outside cells but still selecting, extend selection to edge
+        // This allows selection to continue when dragging outside viewport
+        const lastCell = selectionEnd || selectionStart;
+        setSelectionEnd(lastCell);
+      }
+    },
+    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
+  );
+
+  // Handle selection mouse up
+  const handleSelectionMouseUp = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
+  useEffect(() => {
+    if (!isSelecting) return;
+
+    const handleDocumentMouseUp = () => {
+      setIsSelecting(false);
+    };
+
+    document.addEventListener('mouseup', handleDocumentMouseUp);
+    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
+  }, [isSelecting]);
+
+  // Handle selection mouse leave
+  const handleSelectionMouseLeave = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle resize mouse move
+  useEffect(() => {
+    if (resizingColumn === null) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      e.preventDefault();
+      const diff = e.clientX - resizeStartXRef.current;
+      const newWidth = Math.max(MIN_COLUMN_WIDTH, resizeStartWidthRef.current + diff);
+      onColumnResize(resizingColumn, newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setResizingColumn(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove, { passive: false });
+    document.addEventListener('mouseup', handleMouseUp, { passive: false });
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [resizingColumn, onColumnResize]);
+
+  // Initial render when component mounts
+  useEffect(() => {
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      render();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Render on changes (including scroll) with throttling to reduce CPU usage
+  const renderTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    // Clear any pending render
+    if (renderTimeoutRef.current !== null) {
+      cancelAnimationFrame(renderTimeoutRef.current);
+    }
+
+    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
+    // but batch rapid scroll events
+    renderTimeoutRef.current = requestAnimationFrame(() => {
+      render();
+      renderTimeoutRef.current = null;
+    });
+
+    return () => {
+      if (renderTimeoutRef.current !== null) {
+        cancelAnimationFrame(renderTimeoutRef.current);
+        renderTimeoutRef.current = null;
+      }
+    };
+  }, [render, scrollTop, scrollLeft]);
+
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      render();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [render]);
+
+  return (
+    <div
+      ref={wrapperRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        position: 'relative',
+        overflow: 'hidden',
+        backgroundColor: themeColors.bgColor,
+      }}
+    >
+      {/* Scrollable container - this handles all scrolling */}
+      {/* Ensure scrollbars are always visible when content overflows */}
+      <div
+        ref={containerRef}
+        className="canvas-table-container"
+        onScroll={handleScroll}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        onMouseDown={handleMouseDown}
+        onContextMenu={handleContextMenu}
+        style={{
+          width: '100%',
+          height: '100%',
+          overflowX: 'scroll',
+          overflowY: 'scroll',
+          position: 'relative',
+          // Ensure scrollbars are always visible
+          scrollbarWidth: 'thin',
+          scrollbarColor: `${themeColors.scrollbarThumb} ${themeColors.scrollbarTrack}`,
+          // Force scrollbars to be visible (especially on macOS)
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        {/* Spacer div to create scrollable area - this scrolls */}
+        <div
+          style={{
+            width: totalWidth,
+            height: totalHeight,
+            position: 'relative',
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
+      {/* Canvas overlay - positioned fixed to outer container, does NOT scroll */}
+      {/* pointerEvents: 'none' allows scrolling and scrollbar interaction to work through it */}
+      {/* Size matches container.clientWidth/Height to exclude scrollbar area */}
+      <div
+        ref={canvasOverlayRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: 'none',
+          overflow: 'hidden',
+          backgroundColor: themeColors.bgColor,
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          style={{
+            display: 'block',
+            pointerEvents: 'none',
+            width: '100%',
+            height: '100%',
+          }}
+        />
+      </div>
+      {/* Selection overlay - captures mouse events for text selection */}
+      {/* Only active when actively selecting to allow scrolling otherwise */}
+      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
+      <div
+        ref={selectionOverlayRef}
+        onMouseMove={handleSelectionMouseMove}
+        onMouseUp={handleSelectionMouseUp}
+        onMouseLeave={handleSelectionMouseLeave}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
+          cursor: isSelecting ? 'text' : 'default',
+          userSelect: 'none',
+        }}
+      />
+      {/* Sort menu */}
+      {sortMenu && (
+        <ColumnSortMenu
+          x={sortMenu.x}
+          y={sortMenu.y}
+          columnIndex={sortMenu.columnIndex}
+          currentSortColumn={sortColumn}
+          currentSortDirection={sortDirection}
+          onClose={() => setSortMenu(null)}
+          onSort={onSortColumn}
+        />
+      )}
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -29859,6 +29036,2170 @@ export function registerBigQueryLanguage(
   if (sqlLanguage) {
     monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
     completionProviderRegistered = true;
+  }
+}
+````
+
+## File: README.md
+````markdown
+# QueryForge
+
+A powerful desktop application for browsing and querying Google Cloud Platform BigQuery data. Built with Electron, React, and TypeScript, QueryForge provides a native desktop experience for BigQuery operations with rich features for data analysts and developers.
+
+## Features
+
+### Connection Management
+- **Flexible Authentication**: Connect using service account credentials or Application Default Credentials (ADC)
+- **Connection Persistence**: Connection settings persist across sessions
+- **Connection Testing**: Validate credentials before establishing connection
+
+### Query Execution
+- **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
+- **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
+- **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
+- **Query Validation**: Syntax validation before execution
+- **Query Cancellation**: Cancel long-running queries
+- **Progress Indication**: Visual feedback during query execution
+
+### Multi-Tab Workflow
+- **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
+- **Tab Persistence**: Tabs and their content persist across sessions
+- **Drag & Drop Reordering**: Reorganize tabs by dragging
+- **Quick Tab Switching**: Use Cmd/Ctrl+1-9 to switch between tabs
+- **Modified Indicator**: Blue dot shows unsaved changes
+
+### Query Management
+- **Save Queries**: Save frequently used queries locally with names and descriptions
+- **Saved Queries Tree**: Browse saved queries in the sidebar
+- **Search Queries**: Find saved queries by name or SQL content
+- **Load Queries**: Open saved queries in new tabs with one click
+
+### Dataset Explorer
+- **Tree View Navigation**: Browse datasets and tables in a collapsible tree
+- **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
+- **Quick Actions**: Right-click context menu for table operations
+- **Search**: Filter datasets and tables
+
+### Schema Inspection
+- **Schema Sidebar**: View detailed table schemas in a dedicated panel
+- **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
+- **Table Metadata**: View row count, table size, and creation time
+- **View Definitions**: Inspect SQL definitions for views
+
+### Query Results
+- **High-Performance Table**: Canvas-based rendering for large datasets
+- **Large Dataset Support**: Handle up to 500,000 rows with SQLite-backed storage
+- **SQLite Caching**: Results stored in local SQLite database for memory-efficient handling of large datasets
+- **Live Loading Progress**: Real-time progress indicator shows rows fetched during large query execution
+- **Pagination**: Navigate through results with 200 rows per page
+- **Column Sorting**: Sort results by any column
+- **Column Resizing**: Adjust column widths by dragging
+- **Copy Values**: Right-click to copy cell values
+
+### Sample Data
+- **Quick Preview**: View sample data from any table
+- **One-Click Access**: Right-click table and select "View Sample Data"
+
+### UI Customization
+- **Resizable Panels**: Adjust sidebar and editor/results split
+- **Collapsible Sidebar**: Maximize editor space when needed
+- **Persistent Layout**: Window size, position, and panel sizes persist across sessions
+- **Dark/Light Mode**: Toggle between dark and light themes to suit your preference
+
+## Prerequisites
+
+- Node.js 18+ and npm
+- Google Cloud Platform account with BigQuery API enabled
+- GCP project with BigQuery access
+- Service account key file (JSON) OR Application Default Credentials configured
+
+### Installing Node.js and npm
+
+npm (Node Package Manager) comes bundled with Node.js. To install both:
+
+1. **Download Node.js**: Visit [nodejs.org](https://nodejs.org/) and download the LTS (Long Term Support) version for your operating system
+2. **Install Node.js**: Run the installer and follow the installation wizard
+3. **Verify installation**: Open a terminal and run:
+   ```bash
+   node --version
+   npm --version
+   ```
+   Both commands should display version numbers (Node.js 18+ and npm 9+)
+
+Alternatively, you can use a package manager:
+- **macOS**: `brew install node` (using Homebrew)
+- **Linux**: `sudo apt install nodejs npm` (Ubuntu/Debian) or use your distribution's package manager
+- **Windows**: Use the official installer from nodejs.org or `winget install OpenJS.NodeJS.LTS`
+
+### Setting Up Google Application Default Credentials
+
+Application Default Credentials (ADC) allow QueryForge to use your local Google Cloud credentials without needing to manage service account key files. This is the recommended authentication method for local development.
+
+#### Option 1: Using gcloud CLI (Recommended)
+
+1. **Install Google Cloud SDK**:
+   - **macOS**: `brew install google-cloud-sdk`
+   - **Linux**: Follow instructions at [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+   - **Windows**: Download installer from [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install)
+
+2. **Authenticate with your Google account**:
+   ```bash
+   gcloud auth login
+   ```
+   This will open a browser window for you to sign in with your Google account.
+
+3. **Set your default project** (optional but recommended):
+   ```bash
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+4. **Set up Application Default Credentials**:
+   ```bash
+   gcloud auth application-default login
+   ```
+   This command will:
+   - Open a browser for authentication
+   - Store credentials in a well-known location that QueryForge can automatically find
+
+#### Option 2: Using Service Account Key File
+
+If you prefer to use a service account key file, you can set it as Application Default Credentials:
+
+1. **Download a service account key** from the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
+
+2. **Set the environment variable**:
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+   ```
+
+   **macOS/Linux**: Add this to your `~/.zshrc` or `~/.bashrc` to make it persistent:
+   ```bash
+   echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   **Windows (PowerShell)**:
+   ```powershell
+   [System.Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'C:\path\to\your\service-account-key.json', 'User')
+   ```
+
+#### Verifying Your Setup
+
+To verify that Application Default Credentials are configured correctly:
+
+```bash
+gcloud auth application-default print-access-token
+```
+
+If configured correctly, this will print an access token. If you see an error, follow the setup steps above.
+
+**Note**: When using Application Default Credentials in QueryForge, select "Application Default Credentials" as the authentication method in the connection dialog. You only need to provide your GCP Project ID.
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd QueryForge
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Build the application:
+```bash
+npm run build
+```
+
+4. Start the application:
+```bash
+npm start
+```
+
+## Development
+
+For development with hot reload:
+```bash
+npm run dev
+```
+
+## Usage
+
+### Connecting to BigQuery
+
+1. Launch the application 
+2. Click "Configure Connection" in the header
+3. Enter your GCP Project ID
+4. Select authentication method:
+   - **Service Account Key**: Provide path to JSON key file or paste key content
+   - **Application Default Credentials**: Uses your local gcloud credentials
+5. Click "Connect"
+
+### Executing Queries
+
+1. Type your SQL query in the editor
+2. Click "Execute" or press Cmd/Ctrl+Enter
+3. View results in the table below
+4. Use "Cancel" to stop a running query
+5. Format your SQL with Cmd/Ctrl+Shift+F
+
+### Browsing Datasets
+
+1. Connect to BigQuery
+2. Browse datasets in the left sidebar
+3. Click a dataset to expand and view tables
+4. Right-click a table for options:
+   - **Open in new tab**: Generate a SELECT * query
+   - **View Schema**: Open schema details in sidebar
+   - **View Sample Data**: Preview table contents
+   - **View Definition**: See SQL for views
+
+### Managing Tabs
+
+- Click "+" button to create a new tab
+- Click on a tab to switch between queries
+- Drag tabs to reorder them
+- Click "×" on a tab to close it
+- Modified tabs show a blue dot indicator
+- Use Cmd/Ctrl+1-9 to quickly switch tabs
+
+### Saving Queries
+
+1. Write your query in the editor
+2. Click "Save" button
+3. Enter a name and optional description
+4. Click "Save" to persist the query
+
+### Loading Saved Queries
+
+1. Switch to "SAVED QUERIES" view in the sidebar
+2. Search or browse your saved queries
+3. Click a query to load it in a new tab
+4. Right-click for additional options
+
+## Keyboard Shortcuts
+
+| Action | macOS | Windows/Linux |
+|--------|-------|---------------|
+| New Tab | Cmd+T | Ctrl+T |
+| Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
+| Execute Query | Cmd+Enter | Ctrl+Enter |
+| Format Query | Cmd+Shift+F | Ctrl+Shift+F |
+| Show Help | Cmd+? | Ctrl+? |
+| Quit | Cmd+Q | Alt+F4 |
+
+## Project Structure
+
+```
+src/
+├── main/           # Electron main process
+│   ├── ipc/        # IPC handlers
+│   └── storage/    # Local storage
+├── renderer/       # React renderer process
+│   ├── components/ # UI components
+│   ├── hooks/      # React hooks
+│   └── stores/     # State management
+└── shared/         # Shared types/utilities
+```
+
+## Building for Production
+
+Build for your platform:
+```bash
+npm run package
+```
+
+Build for specific platforms:
+```bash
+npm run package:mac    # macOS
+npm run package:win    # Windows
+npm run package:linux  # Linux
+```
+
+## Donate
+
+If you find QueryForge useful, please consider supporting its development:
+
+![Donation QR Code](donation_qr.png)
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK)
+
+## License
+
+MIT
+````
+
+## File: src/main/ipc/bigquery.ts
+````typescript
+import { ipcMain } from 'electron';
+import { getBigQueryClient, getActiveConnection } from './connection';
+import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+import { saveResults, createStreamingSaver } from '../storage/results-cache-sqlite';
+
+/**
+ * Serializes a value to ensure it can be cloned and sent through IPC.
+ * Handles Date objects, BigNumber objects, Buffers, and nested structures.
+ * Uses a WeakSet to track visited objects to prevent circular reference issues.
+ * @param value - The value to serialize
+ * @param visited - WeakSet to track visited objects (for circular reference detection)
+ * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
+ */
+function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
+  // Normalize column type early so it's available throughout the function
+  const normalizedColumnType = columnType?.toUpperCase() || '';
+  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
+  
+  // Handle null and undefined
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
+  // These objects have a 'value' property containing the string representation
+  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it's a BigQuery date/time object with a 'value' property
+    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
+    if ('value' in value && typeof value.value === 'string') {
+      const valueStr = value.value;
+      // Verify it looks like a date/time string
+      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
+          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+        return valueStr;
+      }
+    }
+  }
+
+  // Handle Date objects - convert to ISO string
+  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
+  if (value instanceof Date) {
+    // Check if it's a valid date
+    if (isNaN(value.getTime())) {
+      return null; // Invalid dates become null
+    }
+    // Format based on column type if available
+    if (normalizedColumnType === 'DATE') {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (normalizedColumnType === 'TIME') {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (normalizedColumnType === 'DATETIME') {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    // Default: ISO string for TIMESTAMP or unknown
+    return value.toISOString();
+  }
+  
+  // CRITICAL: Check for Date-like objects BEFORE general object handling
+  // BigQuery might return Date objects that aren't instanceof Date
+  // Check for objects with Date-like methods or properties
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
+    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+      try {
+        // Try to convert to Date
+        let date: Date | null = null;
+        if (typeof value.getTime === 'function') {
+          const time = value.getTime();
+          if (typeof time === 'number' && !isNaN(time)) {
+            date = new Date(time);
+          }
+        } else if (typeof value.toISOString === 'function') {
+          const isoStr = value.toISOString();
+          date = new Date(isoStr);
+        }
+        
+        if (date && !isNaN(date.getTime())) {
+          // Format based on column type
+          if (normalizedColumnType === 'DATE') {
+            return date.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+            const ms = date.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return date.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return date.toISOString();
+        }
+      } catch {
+        // If conversion fails, continue with normal handling
+      }
+    }
+  }
+
+  // Handle Buffer objects - convert to base64 string
+  if (Buffer.isBuffer(value)) {
+    return value.toString('base64');
+  }
+
+  // Handle BigNumber-like objects (from @google-cloud/bigquery)
+  // Check for common BigNumber properties
+  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
+    // Check if it's a BigNumber by looking for valueOf or toNumber methods
+    if ('valueOf' in value || 'toNumber' in value) {
+      try {
+        // Try to convert to number first, fallback to string
+        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
+        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
+          return numValue;
+        }
+        return String(value);
+      } catch {
+        return String(value);
+      }
+    }
+  }
+
+  // Handle arrays - recursively serialize each element
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeValue(item, visited, columnType));
+  }
+
+  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
+  // BigQuery may return these as objects with special properties or methods
+  // This must come after array check but before general object handling
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
+    // BigQuery might return DATE as objects in various formats
+    if (isDateType) {
+      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
+      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
+      // This check should be very lenient - just check if 'value' exists and is a string
+      if ('value' in value) {
+        const innerValue = value.value;
+        // If inner value is a string, return it directly (this is the most common case)
+        if (typeof innerValue === 'string') {
+          return innerValue;
+        }
+        // If inner value is a Date, convert to ISO string
+        if (innerValue instanceof Date) {
+          if (normalizedColumnType === 'DATE') {
+            return innerValue.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
+            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
+            const ms = innerValue.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return innerValue.toISOString();
+        }
+        // Recursively serialize the inner value
+        return serializeValue(innerValue, visited, columnType);
+      }
+      
+      // Check for BigQuery Date object structure - might have year, month, day properties
+      if ('year' in value || 'month' in value || 'day' in value) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        if (normalizedColumnType === 'DATE') {
+          return `${year}-${month}-${day}`;
+        }
+        // For DATETIME/TIMESTAMP, check for time components
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        if (normalizedColumnType === 'DATETIME') {
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      
+      // Check for TIME object structure
+      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      
+      // For any other object structure for DATE/TIME, try to extract a string value
+      // Check all properties for date-like strings
+      const objKeys = Object.keys(value);
+      for (const key of objKeys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+      
+      // If we can't extract a date string, return a placeholder instead of serializing to {}
+      return '[Invalid Date Object]';
+    }
+    
+    // For non-date types, check if it's a BigQuery date object with a value property
+    if ('value' in value && Object.keys(value).length === 1) {
+      const innerValue = value.value;
+      // If inner value is a string that looks like a date, return it
+      if (typeof innerValue === 'string') {
+        return innerValue;
+      }
+      // If inner value is a Date, convert to ISO string
+      if (innerValue instanceof Date) {
+        return innerValue.toISOString();
+      }
+      // Recursively serialize the inner value
+      return serializeValue(innerValue, visited, columnType);
+    }
+    
+    // For DATE/TIME columns, try toString() first before checking properties
+    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Continue with property checking if toString fails
+      }
+      
+      // Also check if any property value is a date-like string
+      const keys = Object.keys(value);
+      for (const key of keys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+    }
+    
+    // Check for date-like objects with year/month/day properties
+    if ('year' in value && 'month' in value && 'day' in value) {
+      const year = value.year;
+      const month = String(value.month ?? 1).padStart(2, '0');
+      const day = String(value.day ?? 1).padStart(2, '0');
+      // Check if it also has time components (DATETIME/TIMESTAMP)
+      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Just date components (DATE)
+      return `${year}-${month}-${day}`;
+    }
+    
+    // Check for time-only objects (TIME)
+    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
+        !('year' in value || 'month' in value || 'day' in value)) {
+      const hours = String(value.hours ?? 0).padStart(2, '0');
+      const minutes = String(value.minutes ?? 0).padStart(2, '0');
+      const seconds = String(value.seconds ?? 0).padStart(2, '0');
+      const ms = value.milliseconds ?? 0;
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    
+    // Try to call toString() if it exists and might give us a useful string
+    // (Only if we haven't already tried it above for date types)
+    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        // If toString gives us something useful (not [object Object]), use it
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Ignore toString errors
+      }
+    }
+  }
+
+  // Handle objects - recursively serialize each property
+  if (typeof value === 'object') {
+    // Check for circular references
+    if (visited.has(value)) {
+      return '[Circular]';
+    }
+    visited.add(value);
+
+    try {
+      // Check if it's a plain object (not a class instance)
+      const proto = Object.getPrototypeOf(value);
+      if (proto === null || proto === Object.prototype) {
+        // For DATE/TIME columns, be very aggressive about converting objects to strings
+        if (isDateType) {
+          // Try toString() first
+          if ('toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with property checking if toString fails
+            }
+          }
+          
+          // Check all properties for date-like strings
+          const keys = Object.keys(value);
+          for (const key of keys) {
+            const propValue = value[key];
+            if (typeof propValue === 'string') {
+              // Check if it looks like a date/time string
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                return propValue;
+              }
+            }
+            // If property is a Date, convert it
+            if (propValue instanceof Date) {
+              if (normalizedColumnType === 'DATE') {
+                return propValue.toISOString().split('T')[0];
+              }
+              return propValue.toISOString();
+            }
+          }
+          
+          // If we still haven't found a date string, try JSON.stringify to extract it
+          try {
+            const jsonStr = JSON.stringify(value);
+            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
+            if (dateMatch) {
+              const dateStr = dateMatch[1];
+              if (normalizedColumnType === 'DATE') {
+                return dateStr.split('T')[0]; // Just the date part
+              }
+              return dateStr.replace('T', ' ').replace(/Z$/, '');
+            }
+            // Also try to find any date-like string in the JSON
+            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
+            for (const match of allDateMatches) {
+              const dateStr = match[1];
+              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
+                return dateStr;
+              }
+              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
+                return dateStr.replace('T', ' ').replace(/Z$/, '');
+              }
+            }
+          } catch {
+            // JSON.stringify failed, continue with normal serialization
+          }
+          
+          // Last resort for DATE columns: convert object to string representation
+          // This prevents [object Object] from being sent through IPC
+          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+              normalizedColumnType === 'TIMESTAMP') {
+            // Try to create a meaningful string from the object
+            const keys = Object.keys(value);
+            if (keys.length === 0) {
+              return '[Empty Date Object]';
+            }
+            // Return first property value if it's a string or number
+            const firstKey = keys[0];
+            const firstValue = value[firstKey];
+            if (typeof firstValue === 'string') {
+              return firstValue;
+            }
+            if (typeof firstValue === 'number') {
+              // Try to interpret as date
+              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
+              if (!isNaN(date.getTime())) {
+                if (normalizedColumnType === 'DATE') {
+                  return date.toISOString().split('T')[0];
+                }
+                return date.toISOString();
+              }
+            }
+            // Return object structure as string
+            return `{${keys.slice(0, 2).join(', ')}}`;
+          }
+        } else {
+          // For non-date types, check if this might be a date-like object
+          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
+          const keys = Object.keys(value);
+          // If object has very few keys and one looks date-like, try toString first
+          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with normal serialization if toString fails
+            }
+          }
+        }
+        
+        const serialized: any = {};
+        for (const key in value) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            serialized[key] = serializeValue(value[key], visited, columnType);
+          }
+        }
+        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
+        // This prevents empty objects from being stored and later displayed as "[object Object]"
+        if (Object.keys(serialized).length === 0 && isDateType) {
+          return '[Invalid Date]';
+        }
+        return serialized;
+      } else {
+        // For non-plain objects (class instances), try to serialize
+        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
+        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
+        if (value instanceof Date) {
+          if (isNaN(value.getTime())) {
+            return null;
+          }
+          if (normalizedColumnType === 'DATE') {
+            return value.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(value.getUTCHours()).padStart(2, '0');
+            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+            const ms = value.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return value.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return value.toISOString();
+        }
+        
+        // Check for Date-like objects (objects with Date methods)
+        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+          try {
+            let date: Date | null = null;
+            if (typeof value.getTime === 'function') {
+              const time = value.getTime();
+              if (typeof time === 'number' && !isNaN(time)) {
+                date = new Date(time);
+              }
+            } else if (typeof value.toISOString === 'function') {
+              const isoStr = value.toISOString();
+              date = new Date(isoStr);
+            }
+            
+            if (date && !isNaN(date.getTime())) {
+              if (normalizedColumnType === 'DATE') {
+                return date.toISOString().split('T')[0];
+              }
+              if (normalizedColumnType === 'TIME') {
+                const hours = String(date.getUTCHours()).padStart(2, '0');
+                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+                const ms = date.getUTCMilliseconds();
+                if (ms > 0) {
+                  const msStr = String(ms).padStart(3, '0');
+                  return `${hours}:${minutes}:${seconds}.${msStr}`;
+                }
+                return `${hours}:${minutes}:${seconds}`;
+              }
+              if (normalizedColumnType === 'DATETIME') {
+                return date.toISOString().replace('T', ' ').slice(0, 19);
+              }
+              return date.toISOString();
+            }
+          } catch {
+            // If conversion fails, continue with normal serialization
+          }
+        }
+        
+        // First try JSON.stringify/parse which handles most cases
+        // BUT: This will convert Date objects to {}, so we check for Dates above
+        try {
+          const jsonStr = JSON.stringify(value);
+          // Check if JSON.stringify produced an empty object for a date type
+          // This happens when Date objects are stringified
+          if (jsonStr === '{}' && isDateType) {
+            // This is likely a Date object that was stringified to {}
+            return '[Invalid Date]';
+          }
+          return JSON.parse(jsonStr);
+        } catch {
+          // If JSON serialization fails (e.g., circular refs, functions),
+          // try to extract enumerable properties
+          const serialized: any = {};
+          for (const key in value) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+              serialized[key] = serializeValue(value[key], visited, columnType);
+            }
+          }
+          // If we got nothing, check if it's a date type before converting to string
+          if (Object.keys(serialized).length === 0 && isDateType) {
+            return '[Invalid Date]';
+          }
+          // If we got nothing, convert to string as last resort
+          return Object.keys(serialized).length > 0 ? serialized : String(value);
+        }
+      }
+    } catch (error) {
+      // If anything goes wrong, check if it's a Date object before converting to string
+      // This prevents [object Object] from being returned for Date objects
+      if (value instanceof Date) {
+        if (isNaN(value.getTime())) {
+          return null;
+        }
+        if (normalizedColumnType === 'DATE') {
+          return value.toISOString().split('T')[0];
+        }
+        if (normalizedColumnType === 'TIME') {
+          const hours = String(value.getUTCHours()).padStart(2, '0');
+          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+          const ms = value.getUTCMilliseconds();
+          if (ms > 0) {
+            const msStr = String(ms).padStart(3, '0');
+            return `${hours}:${minutes}:${seconds}.${msStr}`;
+          }
+          return `${hours}:${minutes}:${seconds}`;
+        }
+        if (normalizedColumnType === 'DATETIME') {
+          return value.toISOString().replace('T', ' ').slice(0, 19);
+        }
+        return value.toISOString();
+      }
+      // For date types, return a placeholder instead of [object Object]
+      if (isDateType && typeof value === 'object' && value !== null) {
+        return '[Invalid Date]';
+      }
+      // Last resort: convert to string
+      return String(value);
+    }
+  }
+
+  // For primitives (string, number, boolean), return as-is
+  return value;
+}
+
+// Helper function to transform raw BigQuery rows to our Row format
+function transformRows(rows: any[], columns: ColumnMetadata[]): Row[] {
+  return rows.map((row: any) => ({
+    values: columns.map((col) => {
+      const value = row[col.name];
+      
+      // Pass column type to serializeValue to help with date/time serialization
+      let serialized = serializeValue(value, new WeakSet(), col.type);
+      
+      // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
+      const colTypeUpper = (col.type || '').toUpperCase();
+      if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
+          colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
+        if (typeof serialized === 'object' && serialized !== null) {
+          const keys = Object.keys(serialized);
+          for (const key of keys) {
+            const propValue = serialized[key];
+            if (typeof propValue === 'string') {
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                serialized = propValue;
+                break;
+              }
+            }
+          }
+          if (typeof serialized === 'object' && serialized !== null) {
+            serialized = '[Invalid Date]';
+          }
+        }
+        if (typeof serialized === 'string' && serialized === '[object Object]') {
+          serialized = '[Invalid Date]';
+        }
+        if (typeof serialized !== 'string') {
+          if (serialized === null || serialized === undefined) {
+            serialized = '[Invalid Date]';
+          } else {
+            serialized = String(serialized);
+            if (serialized === '[object Object]') {
+              serialized = '[Invalid Date]';
+            }
+          }
+        }
+      }
+      
+      return serialized;
+    }),
+  }));
+}
+
+export function registerBigQueryHandlers(): void {
+  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string, tabId?: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    // Get the sender's webContents for streaming updates
+    const sender = _event.sender;
+
+    try {
+      const startTime = Date.now();
+
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create query job
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+      });
+
+      // Wait for the job to complete first
+      const [jobResult] = await job.getMetadata();
+      
+      // Poll until job is done (getQueryResults should do this, but let's be explicit)
+      if (jobResult.status?.state !== 'DONE') {
+        await job.promise(); // This waits for the job to complete
+      }
+
+      // Get job metadata early to get schema and total row count
+      const [jobMetadata] = await job.getMetadata();
+      
+      // Get schema from job metadata
+      let schema = jobMetadata.configuration?.query?.schema || 
+                   jobMetadata.statistics?.query?.schema ||
+                   jobMetadata.schema;
+
+      // Build columns from schema
+      let columns: ColumnMetadata[] = [];
+      if (schema?.fields && schema.fields.length > 0) {
+        columns = schema.fields.map((field: any) => ({
+          name: field.name,
+          type: field.type,
+          mode: field.mode,
+        }));
+      }
+
+      // Fetch first page of results
+      const [firstPageRows, firstNextQuery] = await job.getQueryResults({ maxResults: 10000 });
+      const hasMorePages = !!firstNextQuery?.pageToken;
+      
+      // Get total row count from multiple possible sources:
+      // 1. Query results metadata (firstNextQuery.totalRows) - most reliable for SELECT queries
+      // 2. Job statistics (query.numDmlAffectedRows) - for DML queries
+      // 3. Fall back to first page length if neither available (will be updated after fetching all pages)
+      const queryMetadata = firstNextQuery as any;
+      const jobStats = jobMetadata.statistics as any;
+      
+      const totalRowCount = queryMetadata?.totalRows 
+        ? parseInt(String(queryMetadata.totalRows), 10) 
+        : (jobStats?.query?.numDmlAffectedRows 
+          ? parseInt(String(jobStats.query.numDmlAffectedRows), 10)
+          : undefined);
+
+      // If no schema from metadata, extract from first row
+      if (columns.length === 0 && firstPageRows.length > 0) {
+        const firstRow = firstPageRows[0];
+        columns = Object.keys(firstRow).map((key) => {
+          const value = firstRow[key];
+          let type = 'STRING';
+          if (typeof value === 'number') {
+            type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
+          } else if (typeof value === 'boolean') {
+            type = 'BOOLEAN';
+          } else if (value instanceof Date) {
+            type = 'TIMESTAMP';
+          } else if (Array.isArray(value)) {
+            type = 'ARRAY';
+          } else if (value && typeof value === 'object') {
+            type = 'RECORD';
+          }
+          return { name: key, type, mode: 'NULLABLE' };
+        });
+      }
+
+      const executionTimeMs = Date.now() - startTime;
+      const bytesProcessed = parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10);
+
+      // Transform first page rows
+      const transformedFirstPage = transformRows(firstPageRows, columns);
+
+      // Build initial result with first page
+      // Use totalRowCount from BigQuery metadata if available (gives accurate count immediately)
+      // Otherwise fall back to first page length (will be updated after fetching all pages)
+      const initialResult: QueryResult = {
+        columns,
+        rows: transformedFirstPage,
+        totalRows: totalRowCount ?? transformedFirstPage.length,
+        rowsReturned: transformedFirstPage.length,
+        executionTimeMs,
+        bytesProcessed,
+        jobId: job.id || '',
+        hasMore: hasMorePages,
+      };
+
+      // If there are more pages, fetch them in background and send updates
+      // With SQLite-backed cache, we can handle much larger datasets
+      // 500,000 rows is a good balance between usefulness and fetch time (~1-2 min)
+      const MAX_ROWS = 500000;
+      
+      // Save first page to SQLite immediately if we have a tabId
+      if (tabId) {
+        saveResults(tabId, initialResult);
+      }
+      
+      if (hasMorePages) {
+        // Start background fetch - don't await, let it run async
+        (async () => {
+          try {
+            let pageToken = firstNextQuery?.pageToken;
+            let allRows = [...firstPageRows];
+            let pageCount = 1;
+            
+            // Fetch additional pages up to the max limit
+            while (pageToken && allRows.length < MAX_ROWS) {
+              const [rows, nextQuery] = await job.getQueryResults({ 
+                maxResults: 10000, 
+                pageToken 
+              });
+              allRows.push(...rows);
+              pageToken = nextQuery?.pageToken;
+              pageCount++;
+              
+              // Only send lightweight progress updates during fetching (no row data)
+              sender.send('bigquery:progress', {
+                jobId: job.id,
+                rowsFetched: allRows.length,
+                isComplete: false,
+                message: totalRowCount 
+                  ? `Loading... ${allRows.length.toLocaleString()} of ${Math.min(totalRowCount, MAX_ROWS).toLocaleString()} rows`
+                  : `Loading... ${allRows.length.toLocaleString()} rows`,
+              });
+              
+              // Stop if we've reached the max
+              if (allRows.length >= MAX_ROWS) {
+                break;
+              }
+            }
+            
+            // Transform all rows only once at the end
+            const transformedRows = transformRows(allRows, columns);
+            
+            // Determine if there are more rows than we fetched
+            const hitLimit = allRows.length >= MAX_ROWS && !!pageToken;
+            const actualTotalRows = totalRowCount ?? transformedRows.length;
+            
+            // Save complete results to SQLite cache (this is fast!)
+            if (tabId) {
+              const completeResult: QueryResult = {
+                columns,
+                rows: transformedRows,
+                totalRows: actualTotalRows,
+                rowsReturned: transformedRows.length,
+                executionTimeMs,
+                bytesProcessed,
+                jobId: job.id || '',
+                hasMore: hitLimit,
+              };
+              saveResults(tabId, completeResult);
+            }
+            
+            // Send lightweight notification that more rows are available
+            // No row data over IPC - renderer will read from SQLite cache
+            sender.send('bigquery:rows-update', {
+              jobId: job.id,
+              columns,
+              rows: [], // Don't send rows over IPC - they're in SQLite
+              totalRows: actualTotalRows,
+              rowsReturned: transformedRows.length,
+              executionTimeMs,
+              bytesProcessed,
+              hasMore: hitLimit, // True if we hit the limit
+              message: hitLimit 
+                ? `Showing ${transformedRows.length.toLocaleString()} of ${actualTotalRows.toLocaleString()} rows (limited to ${MAX_ROWS.toLocaleString()})`
+                : `Complete: ${transformedRows.length.toLocaleString()} rows`,
+            });
+          } catch (err) {
+            console.error('[BigQuery] Background fetch error:', err);
+            sender.send('bigquery:rows-error', {
+              jobId: job.id,
+              error: (err as Error).message || 'Failed to fetch additional rows',
+            });
+          }
+        })();
+      }
+
+      return initialResult;
+    } catch (error: any) {
+      console.error(`[BigQuery] Query execution error:`, error);
+      
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        const err = new Error('Network error: Unable to connect to BigQuery');
+        (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      if (error.code === 403 || error.code === 401) {
+        const err = new Error('Authentication error');
+        (err as any).code = BigQueryErrorCode.AUTH_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      
+      // Extract error message from BigQuery error
+      let errorMessage = error.message || 'Query execution failed';
+      
+      // If error has details array, try to extract message from first detail
+      if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        if (firstError.message) {
+          errorMessage = firstError.message;
+        } else if (typeof firstError === 'string') {
+          errorMessage = firstError;
+        }
+      }
+      
+      const err = new Error(errorMessage);
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors || error;
+      throw err;
+    }
+  });
+
+  ipcMain.handle('bigquery:cancel', async (_event, jobId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const job = client.job(jobId);
+      await job.cancel();
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.JOB_NOT_FOUND,
+          message: 'Job not found or already completed',
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.CANCEL_FAILED,
+        message: 'Failed to cancel job',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('bigquery:listDatasets', async () => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const [datasets] = await client.getDatasets();
+      return datasets.map((dataset) => ({
+        id: dataset.id,
+        name: dataset.id,
+        location: dataset.metadata?.location || 'US',
+      }));
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to list datasets',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  ipcMain.handle('bigquery:listTables', async (_event, datasetId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const dataset = client.dataset(datasetId);
+      const [tables] = await dataset.getTables();
+      return tables.map((table) => ({
+        id: table.id,
+        name: table.id,
+        type: table.metadata?.type || 'TABLE',
+      }));
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to list tables',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  // Wrap handler to suppress error logging for table not found errors
+  ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
+    try {
+      return await (async () => {
+        const client = getBigQueryClient();
+        if (!client) {
+          throw {
+            code: BigQueryErrorCode.CONNECTION_FAILED,
+            message: 'No active BigQuery connection',
+          };
+        }
+
+        try {
+          const table = client.dataset(datasetId).table(tableId);
+          const [metadata] = await table.getMetadata();
+          
+          // Extract schema fields
+          const schema = metadata.schema;
+          if (!schema || !schema.fields) {
+            return {
+              fields: [],
+            };
+          }
+
+          // Recursively transform fields to include nested structures
+          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
+            const result: ColumnMetadata & { fields?: any[] } = {
+              name: field.name,
+              type: field.type,
+              mode: field.mode || 'NULLABLE',
+            };
+            
+            if (field.fields && field.fields.length > 0) {
+              result.fields = field.fields.map(transformField);
+            }
+            
+            return result;
+          };
+
+          // Extract table metadata
+          // BigQuery timestamps are in milliseconds, can be string or number
+          const creationTime = metadata.creationTime 
+            ? (typeof metadata.creationTime === 'string' 
+                ? parseInt(metadata.creationTime, 10) 
+                : metadata.creationTime)
+            : undefined;
+          const lastModifiedTime = metadata.lastModifiedTime
+            ? (typeof metadata.lastModifiedTime === 'string'
+                ? parseInt(metadata.lastModifiedTime, 10)
+                : metadata.lastModifiedTime)
+            : undefined;
+          const numRows = metadata.numRows
+            ? (typeof metadata.numRows === 'string'
+                ? parseInt(metadata.numRows, 10)
+                : metadata.numRows)
+            : undefined;
+          const numBytes = metadata.numBytes
+            ? (typeof metadata.numBytes === 'string'
+                ? parseInt(metadata.numBytes, 10)
+                : metadata.numBytes)
+            : undefined;
+
+          return {
+            fields: schema.fields.map(transformField),
+            metadata: {
+              creationTime,
+              lastModifiedTime,
+              numRows,
+              numBytes,
+            },
+          };
+        } catch (error: any) {
+          if (error.code === 404) {
+            // Create error but suppress Electron's automatic logging for table not found errors
+            // These errors are handled in the UI and don't need to be logged
+            const err = new Error('Table not found');
+            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+            (err as any).details = error.message;
+            // Mark error to suppress logging
+            (err as any).suppressLogging = true;
+            throw err;
+          }
+          const err = new Error(error.message || 'Failed to get table schema');
+          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+          (err as any).details = error.errors || error;
+          throw err;
+        }
+      })();
+    } catch (error: any) {
+      // Suppress Electron's automatic error logging for table not found errors
+      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
+          error?.message === 'Table not found') {
+        // Re-throw without Electron logging by using a custom error handler
+        // Electron will still pass the error to the renderer, but won't log it
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.details || error.message;
+        // Use a custom property to signal this shouldn't be logged
+        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
+        throw err;
+      }
+      // Re-throw other errors normally
+      throw error;
+    }
+  });
+
+  ipcMain.handle('bigquery:getViewDefinition', async (_event, datasetId: string, tableId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const table = client.dataset(datasetId).table(tableId);
+      const [metadata] = await table.getMetadata();
+      
+      // Check if this is actually a view
+      if (metadata.type !== 'VIEW' && metadata.type !== 'MATERIALIZED_VIEW') {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'Table is not a view',
+        };
+      }
+
+      // Get view definition from metadata
+      // For regular views: metadata.view.query
+      // For materialized views: metadata.materializedView.query
+      let viewDefinition = '';
+      if (metadata.type === 'VIEW' && metadata.view) {
+        viewDefinition = metadata.view.query || '';
+      } else if (metadata.type === 'MATERIALIZED_VIEW' && metadata.materializedView) {
+        viewDefinition = metadata.materializedView.query || '';
+      }
+      
+      if (!viewDefinition) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'View definition not found',
+        };
+      }
+
+      return {
+        definition: viewDefinition,
+      };
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'View not found',
+          details: error.message,
+        };
+      }
+      if (error.code) {
+        throw error;
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to get view definition',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  /**
+   * Perform a dry run of a query to estimate bytes processed without executing.
+   * This uses BigQuery's native dry run feature which accounts for:
+   * - Column selection (only selected columns count)
+   * - Partitioning (only scanned partitions count)
+   * - Clustering benefits
+   * - Query optimization
+   */
+  ipcMain.handle('bigquery:dryRun', async (_event, queryText: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create a dry run query job - this validates and estimates without executing
+      // For dry runs, the job is not actually created in BigQuery, so we can't call getMetadata()
+      // The statistics are returned directly in job.metadata
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+        dryRun: true,
+      });
+
+      // For dry runs, metadata is available directly on the job object
+      // Don't call getMetadata() as dry run jobs don't actually exist in BigQuery
+      const metadata = job.metadata;
+      
+      // totalBytesProcessed is in statistics
+      const totalBytesProcessed = parseInt(
+        metadata?.statistics?.totalBytesProcessed || '0', 
+        10
+      );
+
+      return {
+        totalBytesProcessed,
+        // Include additional useful statistics if available
+        cacheHit: metadata?.statistics?.query?.cacheHit || false,
+        statementType: metadata?.statistics?.query?.statementType || null,
+      };
+    } catch (error: any) {
+      // Electron IPC requires Error objects with message property to serialize properly
+      // Plain objects thrown will appear as [object Object]
+      
+      // Handle specific BigQuery errors
+      if (error.code === 404) {
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      
+      // Handle syntax errors and other query errors
+      // BigQuery errors include location info (line, column) which we pass through
+      if (error.errors && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        const err = new Error(firstError.message || 'Query validation failed');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        // Include location info if available
+        if (firstError.location) {
+          (err as any).location = {
+            line: firstError.location.line,
+            column: firstError.location.column,
+          };
+        }
+        (err as any).details = JSON.stringify(error.errors);
+        throw err;
+      }
+      
+      const err = new Error(error.message || 'Dry run failed');
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors ? JSON.stringify(error.errors) : String(error);
+      throw err;
+    }
+  });
+}
+````
+
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerExportHandlers();
+registerQueryHistoryHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+  closeHistoryDatabase();
+});
+````
+
+## File: src/main/preload.ts
+````typescript
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
+  };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
+  };
+}
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string, tabId?: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:progress', handler);
+      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+    },
+    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:rows-update', handler);
+      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
+    },
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    getRange: (tabId: string, startIndex: number, count: number) =>
+      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+    stats: () => ipcRenderer.invoke('results-cache:stats'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
+    },
+    onSaveQuery: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:save-query', handler);
+      return () => ipcRenderer.removeListener('menu:save-query', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+  export: {
+    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
+      ipcRenderer.invoke('export:saveFile', content, options),
+  },
+  queryHistory: {
+    add: (entry: QueryHistoryEntry) => ipcRenderer.invoke('query-history:add', entry),
+    list: (limit?: number, offset?: number) => ipcRenderer.invoke('query-history:list', limit, offset),
+    search: (searchTerm: string, limit?: number) => ipcRenderer.invoke('query-history:search', searchTerm, limit),
+    get: (id: string) => ipcRenderer.invoke('query-history:get', id),
+    delete: (id: string) => ipcRenderer.invoke('query-history:delete', id),
+    updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
+    clear: () => ipcRenderer.invoke('query-history:clear'),
+    count: () => ipcRenderer.invoke('query-history:count'),
+  },
+} as ElectronAPI);
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
   }
 }
 ````
@@ -33453,7 +34794,6 @@ export const validateGroupByColumns = async (
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import { format } from 'sql-formatter';
-import { parse } from 'sql-parser-cst';
 import { useBigQuery } from '../../hooks/useBigQuery';
 import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
@@ -33461,653 +34801,74 @@ import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
-import { validateGroupByColumns, buildTableAliasMapFromSelect as buildTableAliasMapFromSelectCST } from '../../utils/sql-validation';
-import { initTreeSitterParser, validateWithTreeSitter, isTreeSitterAvailable } from '../../utils/tree-sitter-validator';
+import {
+  hasDbtSyntax,
+  convertToDbtSyntax,
+  convertFromDbtSyntax,
+} from '../../utils/dbt-utils';
+import { EditorToolbar } from './EditorToolbar';
+import { EditorStatusBar } from './EditorStatusBar';
+import { SaveQueryDialog } from './SaveQueryDialog';
 import './QueryEditor.css';
-
-interface SqlNodeLocation {
-  start?: { line: number; column: number };
-  end?: { line: number; column: number };
-  begin?: { line: number; column: number };
-  finish?: { line: number; column: number };
-}
-
-interface ColumnRefInfo {
-  alias: string | null;
-  column: string;
-  location?: SqlNodeLocation;
-}
-
-interface TableAliasInfo {
-  alias: string;
-  datasetId?: string;
-  tableId?: string;
-  cteColumns?: string[];
-}
-
-interface ColumnValidationIssue {
-  message: string;
-  line: number;
-  column: number;
-  length: number;
-}
-
-const stripIdentifierQuotes = (value: string | null | undefined): string => {
-  if (!value) return '';
-  return value.replace(/[`"']/g, '');
-};
-
-/**
- * Helper functions for working with CST (Concrete Syntax Tree) nodes directly.
- * This provides better BigQuery syntax handling and more accurate parsing.
- */
-
-// Get node type from CST (handles both 'type' and 'kind' properties)
-const getCstNodeType = (node: any): string | undefined => {
-  if (!node || typeof node !== 'object') return undefined;
-  return node.type || node.kind;
-};
-
-// Check if node is a SELECT statement (CST or converted AST)
-const isSelectStmt = (node: any): boolean => {
-  const type = getCstNodeType(node);
-  return type === 'select_stmt' || type === 'SelectStatement' || type === 'select';
-};
-
-// Check if node is a column reference
-const isColumnRef = (node: any): boolean => {
-  const type = getCstNodeType(node);
-  return type === 'column_ref' || type === 'ColumnRef';
-};
-
-// Check if node is a binary expression
-const isBinaryExpr = (node: any): boolean => {
-  const type = getCstNodeType(node);
-  return type === 'binary_expr' || type === 'BinaryExpr';
-};
-
-// Check if node is a function call
-const isFunctionCall = (node: any): boolean => {
-  const type = getCstNodeType(node);
-  return type === 'function' || type === 'FunctionCall' || type === 'aggr_func';
-};
-
-// Get FROM clause tables from CST statement
-const getCstFromTables = (stmt: any): any[] => {
-  if (!stmt) return [];
-  
-  const fromClause = stmt.fromClause || stmt.from;
-  if (!fromClause) return [];
-  
-  // CST structure: fromClause.tables or array
-  if (fromClause.tables) {
-    return Array.isArray(fromClause.tables) ? fromClause.tables : [fromClause.tables];
-  }
-  
-  if (Array.isArray(fromClause)) {
-    return fromClause;
-  }
-  
-  // Fallback to AST structure
-  if (Array.isArray(stmt.from)) {
-    return stmt.from;
-  }
-  
-  return [];
-};
-
-// Get WITH clause CTEs from CST statement
-const getCstWithCtes = (stmt: any): any[] => {
-  const withClause = stmt.withClause || stmt.with;
-  if (!withClause) return [];
-  
-  if (withClause.ctes) {
-    return Array.isArray(withClause.ctes) ? withClause.ctes : [withClause.ctes];
-  }
-  
-  if (Array.isArray(withClause)) {
-    return withClause;
-  }
-  
-  // Fallback to AST structure
-  if (Array.isArray(stmt.with)) {
-    return stmt.with;
-  }
-  
-  return [];
-};
-
-const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const indexToLineColumn = (text: string, index: number): { line: number; column: number } => {
-  let line = 1;
-  let column = 1;
-
-  for (let i = 0; i < index && i < text.length; i++) {
-    const char = text[i];
-    if (char === '\n') {
-      line += 1;
-      column = 1;
-    } else if (char === '\r') {
-      // Handle Windows-style line endings (\r\n)
-      if (i + 1 < text.length && text[i + 1] === '\n') {
-        i += 1;
-      }
-      line += 1;
-      column = 1;
-    } else {
-      column += 1;
-    }
-  }
-
-  return { line, column };
-};
-
-const getLocationPosition = (
-  location: SqlNodeLocation | undefined,
-  fallbackLength: number
-): { line: number; column: number; length: number } | null => {
-  if (!location) return null;
-
-  const start = location.start || location.begin;
-  const end = location.end || location.finish;
-
-  if (!start || start.line === undefined || start.column === undefined) {
-    return null;
-  }
-
-  let length = Math.max(1, fallbackLength);
-
-  if (end && end.line !== undefined && end.column !== undefined) {
-    if (end.line === start.line) {
-      const computedLength = end.column - start.column;
-      if (computedLength > 0) {
-        length = computedLength;
-      }
-    }
-  }
-
-  return {
-    line: start.line,
-    column: start.column,
-    length,
-  };
-};
-
-const findPositionInText = (
-  text: string,
-  alias: string | null,
-  column: string
-): { line: number; column: number; length: number } | null => {
-  const searchPatterns: Array<{ pattern: string; length: number }> = [];
-
-  const sanitizedAlias = alias ? stripIdentifierQuotes(alias) : null;
-  const sanitizedColumn = stripIdentifierQuotes(column);
-
-  if (sanitizedAlias) {
-    const aliasPattern = `${sanitizedAlias}.${sanitizedColumn}`;
-    searchPatterns.push({ pattern: aliasPattern, length: aliasPattern.length });
-  }
-
-  if (sanitizedColumn) {
-    searchPatterns.push({ pattern: sanitizedColumn, length: sanitizedColumn.length });
-  }
-
-    for (const { pattern, length } of searchPatterns) {
-      const regex = new RegExp(`\\b${escapeRegExp(pattern)}\\b`, 'i');
-    const match = regex.exec(text);
-    if (match && match.index !== undefined) {
-      const { line, column: col } = indexToLineColumn(text, match.index);
-      return { line, column: col, length: Math.max(1, length) };
-    }
-  }
-
-  return null;
-};
-
-const collectColumnRefsFromExpression = (node: any, refs: ColumnRefInfo[]) => {
-  if (!node) return;
-
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      collectColumnRefsFromExpression(child, refs);
-    }
-    return;
-  }
-
-  if (typeof node !== 'object') {
-    return;
-  }
-
-  // Skip subqueries - they have their own scope and should be validated separately
-  // This handles NOT EXISTS, EXISTS, IN (SELECT ...), scalar subqueries, etc.
-  if (node.type === 'select') {
-    return;
-  }
-
-  if (node.type === 'column_ref') {
-    // Handle both string columns and object columns (BigQuery parser returns object for unqualified columns)
-    let columnName: string;
-    if (typeof node.column === 'string') {
-      columnName = stripIdentifierQuotes(node.column);
-    } else if (node.column && typeof node.column === 'object') {
-      // Handle nested column structure: { expr: { type: 'default', value: 'ColumnName' }, offset: [] }
-      if (node.column.expr && typeof node.column.expr.value === 'string') {
-        columnName = stripIdentifierQuotes(node.column.expr.value);
-      } else if (typeof node.column.column === 'string') {
-        columnName = stripIdentifierQuotes(node.column.column);
-      } else {
-        columnName = '';
-      }
-    } else {
-      columnName = '';
-    }
-    
-    // Collect column refs for validation:
-    // - Non-* columns: always collect for column name validation
-    // - * columns with alias (e.g., da.*): collect to validate alias exists
-    // - Bare * without alias: skip (no validation needed)
-    const hasAlias = node.table ? true : false;
-    const shouldCollect = columnName && (columnName !== '*' || hasAlias);
-    
-    if (shouldCollect) {
-      refs.push({
-        alias: node.table ? stripIdentifierQuotes(node.table) : null,
-        column: columnName,
-        location: node.location || node.loc,
-      });
-    }
-    return;
-  }
-
-  // Recursively inspect child properties
-  for (const key of Object.keys(node)) {
-    if (key === 'location' || key === 'loc') {
-      continue;
-    }
-    collectColumnRefsFromExpression(node[key], refs);
-  }
-};
-
-const collectColumnRefsForSelect = (selectAst: any, includeCteBodies = false): ColumnRefInfo[] => {
-  const refs: ColumnRefInfo[] = [];
-
-  if (!selectAst || typeof selectAst !== 'object') {
-    return refs;
-  }
-
-  const collect = (expr: any) => collectColumnRefsFromExpression(expr, refs);
-
-  // Optionally collect from CTE bodies (for full query validation)
-  if (includeCteBodies && Array.isArray(selectAst.with)) {
-    for (const cte of selectAst.with) {
-      const cteAst = cte?.stmt?.ast;
-      if (cteAst) {
-        // Recursively collect from CTE body (but not nested CTEs within CTEs)
-        const cteRefs = collectColumnRefsForSelect(cteAst, false);
-        refs.push(...cteRefs);
-      }
-    }
-  }
-
-  if (Array.isArray(selectAst.columns)) {
-    for (const col of selectAst.columns) {
-      collect(col?.expr ?? col);
-    }
-  }
-
-  if (selectAst.where) {
-    collect(selectAst.where);
-  }
-
-  if (Array.isArray(selectAst.groupby)) {
-    for (const groupExpr of selectAst.groupby) {
-      collect(groupExpr);
-    }
-  } else if (selectAst.groupby?.value && Array.isArray(selectAst.groupby.value)) {
-    for (const groupExpr of selectAst.groupby.value) {
-      collect(groupExpr);
-    }
-  }
-
-  if (Array.isArray(selectAst.orderby)) {
-    for (const orderItem of selectAst.orderby) {
-      collect(orderItem?.expr ?? orderItem);
-    }
-  }
-
-  if (selectAst.having) {
-    collect(selectAst.having);
-  }
-
-  if (Array.isArray(selectAst.from)) {
-    for (const fromItem of selectAst.from) {
-      if (fromItem?.on) {
-        collect(fromItem.on);
-      }
-    }
-  }
-
-  return refs;
-};
-
-/**
- * Extracts output column names from a CTE's SELECT clause.
- * Returns the column aliases (AS names) or the column names if no alias is specified.
- */
-const extractCteColumnNames = (cteAst: any): string[] => {
-  const columns: string[] = [];
-  
-  if (!cteAst || !Array.isArray(cteAst.columns)) {
-    return columns;
-  }
-  
-  for (const col of cteAst.columns) {
-    // Skip SELECT * - we can't determine column names without schema
-    if (col === '*' || (col?.expr?.type === 'star')) {
-      continue;
-    }
-    
-    // Check for explicit alias (AS clause)
-    const alias = col?.as || col?.alias;
-    if (alias) {
-      const aliasName = typeof alias === 'string' ? alias : alias?.value;
-      if (aliasName) {
-        columns.push(stripIdentifierQuotes(aliasName));
-        continue;
-      }
-    }
-    
-    // No alias - try to get column name from expression
-    const expr = col?.expr ?? col;
-    
-    // Column reference: { type: 'column_ref', column: 'name' } or { type: 'column_ref', column: { expr: { value: 'name' } } }
-    if (expr?.type === 'column_ref') {
-      let columnName: string | undefined;
-      if (typeof expr.column === 'string') {
-        columnName = expr.column;
-      } else if (expr.column?.expr?.value) {
-        columnName = expr.column.expr.value;
-      } else if (expr.column?.column) {
-        columnName = expr.column.column;
-      }
-      if (columnName) {
-        columns.push(stripIdentifierQuotes(columnName));
-      }
-    }
-    // Function call without alias - skip (BigQuery would use the function expression as the column name)
-  }
-  
-  return columns;
-};
-
-const buildTableAliasMapFromSelect = (
-  selectAst: any
-): {
-  aliasMap: Map<string, TableAliasInfo>;
-  uniqueTables: Map<string, { datasetId?: string; tableId?: string }>;
-} => {
-  const aliasMap = new Map<string, TableAliasInfo>();
-  const uniqueTables = new Map<string, { datasetId?: string; tableId?: string }>();
-
-  const registerAlias = (aliasName: string | null | undefined, info: { datasetId?: string; tableId?: string; cteColumns?: string[] }) => {
-    const cleanAlias = stripIdentifierQuotes(aliasName);
-    if (!cleanAlias) return;
-    const key = cleanAlias.toLowerCase();
-    const existing = aliasMap.get(key);
-    if (!existing || (!existing.datasetId && info.datasetId) || (!existing.tableId && info.tableId)) {
-      aliasMap.set(key, {
-        alias: cleanAlias,
-        datasetId: info.datasetId,
-        tableId: info.tableId,
-        // Preserve cteColumns from existing entry if not provided in new info
-        cteColumns: info.cteColumns ?? existing?.cteColumns,
-      });
-    }
-  };
-
-  const processFromItem = (item: any) => {
-    if (!item || typeof item !== 'object') {
-      return;
-    }
-
-    if (Array.isArray(item)) {
-      for (const child of item) {
-        processFromItem(child);
-      }
-      return;
-    }
-
-    // Handle subqueries - register alias name but skip schema mapping
-    if (item.expr && item.expr.type === 'select') {
-      registerAlias(item.as || item.alias, {});
-      return;
-    }
-
-    let datasetId: string | undefined;
-    let tableId: string | undefined;
-    let projectId: string | undefined;
-
-    if (typeof item.catalog === 'string') {
-      projectId = stripIdentifierQuotes(item.catalog);
-    }
-
-    if (typeof item.db === 'string') {
-      const dbValue = stripIdentifierQuotes(item.db);
-      // In BigQuery dialects, db field may represent project or dataset
-      projectId = projectId ?? dbValue;
-      if (!datasetId) {
-        datasetId = dbValue;
-      }
-    }
-
-    if (typeof item.schema === 'string') {
-      datasetId = stripIdentifierQuotes(item.schema);
-    }
-
-    if (typeof item.dataset === 'string') {
-      datasetId = stripIdentifierQuotes(item.dataset);
-    }
-
-    const registerTableName = (raw: string | undefined) => {
-      if (!raw) return;
-      const cleaned = stripIdentifierQuotes(raw);
-      if (!cleaned) return;
-      const parts = cleaned.split('.').filter(Boolean);
-
-      let resolvedDataset = datasetId;
-      let resolvedTable = tableId;
-
-      if (parts.length >= 2) {
-        const potentialDataset = parts[parts.length - 2];
-        const potentialProject = parts.length >= 3 ? parts[parts.length - 3] : undefined;
-        if (!resolvedDataset || resolvedDataset === potentialProject) {
-          resolvedDataset = potentialDataset;
-        }
-        resolvedTable = parts[parts.length - 1];
-      } else if (parts.length === 1) {
-        resolvedTable = parts[0];
-      }
-
-      if (resolvedDataset) {
-        datasetId = resolvedDataset;
-      }
-      if (resolvedTable) {
-        tableId = resolvedTable;
-      }
-
-      if (resolvedDataset && resolvedTable) {
-        const key = `${resolvedDataset}.${resolvedTable}`.toLowerCase();
-        if (!uniqueTables.has(key)) {
-          uniqueTables.set(key, { datasetId: resolvedDataset, tableId: resolvedTable });
-        }
-      }
-
-      registerAlias(cleaned, { datasetId: resolvedDataset, tableId: resolvedTable });
-    };
-
-    if (typeof item.table === 'string') {
-      registerTableName(item.table);
-    } else if (item.table && typeof item.table === 'object') {
-      if (typeof item.table.table === 'string') {
-        registerTableName(item.table.table);
-      }
-      if (typeof item.table.name === 'string') {
-        registerTableName(item.table.name);
-      }
-      if (typeof item.table.db === 'string' && !datasetId) {
-        datasetId = stripIdentifierQuotes(item.table.db);
-      }
-    }
-
-    // Register alias variations for lookup
-    registerAlias(item.as || item.alias, { datasetId, tableId });
-
-    if (tableId) {
-      registerAlias(tableId, { datasetId, tableId });
-    }
-
-    if (datasetId && tableId) {
-      registerAlias(`${datasetId}.${tableId}`, { datasetId, tableId });
-    }
-  };
-
-  // Process CTEs (WITH clause) - register CTE names as valid aliases
-  // Note: We only register the CTE name here, not the tables inside the CTE.
-  // CTE bodies are validated separately with their own scope in validateColumnsForSelect.
-  if (Array.isArray(selectAst?.with)) {
-    for (const cte of selectAst.with) {
-      // Register CTE name as a valid alias (without dataset/table since it's a virtual table)
-      const cteName = cte?.name?.value || cte?.name;
-      if (cteName) {
-        // Extract the column names from the CTE's SELECT clause
-        const cteAst = cte?.stmt?.ast;
-        const cteColumns = cteAst ? extractCteColumnNames(cteAst) : [];
-        registerAlias(cteName, { cteColumns: cteColumns.length > 0 ? cteColumns : undefined });
-      }
-    }
-  }
-
-  if (Array.isArray(selectAst?.from)) {
-    for (const fromItem of selectAst.from) {
-      processFromItem(fromItem);
-    }
-  } else {
-    processFromItem(selectAst?.from);
-  }
-
-  return { aliasMap, uniqueTables };
-};
 
 interface QueryEditorProps {
   theme?: 'dark' | 'light';
 }
 
 export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
-  // Set this to true to disable tree-sitter and sql-parser-cst validation
-  // and rely solely on BigQuery's dry run for validation feedback
-  const SKIP_LOCAL_VALIDATION = true;
-  
-  // Initialize tree-sitter parser on component mount
-  const [treeSitterReady, setTreeSitterReady] = useState(false);
-  useEffect(() => {
-    if (SKIP_LOCAL_VALIDATION) {
-      console.log('[QueryEditor] Local validation DISABLED - using BigQuery dry run only');
-      return;
-    }
-    initTreeSitterParser().then((success) => {
-      setTreeSitterReady(success);
-      if (success) {
-        console.log('[QueryEditor] Tree-sitter parser initialized successfully');
-      }
-    });
-  }, []);
+  // ============================================================================
+  // State
+  // ============================================================================
 
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
-  // Handle ESC key to close save dialog
-  useEffect(() => {
-    if (!showSaveDialog) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowSaveDialog(false);
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [showSaveDialog]);
-
-  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
     errorMessage: string | null;
     errorLine: number | null;
   }>({ isValid: null, errorMessage: null, errorLine: null });
+
   const [expectedQuerySize, setExpectedQuerySize] = useState<number | null>(null);
   const [isLoadingQuerySize, setIsLoadingQuerySize] = useState(false);
   const [selectedText, setSelectedText] = useState<string>('');
   const [completedQueryText, setCompletedQueryText] = useState<string | null>(null);
   const [completedQueryExecutionTime, setCompletedQueryExecutionTime] = useState<number | null>(null);
+
+  // ============================================================================
+  // Refs
+  // ============================================================================
+
   const editorRef = useRef<any>(null);
   const editorWrapperRef = useRef<HTMLDivElement>(null);
-  const toolsMenuRef = useRef<HTMLDivElement>(null);
   const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
-  const validateHandlerRef = useRef<(() => void) | null>(null);
-  const selectionValidationTimeoutRef = useRef<number | null>(null);
-  const isMouseSelectingRef = useRef(false);
-  const validationRunIdRef = useRef(0);
-  const schemaCacheRef = useRef<Map<string, Promise<string[] | null>>>(new Map());
-    useEffect(() => {
-      return () => {
-        if (selectionValidationTimeoutRef.current !== null) {
-          window.clearTimeout(selectionValidationTimeoutRef.current);
-          selectionValidationTimeoutRef.current = null;
-        }
-        isMouseSelectingRef.current = false;
-      };
-    }, []);
-
-    const scheduleSelectionValidation = (delay: number = 150) => {
-      if (selectionValidationTimeoutRef.current !== null) {
-        window.clearTimeout(selectionValidationTimeoutRef.current);
-      }
-      selectionValidationTimeoutRef.current = window.setTimeout(() => {
-        selectionValidationTimeoutRef.current = null;
-        if (validateHandlerRef.current) {
-          validateHandlerRef.current();
-        }
-      }, delay);
-    };
   const errorDecorationsRef = useRef<string[]>([]);
+
+  // ============================================================================
+  // Store Selectors
+  // ============================================================================
+
   const activeTab = useTabsStore((state) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
     return tab || null;
   });
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (toolsMenuRef.current && target && !toolsMenuRef.current.contains(target)) {
-        setIsToolsMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
-
-  useEffect(() => {
-    setIsToolsMenuOpen(false);
-  }, [activeTab?.id]);
-
   const queryText = activeTab?.queryText || '';
+  const isExecuting = activeTab?.executionStatus === 'running';
+  const jobId = activeTab?.jobId || null;
+
+  const { setTabQuery, setTabResults, setTabError, setTabStatus, updateTab } = useTabsStore();
+  const { saveQuery, updateQuery } = useQueriesStore();
+  const { executeQuery, cancelQuery, isConnected } = useBigQuery();
+  const connection = useConnectionStore((state) => state.connection);
+
+  // ============================================================================
+  // Effects
+  // ============================================================================
 
   // Listen for save query menu shortcut (Cmd+S)
   useEffect(() => {
@@ -34122,387 +34883,22 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       return () => removeListener();
     }
   }, [activeTab, queryText]);
-  
-  const isExecuting = activeTab?.executionStatus === 'running';
-  const error = activeTab?.error || null;
-  const jobId = activeTab?.jobId || null;
 
   // Listen for rows-update events to update query history with final row count
   useEffect(() => {
     if (!window.electronAPI?.bigquery?.onRowsUpdate) return;
-    
+
     const unsubscribe = window.electronAPI.bigquery.onRowsUpdate((data) => {
-      // Update the history entry with the final row count
       if (data.jobId && data.rowsReturned > 0) {
         useQueryHistoryStore.getState().updateEntryByJobId(data.jobId, data.rowsReturned);
       }
     });
-    
+
     return unsubscribe;
   }, []);
-  
-  const { setTabQuery, setTabResults, setTabError, setTabStatus, updateTab } = useTabsStore();
-  const { saveQuery, updateQuery } = useQueriesStore();
-  const { executeQuery, cancelQuery, isConnected } = useBigQuery();
-  const connection = useConnectionStore((state) => state.connection);
-  
-  const shouldDisableRunButton = isExecuting || !isConnected;
-
-  const getTableFields = useCallback(async (datasetId: string, tableId: string): Promise<string[] | null> => {
-    const cacheKey = `${datasetId}.${tableId}`.toLowerCase();
-    const existing = schemaCacheRef.current.get(cacheKey);
-    if (existing) {
-      return existing;
-    }
-
-    const fetchPromise = (async () => {
-      try {
-        if (!window.electronAPI?.bigquery?.getTableSchema) {
-          return null;
-        }
-        const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
-        if (!schemaResult || !Array.isArray(schemaResult.fields)) {
-          return [];
-        }
-        return schemaResult.fields
-          .map((field: any) => (typeof field?.name === 'string' ? field.name : null))
-          .filter((name): name is string => Boolean(name));
-      } catch (error) {
-        // If the schema call fails (e.g., table not found), return null so other checks can handle it.
-        return null;
-      }
-    })();
-
-    schemaCacheRef.current.set(cacheKey, fetchPromise);
-    return fetchPromise;
-  }, []);
-
-  const validateColumnsForSelect = useCallback(async (
-    selectAst: any,
-    textToValidate: string,
-    canFetchSchemas: boolean
-  ): Promise<ColumnValidationIssue[]> => {
-    const issues: ColumnValidationIssue[] = [];
-
-    // Helper function to validate columns for a single SELECT scope
-    const validateScope = async (
-      scopeAst: any,
-      scopeAliasMap: Map<string, TableAliasInfo>,
-      scopeUniqueTables: Map<string, { datasetId?: string; tableId?: string }>
-    ) => {
-      const columnRefs = collectColumnRefsForSelect(scopeAst, false);
-      const uniqueTableList = Array.from(scopeUniqueTables.values());
-
-      for (const columnRef of columnRefs) {
-        const baseColumnName = columnRef.column.split('.')[0];
-        const lowerColumnName = baseColumnName.toLowerCase();
-        const location =
-          getLocationPosition(columnRef.location, columnRef.column.length) ||
-          findPositionInText(textToValidate, columnRef.alias, columnRef.column) || {
-            line: 1,
-            column: 1,
-            length: Math.max(1, columnRef.column.length),
-          };
-
-        const aliasKey = columnRef.alias ? columnRef.alias.toLowerCase() : null;
-        const aliasInfo = aliasKey ? scopeAliasMap.get(aliasKey) : null;
-
-        if (aliasKey && !aliasInfo) {
-          issues.push({
-            message: `Unknown table or alias "${columnRef.alias}" used in column reference`,
-            line: location.line,
-            column: location.column,
-            length: location.length,
-          });
-          continue;
-        }
-
-        // For alias.* patterns (e.g., da.*), we've validated the alias exists above.
-        // The * means "all columns" which is always valid syntax, so skip column validation.
-        if (columnRef.column === '*') {
-          continue;
-        }
-
-        if (!canFetchSchemas) {
-          // Without schema access we can only report alias issues.
-          continue;
-        }
-
-        // If aliasInfo exists but has no datasetId/tableId, it's a CTE or subquery.
-        // Check if we have CTE column information to validate against.
-        if (aliasInfo && (!aliasInfo.datasetId || !aliasInfo.tableId)) {
-          // If we have CTE columns, validate against them
-          if (aliasInfo.cteColumns && aliasInfo.cteColumns.length > 0) {
-            const hasColumn = aliasInfo.cteColumns.some(
-              (col) => col.toLowerCase() === lowerColumnName
-            );
-            if (!hasColumn) {
-              issues.push({
-                message: `Column "${columnRef.column}" not found in ${aliasInfo.alias}`,
-                line: location.line,
-                column: location.column,
-                length: location.length,
-              });
-            }
-          }
-          // If no CTE columns available (e.g., SELECT * in CTE), skip validation
-          continue;
-        }
-
-        if (aliasInfo && aliasInfo.datasetId && aliasInfo.tableId) {
-          const fields = await getTableFields(aliasInfo.datasetId, aliasInfo.tableId);
-          if (fields === null) {
-            // Schema lookup failed (likely table not found). Skip detailed column checks.
-            continue;
-          }
-
-          const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-          if (!hasColumn) {
-            const targetName = aliasInfo.alias || `${aliasInfo.datasetId}.${aliasInfo.tableId}`;
-            issues.push({
-              message: `Column "${columnRef.column}" not found in ${targetName}`,
-              line: location.line,
-              column: location.column,
-              length: location.length,
-            });
-          }
-          continue;
-        }
-
-        if (!aliasInfo) {
-          // Check if any table in scope is a CTE/subquery (no schema from database).
-          const cteOrSubqueryInfos = Array.from(scopeAliasMap.values()).filter(
-            info => !info.datasetId || !info.tableId
-          );
-          
-          // First, check if the column exists in any CTE that has column info
-          let foundInCte = false;
-          for (const cteInfo of cteOrSubqueryInfos) {
-            if (cteInfo.cteColumns && cteInfo.cteColumns.length > 0) {
-              const hasColumn = cteInfo.cteColumns.some(
-                (col) => col.toLowerCase() === lowerColumnName
-              );
-              if (hasColumn) {
-                foundInCte = true;
-                break;
-              }
-            }
-          }
-          
-          if (foundInCte) {
-            continue;
-          }
-          
-          // Check if there are CTEs without column info (e.g., SELECT * in CTE)
-          // In this case, we can't validate since we don't know the CTE's columns
-          const hasUnknownCteColumns = cteOrSubqueryInfos.some(
-            info => !info.cteColumns || info.cteColumns.length === 0
-          );
-          
-          if (hasUnknownCteColumns) {
-            // Skip validation for unqualified columns when CTEs with unknown columns are present
-            continue;
-          }
-
-          let columnFound = false;
-
-          for (const tableInfo of uniqueTableList) {
-            if (!tableInfo.datasetId || !tableInfo.tableId) {
-              continue;
-            }
-
-            const fields = await getTableFields(tableInfo.datasetId, tableInfo.tableId);
-            if (fields === null) {
-              continue;
-            }
-
-            const hasColumn = fields.some((fieldName) => fieldName.toLowerCase() === lowerColumnName);
-            if (hasColumn) {
-              columnFound = true;
-              break;
-            }
-          }
-
-          // If column wasn't found in database tables, also check all CTE columns
-          if (!columnFound) {
-            for (const cteInfo of cteOrSubqueryInfos) {
-              if (cteInfo.cteColumns && cteInfo.cteColumns.length > 0) {
-                const hasColumn = cteInfo.cteColumns.some(
-                  (col) => col.toLowerCase() === lowerColumnName
-                );
-                if (hasColumn) {
-                  columnFound = true;
-                  break;
-                }
-              }
-            }
-          }
-
-          // Report error if column not found in any table or CTE
-          const hasAnySource = uniqueTableList.length > 0 || cteOrSubqueryInfos.some(
-            info => info.cteColumns && info.cteColumns.length > 0
-          );
-          
-          if (!columnFound && hasAnySource) {
-            issues.push({
-              message: `Column "${columnRef.column}" not found in referenced tables`,
-              line: location.line,
-              column: location.column,
-              length: location.length,
-            });
-          }
-        }
-      }
-    };
-
-    // First, validate each CTE body independently against its own FROM tables
-    if (Array.isArray(selectAst?.with)) {
-      for (const cte of selectAst.with) {
-        const cteAst = cte?.stmt?.ast;
-        if (cteAst) {
-          // Build alias map for just this CTE's scope (its own FROM clause only)
-          const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
-            ...cteAst,
-            with: null, // Don't process nested CTEs here, they'd be handled separately
-          });
-          await validateScope(cteAst, cteAliasMap, cteUniqueTables);
-        }
-      }
-    }
-
-    // Then validate the main query (excluding CTE bodies, but including CTE names as valid aliases)
-    const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(selectAst);
-    await validateScope(selectAst, aliasMap, uniqueTables);
-
-    // Helper function to collect all subqueries from an AST node
-    const collectSubqueries = (node: any, subqueries: any[]) => {
-      if (!node) return;
-      
-      if (Array.isArray(node)) {
-        for (const child of node) {
-          collectSubqueries(child, subqueries);
-        }
-        return;
-      }
-      
-      if (typeof node !== 'object') return;
-      
-      // Found a subquery
-      if (node.type === 'select') {
-        subqueries.push(node);
-        // Don't recurse into the subquery here - it will be processed separately
-        return;
-      }
-      
-      // Recurse into child properties
-      for (const key of Object.keys(node)) {
-        if (key === 'location' || key === 'loc') continue;
-        collectSubqueries(node[key], subqueries);
-      }
-    };
-
-    // Recursively validate subqueries within the AST
-    // parentAliasMap contains aliases from outer scopes (for correlated subqueries)
-    const validateSubqueries = async (
-      ast: any,
-      parentAliasMap: Map<string, TableAliasInfo> = new Map(),
-      parentUniqueTables: Map<string, { datasetId?: string; tableId?: string }> = new Map()
-    ) => {
-      const subqueries: any[] = [];
-      
-      // Collect subqueries from WHERE, HAVING, SELECT columns, etc.
-      collectSubqueries(ast.where, subqueries);
-      collectSubqueries(ast.having, subqueries);
-      if (Array.isArray(ast.columns)) {
-        for (const col of ast.columns) {
-          collectSubqueries(col?.expr ?? col, subqueries);
-        }
-      }
-      // Also check JOIN ON conditions for subqueries
-      if (Array.isArray(ast.from)) {
-        for (const fromItem of ast.from) {
-          if (fromItem?.on) {
-            collectSubqueries(fromItem.on, subqueries);
-          }
-        }
-      }
-      
-      // Validate each subquery with its own scope + parent scope (for correlated subqueries)
-      for (const subquery of subqueries) {
-        const { aliasMap: subAliasMap, uniqueTables: subUniqueTables } = buildTableAliasMapFromSelect(subquery);
-        
-        // Merge parent aliases into subquery's alias map (subquery's own aliases take precedence)
-        const mergedAliasMap = new Map(parentAliasMap);
-        for (const [key, value] of subAliasMap) {
-          mergedAliasMap.set(key, value);
-        }
-        
-        // Merge parent unique tables into subquery's unique tables
-        const mergedUniqueTables = new Map(parentUniqueTables);
-        for (const [key, value] of subUniqueTables) {
-          mergedUniqueTables.set(key, value);
-        }
-        
-        await validateScope(subquery, mergedAliasMap, mergedUniqueTables);
-        // Recursively validate nested subqueries, passing the merged scope
-        await validateSubqueries(subquery, mergedAliasMap, mergedUniqueTables);
-      }
-    };
-
-    // Validate subqueries in CTEs (CTEs have their own scope, not the main query's scope)
-    if (Array.isArray(selectAst?.with)) {
-      for (const cte of selectAst.with) {
-        const cteAst = cte?.stmt?.ast;
-        if (cteAst) {
-          const { aliasMap: cteAliasMap, uniqueTables: cteUniqueTables } = buildTableAliasMapFromSelect({
-            ...cteAst,
-            with: null,
-          });
-          await validateSubqueries(cteAst, cteAliasMap, cteUniqueTables);
-        }
-      }
-    }
-
-    // Validate subqueries in the main query, passing the main query's aliases as parent scope
-    await validateSubqueries(selectAst, aliasMap, uniqueTables);
-
-    return issues;
-  }, [getTableFields]);
-
-  // Format bytes to human-readable string
-  const formatBytes = (bytes: number): string => {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    let size = bytes;
-    let unitIndex = 0;
-    
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-    
-    return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
-
-  // Format execution time to human-readable string
-  const formatExecutionTime = (ms: number): string => {
-    if (ms < 1000) {
-      return `${ms}ms`;
-    } else if (ms < 60000) {
-      return `${(ms / 1000).toFixed(2)}s`;
-    } else {
-      const seconds = Math.floor(ms / 1000);
-      const minutes = Math.floor(seconds / 60);
-      const remainingSeconds = seconds % 60;
-      return `${minutes}m ${remainingSeconds}s`;
-    }
-  };
-
-  // SQL parser function for validation (sql-parser-cst doesn't need instance)
-  // No initialization needed - parse function can be called directly
 
   // Ensure Monaco editor tooltips render above toolbar
   useEffect(() => {
-    // Add global style to ensure Monaco hover tooltips have high z-index
     const styleId = 'monaco-tooltip-z-index-fix';
     if (!document.getElementById(styleId)) {
       const style = document.createElement('style');
@@ -34516,9 +34912,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       `;
       document.head.appendChild(style);
     }
-    
+
     return () => {
-      // Cleanup: remove style when component unmounts
       const style = document.getElementById(styleId);
       if (style) {
         document.head.removeChild(style);
@@ -34543,10 +34938,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       }
     };
 
-    // Initial height calculation
     updateHeight();
 
-    // Use ResizeObserver to update height when container resizes
     const resizeObserver = new ResizeObserver(updateHeight);
     resizeObserver.observe(editorWrapperRef.current);
 
@@ -34555,446 +34948,136 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     };
   }, [activeTab]);
 
-  // Helper function to count SELECT statements in SQL text (ignoring comments and strings)
-  const countSelectStatements = (sql: string): number => {
-    // Count only top-level SELECT statements (not CTEs or subqueries)
-    // A top-level SELECT is one that starts a new statement, not inside parentheses
-    
-    // Remove comments first
-    let cleanedSql = sql;
-    
-    // Remove single-line comments (--)
-    cleanedSql = cleanedSql.replace(/--.*$/gm, '');
-    
-    // Remove multi-line comments (/* */)
-    cleanedSql = cleanedSql.replace(/\/\*[\s\S]*?\*\//g, '');
-    
-    // Remove string literals (single quotes, double quotes, backticks)
-    cleanedSql = cleanedSql.replace(/'([^'\\]|\\.)*'/g, "''");
-    cleanedSql = cleanedSql.replace(/"([^"\\]|\\.)*"/g, '""');
-    cleanedSql = cleanedSql.replace(/`([^`\\]|\\.)*`/g, '``');
-    
-    // Now count top-level statements by tracking parenthesis depth
-    // A SELECT at depth 0 that is not preceded by WITH...AS is a top-level statement
-    let depth = 0;
-    let topLevelCount = 0;
-    let i = 0;
-    let inWithClause = false;
-    
-    // Normalize whitespace for easier matching
-    cleanedSql = cleanedSql.replace(/\s+/g, ' ').trim();
-    
-    while (i < cleanedSql.length) {
-      const char = cleanedSql[i];
-      
-      if (char === '(') {
-        depth++;
-        i++;
-        continue;
-      }
-      
-      if (char === ')') {
-        depth--;
-        // When we exit the outermost parenthesis after a WITH clause CTE definition,
-        // we're still in the WITH clause until we hit the main SELECT
-        i++;
-        continue;
-      }
-      
-      // Check for WITH keyword at depth 0 (start of CTE)
-      if (depth === 0) {
-        const remainingUpper = cleanedSql.substring(i).toUpperCase();
-        
-        // Check for WITH keyword (start of CTE)
-        if (remainingUpper.match(/^WITH\b/)) {
-          inWithClause = true;
-          i += 4;
-          continue;
-        }
-        
-        // Check for SELECT keyword
-        if (remainingUpper.match(/^SELECT\b/)) {
-          if (inWithClause) {
-            // This SELECT is the main query after WITH clause - count it
-            topLevelCount++;
-            inWithClause = false;
-          } else {
-            // This is a standalone SELECT statement
-            topLevelCount++;
-          }
-          i += 6;
-          continue;
-        }
-        
-        // Check for semicolon (statement separator) - reset state for next statement
-        if (char === ';') {
-          inWithClause = false;
-          i++;
-          continue;
-        }
-      }
-      
-      i++;
-    }
-    
-    return topLevelCount;
-  };
-
-  // Validate SQL syntax and set markers in Monaco Editor
+  // Dry run validation effect
   useEffect(() => {
-    if (!editorRef.current) {
-      return;
-    }
+    const calculateExpectedQuerySize = async () => {
+      const textToAnalyze = selectedText.trim() || queryText.trim();
 
-    const validateSQL = async () => {
-      // === EXPERIMENT: Skip local validation entirely ===
-      if (SKIP_LOCAL_VALIDATION) {
-        // When skipping local validation, do nothing here
-        // BigQuery dry run (in calculateExpectedQuerySize) will handle all validation
-        // IMPORTANT: Don't clear markers or reset validation status here!
-        // The dry run sets these, and we don't want to overwrite them on every
-        // keystroke/navigation event
-        return;
-      }
-      
-      const model = editorRef.current?.getModel();
-      if (!model || !(window as any).monaco) return;
-
-      const currentRunId = ++validationRunIdRef.current;
-
-      // Get current selection
-      const selection = editorRef.current?.getSelection();
-      const hasSelection = selection && !selection.isEmpty();
-      
-      // Determine which text to validate
-      let textToValidate = queryText;
-      if (hasSelection && selection && model) {
-        textToValidate = model.getValueInRange(selection);
-      }
-      
-      const trimmedQuery = textToValidate.trim();
-      
-      // Skip validation for empty or very short queries to avoid false positives
-      if (!trimmedQuery || trimmedQuery.length < 3) {
-        // Clear markers if query is empty or too short
-        (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
-        
-        // Clear error decorations in glyph margin
-        if (editorRef.current) {
-          errorDecorationsRef.current = editorRef.current.deltaDecorations(
-            errorDecorationsRef.current,
-            []
-          );
-        }
-        
-        // Update status bar - but preserve table not found errors if they exist
-        setSqlValidationStatus((prev) => {
-          // Only clear if there's no table not found error
-          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-            return prev;
-          }
-          return { isValid: null, errorMessage: null, errorLine: null };
-        });
+      if (!textToAnalyze) {
+        setExpectedQuerySize(null);
+        setSqlValidationStatus({ isValid: null, errorMessage: null, errorLine: null });
         return;
       }
 
-      // Check for multiple SELECT statements when no selection is active
-      // Only check full query text, not selected text
-      const selectCount = countSelectStatements(queryText);
-      
-      if (selectCount > 1 && !hasSelection) {
-        // Multiple SELECT statements detected without selection - show error
-        // Find the position of the second SELECT statement
-        const lines = queryText.split('\n');
-        let secondSelectLine = 1;
-        let secondSelectColumn = 1;
-        let selectFound = 0;
-        
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          // Remove comments and strings for matching
-          let cleanedLine = line.replace(/--.*$/, '').replace(/\/\*.*?\*\//g, '');
-          cleanedLine = cleanedLine.replace(/'([^'\\]|\\.)*'/g, "''").replace(/"([^"\\]|\\.)*"/g, '""').replace(/`([^`\\]|\\.)*`/g, '``');
-          
-          const selectMatch = cleanedLine.match(/\bSELECT\b/i);
-          if (selectMatch) {
-            selectFound++;
-            if (selectFound === 2) {
-              secondSelectLine = i + 1;
-              secondSelectColumn = (selectMatch.index || 0) + 1;
-              break;
-            }
-          }
-        }
-        
-        const markers: any[] = [
-          {
-            severity: (window as any).monaco.MarkerSeverity.Error,
-            startLineNumber: secondSelectLine,
-            startColumn: secondSelectColumn,
-            endLineNumber: secondSelectLine,
-            endColumn: Math.min(secondSelectColumn + 6, model.getLineLength(secondSelectLine) + 1), // Highlight "SELECT"
-            message: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.',
-          },
-        ];
-        (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
-        
-        // Add error indicator in glyph margin for multiple SELECT error
-        if (editorRef.current) {
-          const errorMsg = 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.';
-          const decorations: any[] = [
-            {
-              range: new (window as any).monaco.Range(secondSelectLine, 1, secondSelectLine, 1),
-              options: {
-                glyphMarginClassName: 'error-glyph-margin',
-                glyphMarginHoverMessage: { value: errorMsg },
-                minimap: {
-                  color: '#f48771',
-                },
-                overviewRuler: {
-                  color: '#f48771',
-                  position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
-                },
-              },
-            },
-          ];
-          
-          // Update decorations (remove old ones, add new ones)
-          errorDecorationsRef.current = editorRef.current.deltaDecorations(
-            errorDecorationsRef.current,
-            decorations
-          );
-        }
-        
-        setSqlValidationStatus({ 
-          isValid: false, 
-          errorMessage: 'Multiple SELECT statements detected. Please select the specific query you want to execute, or remove extra statements.',
-          errorLine: null
-        });
+      if (!isConnected || !connection?.projectId || !window.electronAPI) {
+        setExpectedQuerySize(null);
         return;
       }
 
-      // === HYBRID VALIDATION: tree-sitter for immediate feedback, dry run for authoritative validation ===
-      
-      // Step 1: Fast syntax validation with tree-sitter (if available)
-      // Tree-sitter provides IMMEDIATE feedback while typing
-      // But BigQuery dry run is the AUTHORITATIVE validation source when connected
-      if (isTreeSitterAvailable()) {
-        const treeSitterErrors = validateWithTreeSitter(trimmedQuery);
-        if (treeSitterErrors.length > 0) {
-          // Tree-sitter found syntax errors - show immediate feedback
-          const firstError = treeSitterErrors[0];
-          
-          // Set markers for all tree-sitter errors (immediate visual feedback)
-          const markers = treeSitterErrors.map(err => ({
-            severity: (window as any).monaco.MarkerSeverity.Error,
-            startLineNumber: err.line,
-            startColumn: err.column,
-            endLineNumber: err.line,
-            endColumn: err.column + err.length,
-            message: err.message,
-            source: 'tree-sitter',
-          }));
-          (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
-          
-          // Add error decoration in glyph margin
+      setIsLoadingQuerySize(true);
+
+      try {
+        const result = await window.electronAPI.bigquery.dryRun(textToAnalyze);
+
+        setSqlValidationStatus({ isValid: true, errorMessage: null, errorLine: null });
+
+        // Clear Monaco editor markers
+        const model = editorRef.current?.getModel();
+        if (model && (window as any).monaco) {
+          (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
           if (editorRef.current) {
-            const decorations = treeSitterErrors.map(err => ({
-              range: new (window as any).monaco.Range(err.line, 1, err.line, 1),
-              options: {
-                glyphMarginClassName: 'error-glyph-margin',
-                glyphMarginHoverMessage: { value: err.message },
-                minimap: { color: '#f48771' },
-                overviewRuler: {
-                  color: '#f48771',
-                  position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
-                },
-              },
-            }));
             errorDecorationsRef.current = editorRef.current.deltaDecorations(
               errorDecorationsRef.current,
-              decorations
+              []
             );
           }
-          
-          // Only set status when disconnected - when connected, dry run is authoritative
-          if (!isConnected) {
-            setSqlValidationStatus({
-              isValid: false,
-              errorMessage: firstError.message,
-              errorLine: firstError.line,
-            });
-          }
-          
-          // Still try sql-parser-cst for potentially better error messages
-          // but don't block on it - tree-sitter already found the error
         }
-      }
 
-      // Step 2: Validate with sql-parser-cst (for detailed parsing and semantic validation)
-      let parsedAst: any;
-      try {
-        // Try to parse the SQL using sql-parser-cst (returns CST directly)
-        const cst = parse(trimmedQuery, {
-          dialect: 'bigquery',
-          includeRange: true,
+        setExpectedQuerySize(result.totalBytesProcessed);
+      } catch (err: any) {
+        let errorMessage = err?.message || '';
+        const errorLocation = err?.location;
+
+        errorMessage = errorMessage
+          .replace(/^Error invoking remote method '[^']+': /, '')
+          .replace(/^Error: /, '');
+
+        let errorLine: number | null = errorLocation?.line || null;
+        let errorColumn: number | null = errorLocation?.column || null;
+
+        if (!errorLine) {
+          const lineColMatch = errorMessage.match(/at \[(\d+):(\d+)\]/);
+          if (lineColMatch) {
+            errorLine = parseInt(lineColMatch[1], 10);
+            errorColumn = parseInt(lineColMatch[2], 10);
+          }
+        }
+
+        let displayMessage = errorMessage;
+
+        const isTableNotFound =
+          errorMessage.includes('Table not found') ||
+          errorMessage.includes('Not found: Table');
+
+        const isColumnNotFound =
+          errorMessage.includes('Unrecognized name') ||
+          (errorMessage.includes('Name') && errorMessage.includes('not found'));
+
+        const isSyntaxError =
+          errorMessage.includes('Syntax error') ||
+          errorMessage.includes('syntax error');
+
+        if (isTableNotFound) {
+          const tableMatch = errorMessage.match(/Not found: Table ([^\s;]+)/);
+          if (tableMatch) {
+            displayMessage = `Table not found: ${tableMatch[1]}`;
+          } else {
+            displayMessage = 'Table not found';
+          }
+        } else if (isColumnNotFound) {
+          const columnMatch = errorMessage.match(/Unrecognized name: (\w+)/);
+          if (columnMatch) {
+            displayMessage = `Unknown column: ${columnMatch[1]}`;
+          }
+        } else if (isSyntaxError) {
+          displayMessage = errorMessage.replace(/; reason:.*$/, '');
+        }
+
+        setSqlValidationStatus({
+          isValid: false,
+          errorMessage: displayMessage,
+          errorLine: errorLine,
         });
-        
-        // Use CST directly - no conversion needed!
-        // This provides better BigQuery syntax handling and preserves more information
-        parsedAst = cst;
-        
-        // Additional validation: Check for JOINs without ON/USING clause
-        // BigQuery requires ON or USING clauses for JOINs (except CROSS JOIN)
-        const validateJoins = (stmt: any): { valid: boolean; error?: string; line?: number; column?: number } => {
-          // Helper to check if an ON clause contains a valid join condition
-          const isValidOnCondition = (onClause: any): boolean => {
-            if (!onClause) return false;
-            
-            const nodeType = getCstNodeType(onClause);
-            
-            // ON TRUE or ON FALSE - technically valid (cartesian with always true/false)
-            if (nodeType === 'bool' || nodeType === 'BooleanLiteral') return true;
-            
-            // ON 1=1 or similar comparison - valid
-            if (isBinaryExpr(onClause)) {
-              const operator = onClause.operator?.text || onClause.operator;
-              const comparisonOperators = ['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'IN', 'IS', 'AND', 'OR'];
-              if (comparisonOperators.includes(operator?.toUpperCase?.())) {
-                return true;
-              }
-              // Could be nested AND/OR with valid conditions
-              if (['AND', 'OR'].includes(operator?.toUpperCase?.())) {
-                return isValidOnCondition(onClause.left) || isValidOnCondition(onClause.right);
-              }
-            }
-            
-            // ON column_ref alone (e.g., ON t1.id) - NOT valid, needs comparison
-            if (isColumnRef(onClause)) return false;
-            
-            // Function calls might be valid (e.g., ON some_function())
-            if (isFunctionCall(onClause)) return true;
-            
-            // For other types, be lenient - let BigQuery decide
-            return true;
-          };
-          
-          const checkFromClause = (fromTables: any[]): { valid: boolean; error?: string; tableName?: string } | null => {
-            if (!Array.isArray(fromTables)) return null;
-            
-            for (const item of fromTables) {
-              // Check if this is a JOIN (not CROSS JOIN)
-              // CST structure: item.join.type.text or item.join.type or item.join
-              const joinType = item.join?.type?.text || item.join?.type || item.join;
-              if (joinType && typeof joinType === 'string') {
-                const joinTypeUpper = joinType.toUpperCase();
-                // CROSS JOIN doesn't require ON/USING
-                if (!joinTypeUpper.includes('CROSS')) {
-                  // Regular JOIN, LEFT JOIN, RIGHT JOIN, etc. require ON or USING
-                  const onCondition = item.onClause?.condition || item.on;
-                  if (!onCondition && !item.using) {
-                    const tableName = item.table?.name || item.table || item.name || 'table';
-                    return { valid: false, error: `${joinTypeUpper} is missing ON or USING clause`, tableName };
-                  }
-                  
-                  // Check if ON clause has a valid condition (not just a column reference)
-                  if (onCondition && !isValidOnCondition(onCondition)) {
-                    const tableName = item.table?.name || item.table || item.name || 'table';
-                    return { valid: false, error: `${joinTypeUpper} ON clause requires a valid condition (e.g., t1.col = t2.col)`, tableName };
-                  }
-                }
-              }
-              
-              // Check nested subqueries in FROM clause
-              if (item.query) {
-                const nestedFromTables = getCstFromTables(item.query);
-                const nestedResult = checkFromClause(nestedFromTables);
-                if (nestedResult && !nestedResult.valid) return nestedResult;
-              }
-            }
-            return null;
-          };
-          
-          // Handle CST structure - statements are in a Program node or array
-          const statements = cst.statements || (Array.isArray(cst) ? cst : [cst]);
-          
-          for (const stmt of statements) {
-            // Check for SELECT statement in CST
-            if (isSelectStmt(stmt)) {
-              const fromTables = getCstFromTables(stmt);
-              const result = checkFromClause(fromTables);
-              if (result && !result.valid) {
-                // Try to find the position of the JOIN in the query
-                let line = 1;
-                let column = 1;
-                
-                // Look for the JOIN keyword that precedes this table reference
-                const lines = trimmedQuery.split('\n');
-                for (let i = 0; i < lines.length; i++) {
-                  const lineText = lines[i];
-                  const joinRegex = new RegExp(`\\b(?:LEFT\\s+|RIGHT\\s+|INNER\\s+|OUTER\\s+|FULL\\s+)?JOIN\\b`, 'i');
-                  const joinMatch = lineText.match(joinRegex);
-                  
-                  if (joinMatch) {
-                    const tableNameParts = (result.tableName || '').split('.');
-                    const lastPart = tableNameParts[tableNameParts.length - 1] || result.tableName || '';
-                    
-                    if (lineText.toLowerCase().includes(lastPart.toLowerCase())) {
-                      line = i + 1;
-                      column = (joinMatch.index || 0) + 1;
-                      break;
-                    }
-                  }
-                }
-                
-                return { valid: false, error: result.error, line, column };
-              }
-            }
-            
-            // Check CTEs (WITH clause) - CST structure
-            const ctes = getCstWithCtes(stmt);
-            for (const cte of ctes) {
-              const cteQuery = cte.query || cte.stmt?.ast || cte.stmt;
-              if (cteQuery) {
-                const cteResult = validateJoins(cteQuery);
-                if (!cteResult.valid) return cteResult;
-              }
+
+        // Add Monaco editor markers for the BigQuery error
+        const model = editorRef.current?.getModel();
+        if (model && (window as any).monaco && errorLine) {
+          const totalLines = model.getLineCount();
+          const actualLine = Math.max(1, Math.min(errorLine, totalLines));
+          const lineLength = model.getLineLength(actualLine);
+          const actualColumn = errorColumn ? Math.max(1, Math.min(errorColumn, lineLength + 1)) : 1;
+
+          let endColumn = actualColumn + 10;
+          if (isSyntaxError || isColumnNotFound) {
+            const lineText = model.getLineContent(actualLine);
+            const wordMatch = lineText.substring(actualColumn - 1).match(/^\S+/);
+            if (wordMatch) {
+              endColumn = actualColumn + wordMatch[0].length;
             }
           }
-          
-          return { valid: true };
-        };
-        
-        const joinValidation = validateJoins(cst);
-        if (!joinValidation.valid) {
-          const errorMessage = joinValidation.error || 'JOIN is missing ON or USING clause';
-          const lineNumber = joinValidation.line || 1;
-          const column = joinValidation.column || 1;
-          
-          // Create marker for the error
+          endColumn = Math.min(endColumn, lineLength + 1);
+
           const markers: any[] = [
             {
               severity: (window as any).monaco.MarkerSeverity.Error,
-              startLineNumber: lineNumber,
-              startColumn: column,
-              endLineNumber: lineNumber,
-              endColumn: model.getLineLength(lineNumber) + 1,
-              message: errorMessage,
+              startLineNumber: actualLine,
+              startColumn: actualColumn,
+              endLineNumber: actualLine,
+              endColumn: endColumn,
+              message: displayMessage,
+              source: 'BigQuery',
             },
           ];
           (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
-          
-          // Add error indicator in glyph margin
+
           if (editorRef.current) {
             const decorations: any[] = [
               {
-                range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
+                range: new (window as any).monaco.Range(actualLine, 1, actualLine, 1),
                 options: {
                   glyphMarginClassName: 'error-glyph-margin',
-                  glyphMarginHoverMessage: { value: errorMessage },
-                  minimap: {
-                    color: '#f48771',
-                  },
+                  glyphMarginHoverMessage: { value: displayMessage },
+                  minimap: { color: '#f48771' },
                   overviewRuler: {
                     color: '#f48771',
                     position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
@@ -35002,499 +35085,60 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 },
               },
             ];
-            
+
             errorDecorationsRef.current = editorRef.current.deltaDecorations(
               errorDecorationsRef.current,
               decorations
             );
           }
-          
-          setSqlValidationStatus({ isValid: false, errorMessage, errorLine: lineNumber });
-          return;
-        }
-        
-        // Parsing succeeded - provide immediate visual feedback
-        // When connected to BigQuery, dry run will be the authoritative validation source
-        // When disconnected, local validation is the only source
-        if (!isConnected) {
-          setSqlValidationStatus((prev) => {
-            // Don't overwrite table not found errors - those are handled by calculateExpectedQuerySize
-            if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-              return prev;
-            }
-            return { isValid: true, errorMessage: null, errorLine: null };
-          });
-        }
-        // When connected, don't set isValid=true here - let dry run handle it
-        // This prevents local validation from overwriting BigQuery errors
-        
-        // Clear markers (dry run may set them again if there are errors)
-        (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
-        
-        // Clear error decorations in glyph margin
-        if (editorRef.current) {
-          errorDecorationsRef.current = editorRef.current.deltaDecorations(
-            errorDecorationsRef.current,
-            []
-          );
-        }
-      } catch (error: any) {
-        if (currentRunId !== validationRunIdRef.current) {
-          return;
-        }
-        // Parse error occurred, create marker
-        let errorMessage = error.message || 'SQL syntax error';
-        
-        // First, check if there's an obvious syntax error on line 1
-        // This helps catch errors that the parser might report as being on later lines
-        const lines = textToValidate.split('\n');
-        let firstLineError: { line: number; column: number } | null = null;
-        
-        // Check for incomplete JOIN ON clause pattern
-        // This happens when user writes "JOIN table ON" without a condition
-        let incompleteJoinError: { line: number; column: number; message: string } | null = null;
-        for (let i = 0; i < lines.length; i++) {
-          const lineText = lines[i];
-          const lineUpper = lineText.toUpperCase();
-          
-          // Check if this line has a JOIN with ON but the ON is at the end or followed by WHERE/ORDER/GROUP/etc.
-          const joinOnMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b.*\bON\s*$/i);
-          if (joinOnMatch) {
-            // ON is at the end of the line - check if next non-empty line starts with WHERE, ORDER, GROUP, etc.
-            let nextLineIndex = i + 1;
-            while (nextLineIndex < lines.length && !lines[nextLineIndex].trim()) {
-              nextLineIndex++;
-            }
-            if (nextLineIndex < lines.length) {
-              const nextLine = lines[nextLineIndex].trim().toUpperCase();
-              if (nextLine.startsWith('WHERE') || nextLine.startsWith('ORDER') || 
-                  nextLine.startsWith('GROUP') || nextLine.startsWith('HAVING') || 
-                  nextLine.startsWith('LIMIT') || nextLine.startsWith('UNION')) {
-                const joinMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b/i);
-                incompleteJoinError = {
-                  line: i + 1,
-                  column: joinMatch?.index ? joinMatch.index + 1 : 1,
-                  message: 'JOIN ON clause is incomplete. Expected a condition (e.g., t1.col = t2.col)'
-                };
-                break;
-              }
-            }
-          }
-          
-          // Also check for "JOIN table ON WHERE" on the same line
-          const joinOnWhereMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b.*\bON\s+(?:WHERE|ORDER|GROUP|HAVING|LIMIT)\b/i);
-          if (joinOnWhereMatch) {
-            const joinMatch = lineText.match(/\b(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+|FULL\s+)?JOIN\b/i);
-            incompleteJoinError = {
-              line: i + 1,
-              column: joinMatch?.index ? joinMatch.index + 1 : 1,
-              message: 'JOIN ON clause is incomplete. Expected a condition (e.g., t1.col = t2.col)'
-            };
-            break;
-          }
-        }
-        
-        if (lines.length > 0 && lines[0].trim()) {
-          const firstLine = lines[0].trim();
-          // Check for common first-line syntax errors
-          const firstLineErrors = [
-            /sel\s+ect/i,  // SEL ECT
-            /fro\s+m/i,    // FRO M
-            /wher\s+e/i,   // WHER E
-            /orde\s+r/i,   // ORDE R
-            /grou\s+p/i,   // GROU P
-          ];
-          
-          for (const pattern of firstLineErrors) {
-            const match = firstLine.match(pattern);
-            if (match && match.index !== undefined) {
-              firstLineError = { line: 1, column: match.index + 1 };
-              break;
-            }
-          }
-        }
-        
-        // Try to extract line and column from error object properties first
-        let lineNumber = 1;
-        let column = 1;
-        
-        // Check error object for position properties (sql-parser-cst may provide these)
-        if (error.loc) {
-          lineNumber = error.loc.line || error.loc.start?.line || 1;
-          column = error.loc.column || error.loc.start?.column || error.loc.start?.character || 1;
-        } else if (error.location) {
-          lineNumber = error.location.line || error.location.start?.line || 1;
-          column = error.location.column || error.location.start?.column || error.location.start?.character || 1;
-        } else if (error.line !== undefined) {
-          lineNumber = error.line;
-          column = error.column || 1;
-        } else if (error.pos !== undefined) {
-          // If we have a character position, convert it to line/column
-          let charCount = 0;
-          for (let i = 0; i < lines.length; i++) {
-            const lineLength = lines[i].length + 1; // +1 for newline
-            if (charCount + lineLength > error.pos) {
-              lineNumber = i + 1;
-              column = error.pos - charCount + 1;
-              break;
-            }
-            charCount += lineLength;
-          }
-        } else {
-          // Try to extract line and column from error message string
-          // Common error message patterns from sql-parser-cst
-          const lineMatch = errorMessage.match(/line (\d+)/i) || 
-                           errorMessage.match(/at line (\d+)/i) ||
-                           errorMessage.match(/line: (\d+)/i) ||
-                           errorMessage.match(/Line (\d+)/i);
-          const columnMatch = errorMessage.match(/column (\d+)/i) || 
-                             errorMessage.match(/at column (\d+)/i) ||
-                             errorMessage.match(/column: (\d+)/i) ||
-                             errorMessage.match(/Column (\d+)/i) ||
-                             errorMessage.match(/col (\d+)/i);
-          
-          if (lineMatch) {
-            lineNumber = parseInt(lineMatch[1], 10);
-          }
-          if (columnMatch) {
-            column = parseInt(columnMatch[1], 10);
-          }
-        }
-        
-        // If we found an error on line 1, prioritize it over parser's reported line
-        // (parser might report where it gave up, not where the first error occurred)
-        if (firstLineError && lineNumber > 1) {
-          lineNumber = firstLineError.line;
-          column = firstLineError.column;
         }
 
-        // If we still can't extract position, try to find it in the query text
-        if (lineNumber === 1 && column === 1) {
-            const lines = textToValidate.split('\n');
-            
-            // Extract potential error tokens from error message
-            // Common patterns: "Unexpected token X", "Syntax error near X", etc.
-            const errorLower = errorMessage.toLowerCase();
-            
-            // Try to find tokens mentioned in the error message
-            // Look for quoted strings or specific keywords in the error
-            const quotedMatch = errorMessage.match(/['"`]([^'"`]+)['"`]/);
-            const unexpectedMatch = errorMessage.match(/unexpected\s+(\w+)/i);
-            const nearMatch = errorMessage.match(/near\s+['"`]?(\w+)['"`]?/i);
-            
-            const searchTokens: string[] = [];
-            if (quotedMatch) searchTokens.push(quotedMatch[1]);
-            if (unexpectedMatch) searchTokens.push(unexpectedMatch[1]);
-            if (nearMatch) searchTokens.push(nearMatch[1]);
-            
-            // Also try to extract meaningful words from error message
-            const errorWords = errorLower.match(/\b(select|from|where|join|insert|update|delete|create|alter|drop|table|view|index|syntax|error|unexpected|token)\b/g);
-            if (errorWords) {
-              searchTokens.push(...errorWords);
-            }
-            
-            // Find the FIRST occurrence of any token across ALL lines
-            let earliestMatch: { line: number; column: number } | null = null;
-            
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-              const lineLower = line.toLowerCase();
-              
-              // Check each search token
-              for (const token of searchTokens) {
-                if (token && token.length > 1) {
-                  const tokenLower = token.toLowerCase();
-                  // Look for the token in the line
-                  // Try exact word match first (with word boundaries)
-                  const wordBoundaryRegex = new RegExp(`\\b${tokenLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-                  let tokenIndex = lineLower.search(wordBoundaryRegex);
-                  
-                  // If not found as whole word, try substring match
-                  if (tokenIndex === -1) {
-                    tokenIndex = lineLower.indexOf(tokenLower);
-                  }
-                  
-                  if (tokenIndex !== -1) {
-                    // Found a match - check if it's earlier than previous matches
-                    if (!earliestMatch || i + 1 < earliestMatch.line || 
-                        (i + 1 === earliestMatch.line && tokenIndex + 1 < earliestMatch.column)) {
-                      earliestMatch = { line: i + 1, column: tokenIndex + 1 };
-                    }
-                  }
-                }
-              }
-            }
-            
-            // Use the earliest match if found
-            if (earliestMatch) {
-              lineNumber = earliestMatch.line;
-              column = earliestMatch.column;
-            }
-            
-            // If still not found, look for lines that contain syntax errors
-            // Check for common syntax error patterns like "SEL ECT" (space in keyword)
-            if (lineNumber === 1 && column === 1) {
-              let earliestMalformed: { line: number; column: number } | null = null;
-              
-              for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].trim();
-                if (!line) continue;
-                
-                // Check for malformed SQL keywords (space in the middle)
-                const malformedKeywords = [
-                  /sel\s+ect/i,  // SEL ECT
-                  /fro\s+m/i,    // FRO M
-                  /wher\s+e/i,   // WHER E
-                  /orde\s+r/i,   // ORDE R
-                  /grou\s+p/i,   // GROU P
-                ];
-                
-                for (const pattern of malformedKeywords) {
-                  if (pattern.test(line)) {
-                    const match = line.match(pattern);
-                    if (match && match.index !== undefined) {
-                      // Found a malformed keyword - check if it's earlier than previous matches
-                      if (!earliestMalformed || i + 1 < earliestMalformed.line ||
-                          (i + 1 === earliestMalformed.line && match.index + 1 < earliestMalformed.column)) {
-                        earliestMalformed = { line: i + 1, column: match.index + 1 };
-                      }
-                    }
-                  }
-                }
-              }
-              
-              // Use the earliest malformed keyword match if found
-              if (earliestMalformed) {
-                lineNumber = earliestMalformed.line;
-                column = earliestMalformed.column;
-              }
-            }
-            
-            // Last resort: if we still haven't found anything, default to line 1, column 1
-            // (the error is likely at the start of the query)
-            if (lineNumber === 1 && column === 1) {
-              // Check if first line has content
-              if (lines.length > 0 && lines[0].trim()) {
-                lineNumber = 1;
-                column = 1;
-              }
-            }
-        }
-
-        // If we detected an incomplete JOIN ON clause, use that error instead
-        if (incompleteJoinError) {
-          lineNumber = incompleteJoinError.line;
-          column = incompleteJoinError.column;
-          errorMessage = incompleteJoinError.message;
-        }
-
-        // Adjust line number if we're validating a selection
-        let actualLineNumber = lineNumber;
-        if (hasSelection && selection) {
-          // Error line numbers are relative to the selected text, adjust to document line numbers
-          actualLineNumber = selection.startLineNumber + lineNumber - 1;
-        }
-
-        // Ensure line number is within bounds
-        const totalLines = model.getLineCount();
-        if (actualLineNumber > totalLines) {
-          actualLineNumber = totalLines;
-        }
-        if (actualLineNumber < 1) {
-          actualLineNumber = 1;
-        }
-
-        // Get line length to ensure column is within bounds
-        const lineLength = model.getLineLength(actualLineNumber);
-        if (column > lineLength) {
-          column = Math.max(1, lineLength);
-        }
-        if (column < 1) {
-          column = 1;
-        }
-
-        // Create marker for the error
-        const markers: any[] = [
-          {
-            severity: (window as any).monaco.MarkerSeverity.Error,
-            startLineNumber: actualLineNumber,
-            startColumn: column,
-            endLineNumber: actualLineNumber,
-            endColumn: Math.min(column + 10, lineLength + 1),
-            message: errorMessage,
-          },
-        ];
-
-        (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
-        
-        // Add error indicator in glyph margin
-        if (editorRef.current) {
-          const decorations: any[] = [
-            {
-              range: new (window as any).monaco.Range(actualLineNumber, 1, actualLineNumber, 1),
-              options: {
-                glyphMarginClassName: 'error-glyph-margin',
-                glyphMarginHoverMessage: { value: errorMessage },
-                minimap: {
-                  color: '#f48771',
-                },
-                overviewRuler: {
-                  color: '#f48771',
-                  position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
-                },
-              },
-            },
-          ];
-          
-          // Update decorations (remove old ones, add new ones)
-          errorDecorationsRef.current = editorRef.current.deltaDecorations(
-            errorDecorationsRef.current,
-            decorations
-          );
-        }
-        
-        // Update status bar - only when disconnected (dry run is authoritative when connected)
-        if (!isConnected) {
-          setSqlValidationStatus({ isValid: false, errorMessage, errorLine: actualLineNumber });
-        }
-        return;
-      }
-
-      if (currentRunId !== validationRunIdRef.current) {
-        return;
-      }
-
-      // Extract statements from CST (program.statements) or use directly if it's already a statement
-      const statements = parsedAst?.statements || (Array.isArray(parsedAst) ? parsedAst : [parsedAst]);
-      // Filter for SELECT statements - CST uses 'select_stmt', AST uses 'select'
-      const selectStatements = statements.filter((stmt: any) => {
-        const stmtType = stmt?.type || stmt?.kind;
-        return stmtType === 'select' || stmtType === 'select_stmt' || stmtType === 'SelectStatement';
-      });
-
-      let columnIssues: ColumnValidationIssue[] = [];
-
-      if (selectStatements.length > 0) {
-        const canFetchSchemas = Boolean(isConnected && window.electronAPI?.bigquery?.getTableSchema);
-        for (const statement of selectStatements) {
-          const issues = await validateColumnsForSelect(statement, textToValidate, canFetchSchemas);
-          if (issues.length > 0) {
-            columnIssues = columnIssues.concat(issues);
-          }
-          
-          // Validate GROUP BY columns
-          try {
-            const { aliasMap, uniqueTables } = buildTableAliasMapFromSelectCST(statement);
-            const groupByIssues = await validateGroupByColumns(
-              statement,
-              aliasMap,
-              uniqueTables,
-              getTableFields,
-              textToValidate,
-              canFetchSchemas
-            );
-            if (groupByIssues.length > 0) {
-              columnIssues = columnIssues.concat(groupByIssues);
-            }
-          } catch (error) {
-            // If GROUP BY validation fails, continue with other validations
-            console.warn('GROUP BY validation error:', error);
-          }
-        }
-      }
-
-      if (currentRunId !== validationRunIdRef.current) {
-        return;
-      }
-
-      if (columnIssues.length > 0) {
-        const markers: any[] = [];
-        const decorations: any[] = [];
-
-        for (const issue of columnIssues) {
-          let lineNumber = issue.line;
-          let column = issue.column;
-
-          if (hasSelection && selection) {
-            lineNumber = selection.startLineNumber + lineNumber - 1;
-          }
-
-          lineNumber = Math.max(1, Math.min(lineNumber, model.getLineCount()));
-          const lineLength = model.getLineLength(lineNumber);
-          const startColumn = Math.max(1, Math.min(column, lineLength + 1));
-          const endColumn = Math.max(startColumn, Math.min(column + issue.length, lineLength + 1));
-
-          markers.push({
-            severity: (window as any).monaco.MarkerSeverity.Error,
-            startLineNumber: lineNumber,
-            startColumn,
-            endLineNumber: lineNumber,
-            endColumn,
-            message: issue.message,
-          });
-
-          decorations.push({
-            range: new (window as any).monaco.Range(lineNumber, 1, lineNumber, 1),
-            options: {
-              glyphMarginClassName: 'error-glyph-margin',
-              glyphMarginHoverMessage: { value: issue.message },
-              minimap: {
-                color: '#f48771',
-              },
-              overviewRuler: {
-                color: '#f48771',
-                position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
-              },
-            },
-          });
-        }
-
-        (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
-
-        if (editorRef.current) {
-          errorDecorationsRef.current = editorRef.current.deltaDecorations(
-            errorDecorationsRef.current,
-            decorations
-          );
-        }
-
-        // Only set validation status when disconnected - when connected, dry run is authoritative
-        if (!isConnected) {
-          setSqlValidationStatus({
-            isValid: false,
-            errorMessage: columnIssues[0]?.message ?? 'Column validation failed',
-            errorLine: columnIssues[0]?.line ?? null,
-          });
-        }
-        return;
-      }
-
-      // Update status bar - valid SQL syntax (no column issues)
-      // Only when disconnected - when connected, dry run handles validation status
-      if (!isConnected) {
-        setSqlValidationStatus((prev) => {
-          if (prev.errorMessage && prev.errorMessage.includes('Table not found')) {
-            return prev;
-          }
-          return { isValid: true, errorMessage: null, errorLine: null };
-        });
+        setExpectedQuerySize(null);
+      } finally {
+        setIsLoadingQuerySize(false);
       }
     };
 
-    // Store validation function in ref so it can be called from selection change listener
-    validateHandlerRef.current = () => {
-      void validateSQL();
-    };
-
-    // Debounce validation to avoid excessive parsing
-    const timeoutId = setTimeout(() => {
-      void validateSQL();
-    }, 300);
+    const timeoutId = setTimeout(calculateExpectedQuerySize, 250);
     return () => clearTimeout(timeoutId);
-  }, [queryText, isConnected, validateColumnsForSelect]);
+  }, [queryText, selectedText, isConnected, connection?.projectId]);
+
+  // Listen for table reference insertion from DatasetTree
+  useEffect(() => {
+    const handleInsertTableReference = (event: CustomEvent) => {
+      if (activeTab) {
+        const tableRef = event.detail as string;
+        const currentText = activeTab.queryText || '';
+        const newText =
+          currentText + (currentText && !currentText.endsWith(' ') ? ' ' : '') + tableRef + ' ';
+        setTabQuery(activeTab.id, newText);
+
+        if (editorRef.current) {
+          editorRef.current.focus();
+          const model = editorRef.current.getModel();
+          if (model) {
+            const lineCount = model.getLineCount();
+            const lastLineLength = model.getLineLength(lineCount);
+            editorRef.current.setPosition({ lineNumber: lineCount, column: lastLineLength + 1 });
+          }
+        }
+      }
+    };
+
+    window.addEventListener('insertTableReference', handleInsertTableReference as EventListener);
+    return () => {
+      window.removeEventListener('insertTableReference', handleInsertTableReference as EventListener);
+    };
+  }, [activeTab, setTabQuery]);
+
+  // ============================================================================
+  // Handlers
+  // ============================================================================
 
   const handleExecute = async () => {
-    const currentTab = useTabsStore.getState().tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
+    const currentTab = useTabsStore
+      .getState()
+      .tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
     if (!currentTab) return;
 
     const currentConnection = useConnectionStore.getState().connection;
@@ -35505,22 +35149,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       return;
     }
 
-    // Get the query text to execute - use selection if available, otherwise use entire query
     let queryTextToExecute = '';
-    
+
     if (editorRef.current) {
       const selection = editorRef.current.getSelection();
       const model = editorRef.current.getModel();
-      
-      // Check if there's a non-empty selection
+
       if (selection && !selection.isEmpty() && model) {
         queryTextToExecute = model.getValueInRange(selection);
       } else {
-        // No selection, use entire query text
         queryTextToExecute = currentTab.queryText || '';
       }
     } else {
-      // Editor not available, use entire query text
       queryTextToExecute = currentTab.queryText || '';
     }
 
@@ -35529,42 +35169,32 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       return;
     }
 
-    // Set status to running and clear previous results in a single update
     useTabsStore.getState().updateTab(currentTab.id, {
       executionStatus: 'running',
       error: '',
       results: undefined,
     });
-    
-      // Reset completion status when starting a new query
+
     setCompletedQueryText(null);
     setCompletedQueryExecutionTime(null);
-    
-    // Clear cache for this tab when starting a new query
+
     if (window.electronAPI?.resultsCache) {
       await window.electronAPI.resultsCache.delete(currentTab.id).catch((err: unknown) => {
         console.error('Failed to clear cache:', err);
       });
     }
 
-    // Track execution start time for history
     const executionStartTime = Date.now();
 
     try {
       const result = await executeQuery(queryTextToExecute, currentTab.id);
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
-      
-      // Results are already saved to SQLite cache by the main process
-      // No need to save again here - just update tab state
-      
-      // Update tab state after cache is saved
+
       setTabResults(currentTab.id, result);
-      
-      // Mark query as completed successfully - store the executed query text and execution time
+
       setCompletedQueryText(queryTextToExecute);
       setCompletedQueryExecutionTime(result.executionTimeMs);
 
-      // Add to query history
       useQueryHistoryStore.getState().addEntry({
         queryText: queryTextToExecute,
         executedAt: new Date().toISOString(),
@@ -35576,22 +35206,15 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         jobId: result.jobId,
       });
     } catch (err: any) {
-      // Extract error message from various possible error formats
       let errorMessage = 'Query execution failed';
-      
+
       if (err) {
-        // Handle Error objects (most common case from Electron IPC)
         if (err instanceof Error) {
           errorMessage = err.message;
-        }
-        // Handle plain objects
-        else if (typeof err === 'object') {
-          // First try to get the message property
+        } else if (typeof err === 'object') {
           if (err.message && typeof err.message === 'string') {
             errorMessage = err.message;
-          }
-          // If details is an array, try to extract message from first item
-          else if (err.details) {
+          } else if (err.details) {
             if (Array.isArray(err.details) && err.details.length > 0) {
               const firstDetail = err.details[0];
               if (typeof firstDetail === 'object' && firstDetail.message) {
@@ -35606,37 +35229,27 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
             } else if (typeof err.details === 'object') {
               errorMessage = err.details.message || JSON.stringify(err.details);
             }
-          }
-          // Fallback to code if available
-          else if (err.code) {
+          } else if (err.code) {
             errorMessage = err.code;
-          }
-          // Last resort: stringify the whole object
-          else {
+          } else {
             try {
               errorMessage = JSON.stringify(err);
             } catch {
               errorMessage = String(err);
             }
           }
-        }
-        // Handle string errors
-        else if (typeof err === 'string') {
+        } else if (typeof err === 'string') {
           errorMessage = err;
-        }
-        // Handle other types
-        else {
+        } else {
           errorMessage = String(err);
         }
       }
-      
-      // Remove Electron IPC error prefix if present
+
       const electronPrefix = /^Error: Error invoking remote method 'bigquery:execute':\s*/i;
       errorMessage = errorMessage.replace(electronPrefix, '');
-      
+
       setTabError(currentTab.id, errorMessage);
 
-      // Add to query history (error case)
       useQueryHistoryStore.getState().addEntry({
         queryText: queryTextToExecute,
         executedAt: new Date().toISOString(),
@@ -35647,15 +35260,6 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       });
     }
   };
-
-  // Update the refs whenever handlers change
-  useEffect(() => {
-    executeHandlerRef.current = handleExecute;
-  }, [executeQuery, setTabError, setTabStatus, setTabResults]);
-
-  useEffect(() => {
-    expandSelectStarHandlerRef.current = handleExpandSelectStar;
-  }, [activeTab, queryText, connection, setTabQuery, setTabError]);
 
   const handleCancel = async () => {
     if (!activeTab || !jobId) return;
@@ -35672,8 +35276,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     if (activeTab) {
       const newQueryText = value || '';
       setTabQuery(activeTab.id, newQueryText);
-      
-      // If query text has changed from the completed query, reset completion status
+
       if (completedQueryText !== null && newQueryText !== completedQueryText) {
         setCompletedQueryText(null);
         setCompletedQueryExecutionTime(null);
@@ -35693,22 +35296,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
     try {
       if (activeTab.savedQueryId) {
-        // Update existing query
         await updateQuery(activeTab.savedQueryId, {
           name: saveName.trim(),
           sqlText: queryText,
           description: saveDescription.trim() || undefined,
         });
-        // Update tab title in case name changed
         updateTab(activeTab.id, {
           title: saveName.trim(),
           isModified: false,
         });
-        // Show success feedback
         setSaveSuccessMessage('Query updated successfully');
         setTimeout(() => setSaveSuccessMessage(null), 3000);
       } else {
-        // Save new query
         const saved = await saveQuery({
           name: saveName.trim(),
           sqlText: queryText,
@@ -35719,7 +35318,6 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           title: saved.name,
           isModified: false,
         });
-        // Show success feedback
         setSaveSuccessMessage('Query saved successfully');
         setTimeout(() => setSaveSuccessMessage(null), 3000);
       }
@@ -35758,76 +35356,65 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
-  const handleExpandSelectStar = async () => {
+  const handleExpandSelectStar = useCallback(async () => {
     if (!activeTab || !queryText.trim() || !connection || !window.electronAPI) {
       return;
     }
 
     try {
       const trimmedQuery = queryText.trim();
-      
-      // Check if query contains SELECT *
+
       const selectStarMatch = trimmedQuery.match(/SELECT\s+\*\s+FROM/i);
       if (!selectStarMatch) {
         setTabError(activeTab.id, 'No SELECT * FROM statement found');
         return;
       }
 
-      // Extract table reference using regex (more reliable than AST parsing)
-      // Match: FROM table_ref [AS alias] [WHERE|JOIN|...]
-      // Handle backticks, quoted identifiers, and different formats
-      const fromMatch = trimmedQuery.match(/FROM\s+([^\s]+(?:\s+AS\s+\w+)?)(?:\s|$|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP|ORDER|HAVING|LIMIT)/i);
+      const fromMatch = trimmedQuery.match(
+        /FROM\s+([^\s]+(?:\s+AS\s+\w+)?)(?:\s|$|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP|ORDER|HAVING|LIMIT)/i
+      );
       if (!fromMatch) {
         setTabError(activeTab.id, 'Could not find table reference in FROM clause');
         return;
       }
 
-      // Extract table reference (remove AS alias if present)
       let tableRef = fromMatch[1].trim();
-      // Remove AS alias
       tableRef = tableRef.replace(/\s+AS\s+\w+$/i, '');
-      // Remove backticks
       tableRef = tableRef.replace(/`/g, '');
 
-      // Parse table reference
-      // Could be: table, dataset.table, or project.dataset.table
       const parts = tableRef.split('.');
       let datasetId: string;
       let tableId: string;
 
       if (parts.length === 1) {
-        // Just table name - cannot determine dataset
-        setTabError(activeTab.id, 'Cannot determine dataset from table name. Please use dataset.table or project.dataset.table format.');
+        setTabError(
+          activeTab.id,
+          'Cannot determine dataset from table name. Please use dataset.table or project.dataset.table format.'
+        );
         return;
       } else if (parts.length === 2) {
-        // dataset.table
         datasetId = parts[0];
         tableId = parts[1];
       } else if (parts.length === 3) {
-        // project.dataset.table
         datasetId = parts[1];
         tableId = parts[2];
       } else {
-        setTabError(activeTab.id, 'Invalid table reference format. Expected: dataset.table or project.dataset.table');
+        setTabError(
+          activeTab.id,
+          'Invalid table reference format. Expected: dataset.table or project.dataset.table'
+        );
         return;
       }
 
-      // Fetch table schema
-      const schemaResult = await window.electronAPI.bigquery.getTableSchema(
-        datasetId,
-        tableId
-      );
+      const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
 
       if (!schemaResult.fields || schemaResult.fields.length === 0) {
         setTabError(activeTab.id, 'No columns found in table schema');
         return;
       }
 
-      // Extract column names (only top-level columns, not nested fields)
       const columnNames = schemaResult.fields.map((field: any) => {
-        // Escape column names that need escaping (contain special characters or are reserved words)
         const name = field.name;
-        // Check if column name needs escaping
         if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
           return name;
         } else {
@@ -35835,12 +35422,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         }
       });
 
-      // Replace SELECT * with SELECT column1, column2, ...
-      // Use a more precise regex to only replace the first SELECT * in the query
       const columnList = columnNames.join(', ');
       const expandedQuery = trimmedQuery.replace(/SELECT\s+\*/i, `SELECT ${columnList}`);
 
-      // Format the query after expansion
       try {
         const formatted = format(expandedQuery, {
           language: 'bigquery',
@@ -35851,289 +35435,31 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         });
         setTabQuery(activeTab.id, formatted);
       } catch (formatError: any) {
-        // If formatting fails, still set the expanded query without formatting
         setTabQuery(activeTab.id, expandedQuery);
-        setTabError(activeTab.id, `Expanded SELECT * but formatting failed: ${formatError.message || 'Invalid SQL syntax'}`);
+        setTabError(
+          activeTab.id,
+          `Expanded SELECT * but formatting failed: ${formatError.message || 'Invalid SQL syntax'}`
+        );
       }
     } catch (err: any) {
       setTabError(activeTab.id, `Failed to expand SELECT *: ${err.message || 'Unknown error'}`);
     }
-  };
+  }, [activeTab, queryText, connection, setTabQuery, setTabError]);
 
-  // Strip SQL comments from query text
-  // Handles both single-line (--) and multi-line (/* */) comments
-  // Preserves comments inside string literals
-  const stripComments = (sql: string): string => {
-    let result = '';
-    let i = 0;
-    const len = sql.length;
-    let inSingleQuote = false;
-    let inDoubleQuote = false;
-    let inBacktick = false;
-
-    while (i < len) {
-      const char = sql[i];
-      const nextChar = i + 1 < len ? sql[i + 1] : '';
-
-      // Handle string literals - don't process comments inside strings
-      if (char === "'" && !inDoubleQuote && !inBacktick) {
-        inSingleQuote = !inSingleQuote;
-        result += char;
-        i++;
-        continue;
-      }
-      if (char === '"' && !inSingleQuote && !inBacktick) {
-        inDoubleQuote = !inDoubleQuote;
-        result += char;
-        i++;
-        continue;
-      }
-      if (char === '`' && !inSingleQuote && !inDoubleQuote) {
-        inBacktick = !inBacktick;
-        result += char;
-        i++;
-        continue;
-      }
-
-      // If we're inside a string literal, just copy the character
-      if (inSingleQuote || inDoubleQuote || inBacktick) {
-        result += char;
-        i++;
-        continue;
-      }
-
-      // Handle single-line comments (--)
-      if (char === '-' && nextChar === '-') {
-        // Skip until end of line
-        while (i < len && sql[i] !== '\n' && sql[i] !== '\r') {
-          i++;
-        }
-        // Include the newline character if present
-        if (i < len && sql[i] === '\n') {
-          result += '\n';
-          i++;
-        } else if (i < len && sql[i] === '\r') {
-          result += '\r';
-          i++;
-          if (i < len && sql[i] === '\n') {
-            result += '\n';
-            i++;
-          }
-        }
-        continue;
-      }
-
-      // Handle multi-line comments (/* */)
-      if (char === '/' && nextChar === '*') {
-        i += 2; // Skip /*
-        // Skip until */
-        while (i < len) {
-          if (sql[i] === '*' && i + 1 < len && sql[i + 1] === '/') {
-            i += 2; // Skip */
-            break;
-          }
-          i++;
-        }
-        // Replace with a space to preserve word boundaries
-        result += ' ';
-        continue;
-      }
-
-      // Regular character
-      result += char;
-      i++;
-    }
-
-    return result;
-  };
-
-  // Extract table references from SQL query
-  const extractTableReferences = (sql: string): Array<{ datasetId: string; tableId: string }> => {
-    const tableRefsMap = new Map<string, { datasetId: string; tableId: string }>();
-    
-    // Strip comments before extracting table references
-    const sqlWithoutComments = stripComments(sql);
-    const trimmedSql = sqlWithoutComments.trim();
-    
-    if (!trimmedSql) return [];
-
-    // Match FROM and JOIN clauses (including LEFT JOIN, RIGHT JOIN, INNER JOIN, etc.)
-    // This pattern matches: FROM/JOIN/LEFT JOIN/etc followed by table reference
-    // Handles: backticked identifiers (with dots inside OR separate backticks for each part),
-    // quoted identifiers, and regular identifiers
-    // Pattern explanation:
-    // - Matches FROM or any JOIN type
-    // - Captures table reference which can be:
-    //   - Backticked with dots inside: `project.dataset.table`
-    //   - Backticked separately: `project`.`dataset`.`table`
-    //   - Quoted: "project.dataset.table" or 'project.dataset.table'
-    //   - Regular: project.dataset.table or dataset.table
-    // - Handles AS aliases
-    // The pattern now handles `part1`.`part2`.`part3` format used by BigQuery
-    const fromJoinPattern = /(?:FROM|(?:LEFT|RIGHT|INNER|OUTER|FULL|CROSS)\s+JOIN|JOIN)\s+((?:`[^`]+`(?:\.`[^`]+`){0,2}|`[^`]+`|["'][^"']+["']|[\w\-]+(?:\.[\w\-]+){0,2}))(?:\s+AS\s+[\w\-]+)?/gi;
-    const matches = Array.from(trimmedSql.matchAll(fromJoinPattern));
-
-    for (const match of matches) {
-      let tableRef = match[1].trim();
-      
-      // Remove quotes/backticks
-      tableRef = tableRef.replace(/[`"']/g, '');
-
-      // Parse table reference
-      // Could be: table, dataset.table, or project.dataset.table
-      const parts = tableRef.split('.').filter(p => p.length > 0);
-      
-      let datasetId: string | null = null;
-      let tableId: string | null = null;
-      
-      if (parts.length === 2) {
-        // dataset.table
-        datasetId = parts[0];
-        tableId = parts[1];
-      } else if (parts.length === 3) {
-        // project.dataset.table
-        datasetId = parts[1];
-        tableId = parts[2];
-      }
-      
-      // Only add if we have both dataset and table
-      if (datasetId && tableId) {
-        // Use a key to deduplicate - same table won't be counted twice
-        const key = `${datasetId}.${tableId}`;
-        if (!tableRefsMap.has(key)) {
-          tableRefsMap.set(key, { datasetId, tableId });
-        }
-      }
-    }
-
-    return Array.from(tableRefsMap.values());
-  };
-
-  // Convert SQL to dbt syntax by replacing table references with {{ source('DATASET', 'TABLE') }}
-  const convertToDbtSyntax = (sql: string): string => {
-    let result = sql;
-    
-    // Only match table references that come after FROM or JOIN keywords
-    // This prevents matching column references like alias.column
-    // Pattern matches: FROM/JOIN followed by table reference (with optional backticks)
-    const fromJoinTablePattern = /(\b(?:FROM|JOIN)\s+)((?:`[^`]+`|[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+){1,2}))(\s|$|,|\))/gi;
-    
-    const matches = Array.from(result.matchAll(fromJoinTablePattern));
-    
-    // Process matches in reverse order to preserve positions when replacing
-    const processedMatches: Array<{ start: number; end: number; replacement: string }> = [];
-    
-    for (const match of matches) {
-      const prefix = match[1]; // FROM or JOIN with trailing space
-      const tableRef = match[2]; // The table reference
-      const suffix = match[3]; // Trailing whitespace or delimiter
-      
-      // Remove backticks if present
-      const cleanRef = tableRef.replace(/`/g, '');
-      
-      // Split by dots
-      const parts = cleanRef.split('.');
-      
-      let datasetId: string | null = null;
-      let tableId: string | null = null;
-      
-      if (parts.length === 2) {
-        // dataset.table
-        datasetId = parts[0];
-        tableId = parts[1];
-      } else if (parts.length === 3) {
-        // project.dataset.table
-        datasetId = parts[1];
-        tableId = parts[2];
-      } else {
-        // Not a valid table reference (single part or more than 3 parts)
-        continue;
-      }
-      
-      // Skip if this looks like it's inside a string literal
-      const beforeMatch = result.substring(0, match.index);
-      const openSingleQuotes = (beforeMatch.match(/'/g) || []).length;
-      const openDoubleQuotes = (beforeMatch.match(/"/g) || []).length;
-      
-      // If odd number of quotes, we're inside a string - skip
-      if (openSingleQuotes % 2 !== 0 || openDoubleQuotes % 2 !== 0) {
-        continue;
-      }
-      
-      // Create dbt source syntax
-      const dbtSource = `{{ source('${datasetId}', '${tableId}') }}`;
-      
-      // Replace just the table reference part, keeping the FROM/JOIN prefix and suffix
-      processedMatches.push({
-        start: match.index!,
-        end: match.index! + match[0].length,
-        replacement: `${prefix}${dbtSource}${suffix}`,
-      });
-    }
-    
-    // Apply replacements in reverse order to preserve positions
-    processedMatches.sort((a, b) => b.start - a.start);
-    
-    for (const { start, end, replacement } of processedMatches) {
-      result = result.substring(0, start) + replacement + result.substring(end);
-    }
-    
-    return result;
-  };
-
-  // Check if the query contains dbt source/ref syntax
-  const hasDbtSyntax = queryText.includes("{{ source('") || queryText.includes("{{ ref('");
-
-  // Convert dbt source syntax back to BigQuery table references
-  const convertFromDbtSyntax = (sql: string): string => {
-    // Get project ID from connection
-    const projectId = connection?.projectId || 'project';
-    
-    // Get all cached tables for ref() lookup
-    const allTables = useBigQueryMetadataStore.getState().getAllTables();
-    
-    // Pattern to match {{ source('DATASET', 'TABLE') }}
-    const dbtSourcePattern = /\{\{\s*source\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}/g;
-    
-    // Pattern to match {{ ref('TABLE') }} - search in cached tables to find the dataset
-    const dbtRefPattern = /\{\{\s*ref\s*\(\s*'([^']+)'\s*\)\s*\}\}/g;
-    
-    let result = sql.replace(dbtSourcePattern, (_, datasetId, tableId) => {
-      return `${projectId}.${datasetId}.${tableId}`;
-    });
-    
-    result = result.replace(dbtRefPattern, (match, tableId) => {
-      // Search for the table in cached metadata
-      const tableIdLower = tableId.toLowerCase();
-      const foundTable = allTables.find(
-        (t) => t.table.id.toLowerCase() === tableIdLower
-      );
-      
-      if (foundTable) {
-        // Found the table - return full path with project, dataset, and table
-        return `${projectId}.${foundTable.dataset}.${foundTable.table.id}`;
-      }
-      
-      // Table not found in cache - keep original ref syntax as a warning
-      // or return just the table name as fallback
-      return tableId;
-    });
-    
-    return result;
-  };
-
-  // Handle dbtify/de-dbtify button click
   const handleDbtify = () => {
     if (!activeTab || !queryText.trim()) {
       return;
     }
-    
-    if (hasDbtSyntax) {
-      // De-dbtify: convert from dbt syntax to BigQuery
-      const bigQuerySyntax = convertFromDbtSyntax(queryText);
+
+    if (hasDbtSyntax(queryText)) {
+      const getAllTables = () => useBigQueryMetadataStore.getState().getAllTables();
+      const bigQuerySyntax = convertFromDbtSyntax(
+        queryText,
+        connection?.projectId || 'project',
+        getAllTables
+      );
       setTabQuery(activeTab.id, bigQuerySyntax);
     } else {
-      // Dbtify: convert from BigQuery to dbt syntax
       if (sqlValidationStatus.isValid !== true) {
         return;
       }
@@ -36142,318 +35468,52 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     }
   };
 
-  const handleToolAction = (action: () => void) => {
-    action();
-    setIsToolsMenuOpen(false);
-  };
-
-  // Calculate expected query size AND validate syntax using BigQuery's native dry run feature
-  // Dry run is the PRIMARY validation source - it catches all syntax and semantic errors accurately
-  // Local validation (tree-sitter) is only used for immediate feedback while typing
+  // Update handler refs
   useEffect(() => {
-    const calculateExpectedQuerySize = async () => {
-      // Use selected text if available, otherwise use full query text
-      const textToAnalyze = selectedText.trim() || queryText.trim();
-      
-      if (!textToAnalyze) {
-        // Query is empty - reset validation status and byte estimate
-        setExpectedQuerySize(null);
-        setSqlValidationStatus({ isValid: null, errorMessage: null, errorLine: null });
-        return;
-      }
-      
-      if (!isConnected || !connection?.projectId || !window.electronAPI) {
-        setExpectedQuerySize(null);
-        return;
-      }
+    executeHandlerRef.current = handleExecute;
+  }, [executeQuery, setTabError, setTabStatus, setTabResults]);
 
-      // ALWAYS run dry run - it's our primary validation source
-      // Don't skip based on local validation status
-      setIsLoadingQuerySize(true);
-      
-      try {
-        // Use BigQuery's native dry run for BOTH validation and byte estimate
-        // This catches ALL errors: syntax, semantic, table not found, column not found, etc.
-        const result = await window.electronAPI.bigquery.dryRun(textToAnalyze);
-        
-        // Dry run succeeded - query is VALID according to BigQuery
-        // Clear ALL previous errors (both local and BigQuery errors)
-        setSqlValidationStatus({ isValid: true, errorMessage: null, errorLine: null });
-        
-        // Clear Monaco editor markers since BigQuery says the query is valid
-        const model = editorRef.current?.getModel();
-        if (model && (window as any).monaco) {
-          (window as any).monaco.editor.setModelMarkers(model, 'sql', []);
-          // Clear error decorations in glyph margin
-          if (editorRef.current) {
-            errorDecorationsRef.current = editorRef.current.deltaDecorations(
-              errorDecorationsRef.current,
-              []
-            );
-          }
-        }
-        
-        setExpectedQuerySize(result.totalBytesProcessed);
-      } catch (err: any) {
-        // Extract error information from Electron IPC wrapper
-        let errorMessage = err?.message || '';
-        const errorDetails = typeof err?.details === 'string' ? err.details : '';
-        const errorLocation = err?.location;
-        
-        // Strip Electron IPC error prefix: "Error invoking remote method 'bigquery:dryRun': Error: "
-        errorMessage = errorMessage
-          .replace(/^Error invoking remote method '[^']+': /, '')
-          .replace(/^Error: /, '');
-        
-        // Extract line and column from various error message formats
-        let errorLine: number | null = errorLocation?.line || null;
-        let errorColumn: number | null = errorLocation?.column || null;
-        
-        // Try to extract line:column from error message like "at [2:74]"
-        if (!errorLine) {
-          const lineColMatch = errorMessage.match(/at \[(\d+):(\d+)\]/);
-          if (lineColMatch) {
-            errorLine = parseInt(lineColMatch[1], 10);
-            errorColumn = parseInt(lineColMatch[2], 10);
-          }
-        }
-        
-        // Clean up error message for display
-        let displayMessage = errorMessage;
-        
-        // Check for table not found errors
-        const isTableNotFound = 
-          errorMessage.includes('Table not found') ||
-          errorMessage.includes('Not found: Table') ||
-          errorDetails.includes('Not found: Table') ||
-          err?.code === 404;
-        
-        // Check for column not found errors
-        const isColumnNotFound = 
-          errorMessage.includes('Unrecognized name') ||
-          (errorMessage.includes('Name') && errorMessage.includes('not found'));
-        
-        // Check for syntax errors
-        const isSyntaxError = 
-          errorMessage.includes('Syntax error') ||
-          errorMessage.includes('syntax error');
-        
-        if (isTableNotFound) {
-          // Extract table reference from error message
-          const tableMatch = errorMessage.match(/Not found: Table ([^\s;]+)/) ||
-                            errorDetails.match(/Not found: Table ([^\s;]+)/);
-          if (tableMatch) {
-            displayMessage = `Table not found: ${tableMatch[1]}`;
-          } else {
-            displayMessage = 'Table not found';
-          }
-        } else if (isColumnNotFound) {
-          // Clean up column error message
-          const columnMatch = errorMessage.match(/Unrecognized name: (\w+)/);
-          if (columnMatch) {
-            displayMessage = `Unknown column: ${columnMatch[1]}`;
-          }
-        } else if (isSyntaxError) {
-          // Keep the original syntax error message - it's usually descriptive
-          // Just clean up the location part for the status bar
-          displayMessage = errorMessage.replace(/; reason:.*$/, '');
-        }
-        
-        // BigQuery dry run found an error - update status bar
-        setSqlValidationStatus({
-          isValid: false,
-          errorMessage: displayMessage,
-          errorLine: errorLine,
-        });
-        
-        // Add Monaco editor markers for the BigQuery error
-        const model = editorRef.current?.getModel();
-        if (model && (window as any).monaco && errorLine) {
-          // Ensure line and column are within bounds
-          const totalLines = model.getLineCount();
-          const actualLine = Math.max(1, Math.min(errorLine, totalLines));
-          const lineLength = model.getLineLength(actualLine);
-          const actualColumn = errorColumn ? Math.max(1, Math.min(errorColumn, lineLength + 1)) : 1;
-          
-          // Calculate end column - highlight a reasonable portion
-          let endColumn = actualColumn + 10;
-          if (isSyntaxError || isColumnNotFound) {
-            // For syntax/column errors, try to highlight the problematic token
-            const lineText = model.getLineContent(actualLine);
-            const wordMatch = lineText.substring(actualColumn - 1).match(/^\S+/);
-            if (wordMatch) {
-              endColumn = actualColumn + wordMatch[0].length;
-            }
-          }
-          endColumn = Math.min(endColumn, lineLength + 1);
-          
-          const markers: any[] = [
-            {
-              severity: (window as any).monaco.MarkerSeverity.Error,
-              startLineNumber: actualLine,
-              startColumn: actualColumn,
-              endLineNumber: actualLine,
-              endColumn: endColumn,
-              message: displayMessage,
-              source: 'BigQuery',
-            },
-          ];
-          (window as any).monaco.editor.setModelMarkers(model, 'sql', markers);
-          
-          // Add error indicator in glyph margin
-          if (editorRef.current) {
-            const decorations: any[] = [
-              {
-                range: new (window as any).monaco.Range(actualLine, 1, actualLine, 1),
-                options: {
-                  glyphMarginClassName: 'error-glyph-margin',
-                  glyphMarginHoverMessage: { value: displayMessage },
-                  minimap: {
-                    color: '#f48771',
-                  },
-                  overviewRuler: {
-                    color: '#f48771',
-                    position: (window as any).monaco?.editor?.OverviewRulerLane?.Right ?? 2,
-                  },
-                },
-              },
-            ];
-            
-            errorDecorationsRef.current = editorRef.current.deltaDecorations(
-              errorDecorationsRef.current,
-              decorations
-            );
-          }
-        }
-        
-        setExpectedQuerySize(null);
-      } finally {
-        setIsLoadingQuerySize(false);
-      }
-    };
-
-    // Debounce calculation to avoid excessive API calls
-    // Use 250ms delay - fast enough for good UX, slow enough to not spam BigQuery
-    const timeoutId = setTimeout(calculateExpectedQuerySize, 250);
-    return () => clearTimeout(timeoutId);
-  }, [queryText, selectedText, isConnected, connection?.projectId]);
-
-  // Listen for table reference insertion from DatasetTree
   useEffect(() => {
-    const handleInsertTableReference = (event: CustomEvent) => {
-      if (activeTab) {
-        const tableRef = event.detail as string;
-        const currentText = activeTab.queryText || '';
-        const newText = currentText + (currentText && !currentText.endsWith(' ') ? ' ' : '') + tableRef + ' ';
-        setTabQuery(activeTab.id, newText);
-        
-        // Focus editor and move cursor to end
-        if (editorRef.current) {
-          editorRef.current.focus();
-          const model = editorRef.current.getModel();
-          if (model) {
-            const lineCount = model.getLineCount();
-            const lastLineLength = model.getLineLength(lineCount);
-            editorRef.current.setPosition({ lineNumber: lineCount, column: lastLineLength + 1 });
-          }
-        }
-      }
-    };
+    expandSelectStarHandlerRef.current = handleExpandSelectStar;
+  }, [handleExpandSelectStar]);
 
-    window.addEventListener('insertTableReference', handleInsertTableReference as EventListener);
-    return () => {
-      window.removeEventListener('insertTableReference', handleInsertTableReference as EventListener);
-    };
-  }, [activeTab, setTabQuery]);
+  // ============================================================================
+  // Render
+  // ============================================================================
+
+  const isQueryCompleted =
+    completedQueryText !== null && queryText === completedQueryText;
 
   return (
     <div className="query-editor">
-      <div className="query-editor-toolbar">
-        <button onClick={handleExecute} disabled={shouldDisableRunButton} className="run-button">
-          {isExecuting ? 'Executing...' : (
-            <>
-              Run <span className="arrow-icon">→</span>
-            </>
-          )}
-        </button>
-        {isExecuting && <button onClick={handleCancel} className="cancel-button">Cancel</button>}
-        <div className="tools-dropdown" ref={toolsMenuRef}>
-          <button
-            onClick={() => setIsToolsMenuOpen((prev) => !prev)}
-            className={`tools-button${isToolsMenuOpen ? ' open' : ''}`}
-            aria-haspopup="true"
-            aria-expanded={isToolsMenuOpen}
-          >
-            Tools <span className="arrow-icon">▾</span>
-          </button>
-          {isToolsMenuOpen && (
-            <div className="tools-menu">
-              <button
-                onClick={() => handleToolAction(handleFormat)}
-                disabled={!activeTab || !queryText.trim()}
-                className="tools-menu-item"
-                title="Format SQL query"
-              >
-                Format
-              </button>
-              <button
-                onClick={() => handleToolAction(handleExpandSelectStar)}
-                disabled={!activeTab || !queryText.trim() || !isConnected}
-                className="tools-menu-item"
-                title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
-              >
-                Expand *
-              </button>
-              {connection?.enableDbtSupport && (
-                <button
-                  onClick={() => handleToolAction(handleDbtify)}
-                  disabled={!activeTab || !queryText.trim() || (!hasDbtSyntax && sqlValidationStatus.isValid !== true)}
-                  className="tools-menu-item"
-                  title={hasDbtSyntax ? "Convert dbt source/ref syntax back to BigQuery table references" : "Convert table references to dbt source syntax"}
-                >
-                  {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-        <button onClick={handleOpenSaveDialog} disabled={!activeTab || !queryText.trim()} className="save-button">
-          {activeTab?.savedQueryId ? 'Update' : 'Save'}
-        </button>
-        {!isConnected && <span className="connection-warning">Not connected</span>}
-      </div>
-      {showSaveDialog && (
-        <div className="save-dialog-overlay" onClick={() => setShowSaveDialog(false)}>
-          <div className="save-dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>{activeTab?.savedQueryId ? 'Update Query' : 'Save Query'}</h3>
-            <div className="form-group">
-              <label>Name *</label>
-              <input
-                type="text"
-                value={saveName}
-                onChange={(e) => setSaveName(e.target.value)}
-                placeholder="Query name"
-                autoFocus
-              />
-            </div>
-            <div className="form-group">
-              <label>Description</label>
-              <textarea
-                value={saveDescription}
-                onChange={(e) => setSaveDescription(e.target.value)}
-                placeholder="Optional description"
-                rows={3}
-              />
-            </div>
-            <div className="dialog-actions">
-              <button onClick={() => setShowSaveDialog(false)}>Cancel</button>
-              <button onClick={handleSave} disabled={!saveName.trim()}>
-                {activeTab?.savedQueryId ? 'Update' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <EditorToolbar
+        onExecute={handleExecute}
+        onCancel={handleCancel}
+        onFormat={handleFormat}
+        onExpandSelectStar={handleExpandSelectStar}
+        onDbtify={handleDbtify}
+        onOpenSaveDialog={handleOpenSaveDialog}
+        isExecuting={isExecuting}
+        isConnected={isConnected}
+        hasQuery={!!queryText.trim()}
+        hasDbtSyntax={hasDbtSyntax(queryText)}
+        isQueryValid={sqlValidationStatus.isValid}
+        enableDbtSupport={connection?.enableDbtSupport ?? false}
+        savedQueryId={activeTab?.savedQueryId || null}
+      />
+
+      <SaveQueryDialog
+        isOpen={showSaveDialog}
+        onClose={() => setShowSaveDialog(false)}
+        onSave={handleSave}
+        saveName={saveName}
+        onNameChange={setSaveName}
+        saveDescription={saveDescription}
+        onDescriptionChange={setSaveDescription}
+        isUpdate={!!activeTab?.savedQueryId}
+        isSaveDisabled={!saveName.trim()}
+      />
+
       <div className="editor-container">
         {activeTab ? (
           <>
@@ -36464,139 +35524,83 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 theme={theme === 'light' ? 'light' : 'vs-dark'}
                 value={queryText}
                 onChange={handleQueryChange}
-              beforeMount={(monaco) => {
-                // Register BigQuery language support before editor mounts
-                // Provide a function to get the current project ID
-                const getProjectId = () => {
-                  const currentConnection = useConnectionStore.getState().connection;
-                  return currentConnection?.projectId || null;
-                };
-                
-                // Store project ID getter on window for completion provider
-                (window as any).__bigqueryGetProjectId = getProjectId;
-                
-                // Set metadata store getter for completion provider
-                setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
-                
-                registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
-              }}
-              onMount={(editor) => {
-                editorRef.current = editor;
-                
-                // Add keyboard shortcut for running query (Cmd+Enter on Mac, Ctrl+Enter on Windows/Linux)
-                editor.addCommand(
-                  (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.Enter,
-                  () => {
-                    if (executeHandlerRef.current) {
-                      executeHandlerRef.current();
+                beforeMount={(monaco) => {
+                  const getProjectId = () => {
+                    const currentConnection = useConnectionStore.getState().connection;
+                    return currentConnection?.projectId || null;
+                  };
+
+                  (window as any).__bigqueryGetProjectId = getProjectId;
+                  setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
+                  registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
+                }}
+                onMount={(editor) => {
+                  editorRef.current = editor;
+
+                  // Cmd+Enter / Ctrl+Enter to run query
+                  editor.addCommand(
+                    (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.Enter,
+                    () => {
+                      if (executeHandlerRef.current) {
+                        executeHandlerRef.current();
+                      }
                     }
-                  }
-                );
+                  );
 
-                // Add keyboard shortcut for expanding SELECT * (Cmd+B on Mac, Ctrl+B on Windows/Linux)
-                editor.addCommand(
-                  (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.KeyB,
-                  () => {
-                    if (expandSelectStarHandlerRef.current) {
-                      expandSelectStarHandlerRef.current();
+                  // Cmd+B / Ctrl+B to expand SELECT *
+                  editor.addCommand(
+                    (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.KeyB,
+                    () => {
+                      if (expandSelectStarHandlerRef.current) {
+                        expandSelectStarHandlerRef.current();
+                      }
                     }
-                  }
-                );
+                  );
 
-                // Listen for selection changes to re-validate
-                editor.onMouseDown(() => {
-                  isMouseSelectingRef.current = true;
-                  if (selectionValidationTimeoutRef.current !== null) {
-                    window.clearTimeout(selectionValidationTimeoutRef.current);
-                    selectionValidationTimeoutRef.current = null;
-                  }
-                });
-
-                editor.onMouseUp(() => {
-                  isMouseSelectingRef.current = false;
-                  scheduleSelectionValidation(200);
-                  // Update selected text state
-                  const selection = editor.getSelection();
-                  const model = editor.getModel();
-                  if (selection && !selection.isEmpty() && model) {
-                    setSelectedText(model.getValueInRange(selection));
-                  } else {
-                    setSelectedText('');
-                  }
-                });
-
-                editor.onDidChangeCursorSelection(() => {
-                  if (isMouseSelectingRef.current) {
-                    return;
-                  }
-                  scheduleSelectionValidation();
-                  // Update selected text state
-                  const selection = editor.getSelection();
-                  const model = editor.getModel();
-                  if (selection && !selection.isEmpty() && model) {
-                    setSelectedText(model.getValueInRange(selection));
-                  } else {
-                    setSelectedText('');
-                  }
-                });
-              }}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 12,
-                lineNumbers: 'on',
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                suggestOnTriggerCharacters: true,
-                quickSuggestions: {
-                  other: true,
-                  comments: false,
-                  strings: false,
-                },
-                suggestSelection: 'first',
-                tabCompletion: 'on',
-                hover: {
-                  enabled: true,
-                  delay: 300,
-                  sticky: true,
-                },
-                // Ensure tooltips can render above the editor
-                fixedOverflowWidgets: true,
-                // Enable glyph margin for error indicators
-                glyphMargin: true,
-              }}
+                  // Track selection changes for validation
+                  editor.onDidChangeCursorSelection(() => {
+                    const selection = editor.getSelection();
+                    const model = editor.getModel();
+                    if (selection && !selection.isEmpty() && model) {
+                      setSelectedText(model.getValueInRange(selection));
+                    } else {
+                      setSelectedText('');
+                    }
+                  });
+                }}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 12,
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  suggestOnTriggerCharacters: true,
+                  quickSuggestions: {
+                    other: true,
+                    comments: false,
+                    strings: false,
+                  },
+                  suggestSelection: 'first',
+                  tabCompletion: 'on',
+                  hover: {
+                    enabled: true,
+                    delay: 300,
+                    sticky: true,
+                  },
+                  fixedOverflowWidgets: true,
+                  glyphMargin: true,
+                }}
               />
             </div>
-            <div className="editor-status-bar">
-              <div className="status-left">
-                {saveSuccessMessage ? (
-                  <span className="status-text status-valid">
-                    <span className="status-indicator status-indicator-valid"></span>
-                    {saveSuccessMessage}
-                  </span>
-                ) : completedQueryText !== null && queryText === completedQueryText ? (
-                  <span className="status-text status-valid">
-                    <span className="status-indicator status-indicator-valid"></span>
-                    Query completed{completedQueryExecutionTime !== null ? ` in ${formatExecutionTime(completedQueryExecutionTime)}` : ''}
-                  </span>
-                ) : sqlValidationStatus.isValid === null ? (
-                  <span className="status-text">✦ Type a query to get started</span>
-                ) : sqlValidationStatus.isValid ? (
-                  <span className="status-text status-valid">
-                    <span className="status-indicator status-indicator-valid"></span>
-                    {expectedQuerySize !== null 
-                      ? `This query will process ${formatBytes(expectedQuerySize)} when run`
-                      : isLoadingQuerySize 
-                        ? 'Validating query...'
-                        : 'Query is valid'}
-                  </span>
-                ) : (
-                  <span className="status-text status-invalid">
-                    <span className="status-indicator status-indicator-invalid"></span>
-                    <span className="status-error-message">{sqlValidationStatus.errorMessage || 'SQL syntax error'}</span>
-                  </span>
-                )}
-              </div>
-            </div>
+
+            <EditorStatusBar
+              saveSuccessMessage={saveSuccessMessage}
+              isQueryCompleted={isQueryCompleted}
+              completedExecutionTime={completedQueryExecutionTime}
+              validationStatus={sqlValidationStatus}
+              expectedQuerySize={expectedQuerySize}
+              isLoadingQuerySize={isLoadingQuerySize}
+            />
           </>
         ) : (
           <div className="no-tab-message">No active tab</div>
