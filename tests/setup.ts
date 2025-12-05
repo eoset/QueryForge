@@ -39,6 +39,7 @@ global.window = global.window || {};
     getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
     getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
     getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+    getJobInfo: jest.fn().mockResolvedValue({}),
   },
   connection: {
     configure: jest.fn().mockResolvedValue(undefined),
