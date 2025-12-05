@@ -88,11 +88,13 @@ src/
       connection.ts
       export.ts
       queries.ts
+      query-history.ts
       results-cache.ts
       tabs.ts
       ui-settings.ts
     storage/
       connection-store.ts
+      query-history-store.ts
       query-store.ts
       results-cache-sqlite.ts
       results-cache-store.ts
@@ -120,6 +122,9 @@ src/
       QueryEditor/
         QueryEditor.css
         QueryEditor.tsx
+      QueryHistory/
+        QueryHistory.css
+        QueryHistory.tsx
       QueryResults/
         CanvasTable.tsx
         ColumnSortMenu.css
@@ -160,6 +165,7 @@ src/
       bigquery-metadata-store.ts
       connection-store.ts
       queries-store.ts
+      query-history-store.ts
       tabs-store.ts
     types/
       electron-api.d.ts
@@ -6982,6 +6988,272 @@ export const RowContextMenu: React.FC<ContextMenuProps> = ({
 };
 ````
 
+## File: src/renderer/components/SampleDataModal/SampleDataModal.tsx
+````typescript
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useBigQuery } from '../../hooks/useBigQuery';
+import { CanvasTable } from '../QueryResults/CanvasTable';
+import type { QueryResult } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import './SampleDataModal.css';
+
+interface SampleDataModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+const ROWS_PER_PAGE = 200;
+
+export const SampleDataModal: React.FC<SampleDataModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const { executeQuery, isConnected } = useBigQuery();
+  const [results, setResults] = useState<QueryResult | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+
+  useEffect(() => {
+    const loadSampleData = async () => {
+      if (!isConnected) {
+        setError('Not connected to BigQuery');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const tableRef = `\`${projectId}.${datasetId}.${tableId}\``;
+        const queryText = `SELECT * FROM ${tableRef} LIMIT 1000`;
+        const result = await executeQuery(queryText);
+        setResults(result);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load sample data');
+        console.error('Failed to load sample data:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadSampleData();
+  }, [projectId, datasetId, tableId, executeQuery, isConnected]);
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, _rowIndex: number) => {
+    // No-op for sample data modal - could be extended in the future
+    e.preventDefault();
+  }, []);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, _columnIndex: number) => {
+    // No-op for sample data modal - could be extended in the future
+    e.preventDefault();
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = useMemo(() => {
+    if (!results?.rows || sortColumn === null || sortDirection === null) {
+      return results?.rows || [];
+    }
+
+    const sorted = [...results.rows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = results.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [results?.rows, results?.columns, sortColumn, sortDirection]);
+
+  // Pagination calculations
+  const totalRows = sortedRows.length;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + ROWS_PER_PAGE, totalRows);
+  const paginatedRows = sortedRows.slice(startIndex, endIndex);
+
+  // Create a QueryResult-like object for the CanvasTable with paginated rows
+  const paginatedResults: QueryResult | null = results
+    ? {
+        ...results,
+        rows: paginatedRows,
+      }
+    : null;
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="sample-data-modal-overlay" onClick={onClose}>
+      <div className="sample-data-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="sample-data-modal-header">
+          <h2>Sample Data: {datasetId}.{tableId}</h2>
+          <button className="sample-data-modal-close" onClick={onClose} title="Close">
+            ×
+          </button>
+        </div>
+        
+        <div className="sample-data-modal-content">
+          {isLoading && (
+            <div className="sample-data-loading">
+              <div className="loading-progress-bar">
+                <div className="loading-progress-bar-fill"></div>
+              </div>
+              <div className="loading-text">Loading sample data...</div>
+            </div>
+          )}
+          
+          {error && (
+            <div className="sample-data-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          
+          {!isLoading && !error && results && (
+            <>
+              <div className="sample-data-info">
+                <span>{results.rowsReturned.toLocaleString()} rows</span>
+                {results.totalRows > results.rowsReturned && (
+                  <span> of {results.totalRows.toLocaleString()} total</span>
+                )}
+                <span> • {results.executionTimeMs}ms</span>
+                {results.bytesProcessed && (
+                  <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+                )}
+              </div>
+              
+              {paginatedResults && paginatedResults.rows.length > 0 ? (
+                <>
+                  <div className="sample-data-canvas-container">
+                    <CanvasTable
+                      results={paginatedResults}
+                      columnWidths={columnWidths}
+                      onColumnResize={handleColumnResize}
+                      onRowContextMenu={handleRowContextMenu}
+                      onColumnContextMenu={handleColumnContextMenu}
+                      formatValue={formatValue}
+                      currentPage={currentPage}
+                      rowsPerPage={ROWS_PER_PAGE}
+                      sortColumn={sortColumn}
+                      sortDirection={sortDirection}
+                      onSortColumn={handleSortColumn}
+                    />
+                  </div>
+                  
+                  {totalPages > 1 && (
+                    <div className="sample-data-pagination">
+                      <button
+                        className="pagination-button"
+                        onClick={handlePreviousPage}
+                        disabled={currentPage === 1}
+                        title="Previous page"
+                      >
+                        ‹
+                      </button>
+                      <span className="pagination-info">
+                        {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+                      </span>
+                      <button
+                        className="pagination-button"
+                        onClick={handleNextPage}
+                        disabled={currentPage === totalPages}
+                        title="Next page"
+                      >
+                        ›
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="sample-data-empty">No data available</div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/SavedQueries/SavedQueries.tsx
 ````typescript
 import React, { useState, useEffect } from 'react';
@@ -7324,49 +7596,6 @@ export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
           ↻
         </button>
       )}
-    </div>
-  );
-};
-````
-
-## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
-````typescript
-import React from 'react';
-import './SidebarSwitcher.css';
-
-export type SidebarView = 'explorer' | 'saved-queries';
-
-interface SidebarSwitcherProps {
-  currentView: SidebarView;
-  onViewChange: (view: SidebarView) => void;
-  collapsed?: boolean;
-}
-
-export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
-  currentView,
-  onViewChange,
-  collapsed = false,
-}) => {
-  if (collapsed) {
-    return null;
-  }
-
-  return (
-    <div className="sidebar-switcher">
-      <button
-        className={`sidebar-switcher-button ${currentView === 'explorer' ? 'active' : ''}`}
-        onClick={() => onViewChange('explorer')}
-        title="Explorer"
-      >
-        EXPLORER
-      </button>
-      <button
-        className={`sidebar-switcher-button ${currentView === 'saved-queries' ? 'active' : ''}`}
-        onClick={() => onViewChange('saved-queries')}
-        title="Saved Queries"
-      >
-        SAVED QUERIES
-      </button>
     </div>
   );
 };
@@ -9200,75 +9429,6 @@ export interface Table {
 }
 ````
 
-## File: src/shared/types/query.ts
-````typescript
-/**
- * Query-related types
- */
-
-export type TabType = 'query' | 'explorer' | 'saved-queries';
-
-export interface QueryTab {
-  id: string;
-  title: string;
-  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
-  queryText: string;
-  isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string; // ISO timestamp
-  lastExecutedQueryText?: string; // The query text that was last executed
-  savedQueryId?: string;
-}
-
-export interface SavedQuery {
-  id: string;
-  name: string;
-  sqlText: string;
-  description?: string;
-  createdAt: string; // ISO timestamp
-  updatedAt: string; // ISO timestamp
-  tags?: string[];
-}
-
-export interface SaveQueryInput {
-  name: string;
-  sqlText: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface UpdateQueryInput {
-  name?: string;
-  sqlText?: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface QueryResult {
-  columns: ColumnMetadata[];
-  rows: Row[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-export interface ColumnMetadata {
-  name: string;
-  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
-  mode?: string; // NULLABLE, REQUIRED, REPEATED
-}
-
-export interface Row {
-  values: any[]; // Values matching column order
-}
-````
-
 ## File: src/shared/utils/connection-validation.ts
 ````typescript
 import type { ConnectionConfig } from '../types/connection';
@@ -9926,6 +10086,71 @@ export function registerExportHandlers(): void {
 }
 ````
 
+## File: src/main/ipc/query-history.ts
+````typescript
+/**
+ * IPC handlers for query history operations
+ */
+
+import { ipcMain } from 'electron';
+import {
+  addHistoryEntry,
+  getHistoryEntries,
+  searchHistoryEntries,
+  getHistoryEntry,
+  deleteHistoryEntry,
+  updateHistoryEntryByJobId,
+  clearAllHistory,
+  getHistoryCount,
+  closeHistoryDatabase,
+} from '../storage/query-history-store';
+import type { QueryHistoryEntry } from '../../shared/types/query';
+
+export function registerQueryHistoryHandlers(): void {
+  // Add a new history entry
+  ipcMain.handle('query-history:add', async (_event, entry: QueryHistoryEntry) => {
+    addHistoryEntry(entry);
+  });
+
+  // Get history entries with pagination
+  ipcMain.handle('query-history:list', async (_event, limit?: number, offset?: number) => {
+    return getHistoryEntries(limit, offset);
+  });
+
+  // Search history entries
+  ipcMain.handle('query-history:search', async (_event, searchTerm: string, limit?: number) => {
+    return searchHistoryEntries(searchTerm, limit);
+  });
+
+  // Get a single history entry
+  ipcMain.handle('query-history:get', async (_event, id: string) => {
+    return getHistoryEntry(id);
+  });
+
+  // Delete a history entry
+  ipcMain.handle('query-history:delete', async (_event, id: string) => {
+    deleteHistoryEntry(id);
+  });
+
+  // Update a history entry's totalRows by jobId
+  ipcMain.handle('query-history:updateByJobId', async (_event, jobId: string, totalRows: number) => {
+    updateHistoryEntryByJobId(jobId, totalRows);
+  });
+
+  // Clear all history
+  ipcMain.handle('query-history:clear', async () => {
+    clearAllHistory();
+  });
+
+  // Get history count
+  ipcMain.handle('query-history:count', async () => {
+    return getHistoryCount();
+  });
+}
+
+export { closeHistoryDatabase };
+````
+
 ## File: src/main/ipc/results-cache.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -10093,6 +10318,286 @@ export function registerUISettingsHandlers(): void {
   ipcMain.handle('ui-settings:setTheme', async (_event, theme: Theme) => {
     setTheme(theme);
   });
+}
+````
+
+## File: src/main/storage/query-history-store.ts
+````typescript
+/**
+ * SQLite-based query history store
+ * 
+ * Stores executed queries with metadata for the History sidebar view.
+ * Uses the same SQLite instance as the results cache for efficiency.
+ */
+
+import Database from 'better-sqlite3';
+import { app } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import type { QueryHistoryEntry } from '../../shared/types/query';
+
+// Maximum number of history entries to keep
+const MAX_HISTORY_ENTRIES = 1000;
+
+// Database instance - lazy initialized
+let db: Database.Database | null = null;
+
+/**
+ * Get the path to the SQLite database file
+ */
+function getDbPath(): string {
+  const userDataPath = app.getPath('userData');
+  return path.join(userDataPath, 'query-history.sqlite');
+}
+
+/**
+ * Initialize the SQLite database with required tables
+ */
+function getDb(): Database.Database {
+  if (db) return db;
+  
+  const dbPath = getDbPath();
+  
+  db = new Database(dbPath);
+  
+  // Enable WAL mode for better concurrent read/write performance
+  db.pragma('journal_mode = WAL');
+  
+  // Set reasonable cache size
+  db.pragma('cache_size = -10000');
+  
+  // Synchronous NORMAL is a good balance of safety and speed
+  db.pragma('synchronous = NORMAL');
+  
+  // Create tables if they don't exist
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS query_history (
+      id TEXT PRIMARY KEY,
+      query_text TEXT NOT NULL,
+      executed_at TEXT NOT NULL,
+      execution_time_ms INTEGER NOT NULL,
+      bytes_processed INTEGER,
+      total_rows INTEGER,
+      status TEXT NOT NULL,
+      error_message TEXT,
+      project_id TEXT NOT NULL,
+      job_id TEXT
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_history_executed_at ON query_history(executed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_history_project_id ON query_history(project_id);
+  `);
+  
+  return db;
+}
+
+/**
+ * Close the database connection
+ */
+export function closeHistoryDatabase(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
+
+/**
+ * Add a new query history entry
+ */
+export function addHistoryEntry(entry: QueryHistoryEntry): void {
+  const database = getDb();
+  
+  const insert = database.prepare(`
+    INSERT INTO query_history (id, query_text, executed_at, execution_time_ms, bytes_processed, total_rows, status, error_message, project_id, job_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  insert.run(
+    entry.id,
+    entry.queryText,
+    entry.executedAt,
+    entry.executionTimeMs,
+    entry.bytesProcessed ?? null,
+    entry.totalRows ?? null,
+    entry.status,
+    entry.errorMessage ?? null,
+    entry.projectId,
+    entry.jobId ?? null
+  );
+  
+  // Cleanup old entries if we exceed the limit
+  pruneOldEntries();
+}
+
+/**
+ * Get all history entries, ordered by execution time (newest first)
+ */
+export function getHistoryEntries(limit: number = 100, offset: number = 0): QueryHistoryEntry[] {
+  const database = getDb();
+  
+  const rows = database.prepare(`
+    SELECT id, query_text, executed_at, execution_time_ms, bytes_processed, total_rows, status, error_message, project_id, job_id
+    FROM query_history
+    ORDER BY executed_at DESC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset) as {
+    id: string;
+    query_text: string;
+    executed_at: string;
+    execution_time_ms: number;
+    bytes_processed: number | null;
+    total_rows: number | null;
+    status: string;
+    error_message: string | null;
+    project_id: string;
+    job_id: string | null;
+  }[];
+  
+  return rows.map(row => ({
+    id: row.id,
+    queryText: row.query_text,
+    executedAt: row.executed_at,
+    executionTimeMs: row.execution_time_ms,
+    bytesProcessed: row.bytes_processed ?? undefined,
+    totalRows: row.total_rows ?? undefined,
+    status: row.status as 'completed' | 'error' | 'cancelled',
+    errorMessage: row.error_message ?? undefined,
+    projectId: row.project_id,
+    jobId: row.job_id ?? undefined,
+  }));
+}
+
+/**
+ * Search history entries by query text
+ */
+export function searchHistoryEntries(searchTerm: string, limit: number = 100): QueryHistoryEntry[] {
+  const database = getDb();
+  
+  const rows = database.prepare(`
+    SELECT id, query_text, executed_at, execution_time_ms, bytes_processed, total_rows, status, error_message, project_id, job_id
+    FROM query_history
+    WHERE query_text LIKE ?
+    ORDER BY executed_at DESC
+    LIMIT ?
+  `).all(`%${searchTerm}%`, limit) as {
+    id: string;
+    query_text: string;
+    executed_at: string;
+    execution_time_ms: number;
+    bytes_processed: number | null;
+    total_rows: number | null;
+    status: string;
+    error_message: string | null;
+    project_id: string;
+    job_id: string | null;
+  }[];
+  
+  return rows.map(row => ({
+    id: row.id,
+    queryText: row.query_text,
+    executedAt: row.executed_at,
+    executionTimeMs: row.execution_time_ms,
+    bytesProcessed: row.bytes_processed ?? undefined,
+    totalRows: row.total_rows ?? undefined,
+    status: row.status as 'completed' | 'error' | 'cancelled',
+    errorMessage: row.error_message ?? undefined,
+    projectId: row.project_id,
+    jobId: row.job_id ?? undefined,
+  }));
+}
+
+/**
+ * Get a single history entry by ID
+ */
+export function getHistoryEntry(id: string): QueryHistoryEntry | undefined {
+  const database = getDb();
+  
+  const row = database.prepare(`
+    SELECT id, query_text, executed_at, execution_time_ms, bytes_processed, total_rows, status, error_message, project_id, job_id
+    FROM query_history
+    WHERE id = ?
+  `).get(id) as {
+    id: string;
+    query_text: string;
+    executed_at: string;
+    execution_time_ms: number;
+    bytes_processed: number | null;
+    total_rows: number | null;
+    status: string;
+    error_message: string | null;
+    project_id: string;
+    job_id: string | null;
+  } | undefined;
+  
+  if (!row) return undefined;
+  
+  return {
+    id: row.id,
+    queryText: row.query_text,
+    executedAt: row.executed_at,
+    executionTimeMs: row.execution_time_ms,
+    bytesProcessed: row.bytes_processed ?? undefined,
+    totalRows: row.total_rows ?? undefined,
+    status: row.status as 'completed' | 'error' | 'cancelled',
+    errorMessage: row.error_message ?? undefined,
+    projectId: row.project_id,
+    jobId: row.job_id ?? undefined,
+  };
+}
+
+/**
+ * Update a history entry's totalRows by jobId
+ * Used to update the row count after background fetching completes
+ */
+export function updateHistoryEntryByJobId(jobId: string, totalRows: number): void {
+  const database = getDb();
+  database.prepare('UPDATE query_history SET total_rows = ? WHERE job_id = ?').run(totalRows, jobId);
+}
+
+/**
+ * Delete a history entry by ID
+ */
+export function deleteHistoryEntry(id: string): void {
+  const database = getDb();
+  database.prepare('DELETE FROM query_history WHERE id = ?').run(id);
+}
+
+/**
+ * Clear all history entries
+ */
+export function clearAllHistory(): void {
+  const database = getDb();
+  database.exec('DELETE FROM query_history');
+  database.exec('VACUUM');
+}
+
+/**
+ * Get the total count of history entries
+ */
+export function getHistoryCount(): number {
+  const database = getDb();
+  const result = database.prepare('SELECT COUNT(*) as count FROM query_history').get() as { count: number };
+  return result.count;
+}
+
+/**
+ * Remove old entries when we exceed the maximum
+ */
+function pruneOldEntries(): void {
+  const database = getDb();
+  const count = getHistoryCount();
+  
+  if (count > MAX_HISTORY_ENTRIES) {
+    const deleteCount = count - MAX_HISTORY_ENTRIES;
+    database.prepare(`
+      DELETE FROM query_history
+      WHERE id IN (
+        SELECT id FROM query_history
+        ORDER BY executed_at ASC
+        LIMIT ?
+      )
+    `).run(deleteCount);
+  }
 }
 ````
 
@@ -10689,224 +11194,6 @@ export function setTheme(theme: Theme): void {
 .donation-button:hover {
   background-color: #0051cc;
 }
-````
-
-## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import { useConnectionStore } from '../../stores/connection-store';
-import { validateConnectionConfig } from '../../../shared/utils/connection-validation';
-import type { ConnectionConfig } from '../../../shared/types/connection';
-import './ConnectionDialog.css';
-
-interface ConnectionDialogProps {
-  onClose: () => void;
-}
-
-export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) => {
-  const [projectId, setProjectId] = useState('');
-  const [authType, setAuthType] = useState<'service-account' | 'application-default'>(
-    'service-account'
-  );
-  const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
-  const [serviceAccountKey, setServiceAccountKey] = useState('');
-  const [location, setLocation] = useState('EU');
-  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
-
-  const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
-
-  // Load saved connection settings when dialog opens
-  useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.connection.getSaved().then((saved) => {
-        if (saved) {
-          setProjectId(saved.projectId);
-          setAuthType(saved.authType);
-          setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
-          setLocation(saved.location || 'EU');
-          setEnableDbtSupport(saved.enableDbtSupport || false);
-          // Note: We don't load the service account key content for security reasons
-          // User needs to re-enter it or use the file path
-        }
-      }).catch((err) => {
-        console.error('Failed to load saved connection:', err);
-      });
-    }
-  }, []);
-
-  const handleConnect = async () => {
-    setError(null);
-    setIsConnecting(true);
-    setConnecting(true);
-
-    const config: ConnectionConfig = {
-      projectId: projectId.trim(),
-      authType,
-      serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
-      serviceAccountKey: serviceAccountKey.trim() || undefined,
-      location: location.trim() || 'EU',
-      enableDbtSupport,
-    };
-
-    // Validate configuration
-    const validation = validateConnectionConfig(config);
-    if (!validation.valid) {
-      setError(validation.error || 'Invalid configuration');
-      setIsConnecting(false);
-      setConnecting(false);
-      return;
-    }
-
-    try {
-      if (!window.electronAPI) {
-        throw new Error('Electron API not available');
-      }
-
-      // Test connection first
-      const isValid = await window.electronAPI.connection.test(config);
-      if (!isValid) {
-        throw new Error('Connection test failed. Please check your credentials.');
-      }
-
-      // Configure connection
-      await window.electronAPI.connection.configure(config);
-
-      // Get active connection
-      const activeConnection = await window.electronAPI.connection.getActive();
-      if (activeConnection) {
-        setConnection(activeConnection);
-        onClose();
-      }
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to connect to BigQuery';
-      setError(errorMessage);
-      setConnectionError(errorMessage);
-    } finally {
-      setIsConnecting(false);
-      setConnecting(false);
-    }
-  };
-
-  return (
-    <div className="connection-dialog-overlay" onClick={onClose}>
-      <div className="connection-dialog" onClick={(e) => e.stopPropagation()}>
-        <h2>Connect to BigQuery</h2>
-
-        <div className="form-group">
-          <label htmlFor="projectId">Project ID *</label>
-          <input
-            id="projectId"
-            type="text"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            placeholder="my-project-id"
-            disabled={isConnecting}
-          />
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="location">Location *</label>
-          <select
-            id="location"
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            disabled={isConnecting}
-          >
-            <option value="EU">EU</option>
-            <option value="US">US</option>
-            <option value="asia-northeast1">Asia (Tokyo)</option>
-            <option value="asia-south1">Asia (Mumbai)</option>
-            <option value="asia-southeast1">Asia (Singapore)</option>
-            <option value="australia-southeast1">Australia (Sydney)</option>
-            <option value="europe-west1">Europe (Belgium)</option>
-            <option value="europe-west2">Europe (London)</option>
-            <option value="europe-west3">Europe (Frankfurt)</option>
-            <option value="europe-west4">Europe (Netherlands)</option>
-            <option value="europe-west6">Europe (Zurich)</option>
-            <option value="northamerica-northeast1">North America (Montreal)</option>
-            <option value="southamerica-east1">South America (São Paulo)</option>
-            <option value="us-central1">US (Iowa)</option>
-            <option value="us-east1">US (South Carolina)</option>
-            <option value="us-east4">US (Northern Virginia)</option>
-            <option value="us-west1">US (Oregon)</option>
-            <option value="us-west2">US (Los Angeles)</option>
-            <option value="us-west3">US (Salt Lake City)</option>
-            <option value="us-west4">US (Las Vegas)</option>
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="authType">Authentication Method *</label>
-          <select
-            id="authType"
-            value={authType}
-            onChange={(e) =>
-              setAuthType(e.target.value as 'service-account' | 'application-default')
-            }
-            disabled={isConnecting}
-          >
-            <option value="service-account">Service Account Key</option>
-            <option value="application-default">Application Default Credentials</option>
-          </select>
-        </div>
-
-        {authType === 'service-account' && (
-          <>
-            <div className="form-group">
-              <label htmlFor="keyPath">Service Account Key File Path</label>
-              <input
-                id="keyPath"
-                type="text"
-                value={serviceAccountKeyPath}
-                onChange={(e) => setServiceAccountKeyPath(e.target.value)}
-                placeholder="/path/to/key.json"
-                disabled={isConnecting}
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="keyContent">Or Paste Service Account Key JSON</label>
-              <textarea
-                id="keyContent"
-                value={serviceAccountKey}
-                onChange={(e) => setServiceAccountKey(e.target.value)}
-                placeholder='{"type": "service_account", ...}'
-                rows={5}
-                disabled={isConnecting}
-              />
-            </div>
-          </>
-        )}
-
-        <div className="form-group checkbox-group">
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={enableDbtSupport}
-              onChange={(e) => setEnableDbtSupport(e.target.checked)}
-              disabled={isConnecting}
-            />
-            Enable dbt syntax support
-          </label>
-          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
-        </div>
-
-        {error && <div className="error-message">{error}</div>}
-
-        <div className="dialog-actions">
-          <button onClick={onClose} disabled={isConnecting}>
-            Cancel
-          </button>
-          <button onClick={handleConnect} disabled={isConnecting || !projectId.trim()}>
-            {isConnecting ? 'Connecting...' : 'Connect'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/components/DatasetTree/DatasetTree.tsx
@@ -11684,6 +11971,713 @@ export const DatasetTree = memo(DatasetTreeComponent, (prevProps, nextProps) => 
 }
 ````
 
+## File: src/renderer/components/QueryHistory/QueryHistory.css
+````css
+.query-history {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-primary);
+  overflow: hidden;
+  min-height: 0;
+}
+
+.query-history.collapsed {
+  width: 30px;
+}
+
+.query-history-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  position: relative;
+}
+
+.query-history-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: var(--border-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
+
+.query-history-search-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background-color: var(--bg-primary);
+}
+
+.query-history-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.query-history-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.query-history-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
+
+.query-history-loading,
+.query-history-empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.query-history-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+  border-left: 3px solid transparent;
+}
+
+.query-history-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.query-history-item.status-completed {
+  border-left-color: var(--success-color, #4caf50);
+}
+
+.query-history-item.status-error {
+  border-left-color: var(--error-color, #f44336);
+}
+
+.query-history-item.status-cancelled {
+  border-left-color: var(--warning-color, #ff9800);
+}
+
+.query-history-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+
+.query-history-item-status {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.query-history-status-icon {
+  font-size: 0.75rem;
+}
+
+.query-history-status-icon.completed {
+  color: var(--success-color, #4caf50);
+}
+
+.query-history-status-icon.error {
+  color: var(--error-color, #f44336);
+}
+
+.query-history-status-icon.cancelled {
+  color: var(--warning-color, #ff9800);
+}
+
+.query-history-item-time {
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+
+.query-history-item-query {
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 0.25rem;
+  line-height: 1.4;
+}
+
+.query-history-item-meta {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.query-history-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+.query-history-meta-icon {
+  font-size: 0.625rem;
+  opacity: 0.7;
+}
+
+.query-history-error-message {
+  font-size: 0.6875rem;
+  color: var(--error-color, #f44336);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Context menu - reuses existing styles */
+.context-menu {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.context-menu-item.danger {
+  color: var(--error-color, #f44336);
+}
+
+.context-menu-item.danger:hover {
+  background-color: rgba(244, 67, 54, 0.1);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background-color: var(--border-primary);
+  margin: 0.25rem 0;
+}
+
+/* Query preview tooltip */
+.query-history-tooltip {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-tooltip);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.query-history-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
+
+/* Clear history button in footer */
+.query-history-footer {
+  display: flex;
+  justify-content: center;
+  padding: 0.5rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.query-history-clear-btn {
+  background: none;
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.query-history-clear-btn:hover {
+  background-color: rgba(244, 67, 54, 0.1);
+  border-color: var(--error-color, #f44336);
+  color: var(--error-color, #f44336);
+}
+
+/* Date separator */
+.query-history-date-separator {
+  padding: 0.5rem 0.5rem 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+````
+
+## File: src/renderer/components/QueryHistory/QueryHistory.tsx
+````typescript
+import React, { useState, useEffect, useRef, memo, useMemo } from 'react';
+import { useQueryHistoryStore } from '../../stores/query-history-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { QueryHistoryEntry } from '../../../shared/types/query';
+import './QueryHistory.css';
+
+interface QueryHistoryProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+}
+
+/**
+ * Format bytes to human readable string
+ */
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Format execution time to human readable string
+ */
+function formatExecutionTime(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60000).toFixed(1)}m`;
+}
+
+/**
+ * Format relative time (e.g., "2 minutes ago")
+ */
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
+
+  if (diffSec < 60) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHour < 24) return `${diffHour}h ago`;
+  if (diffDay < 7) return `${diffDay}d ago`;
+  
+  return date.toLocaleDateString();
+}
+
+/**
+ * Get date group label for history entries
+ */
+function getDateGroup(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const entryDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  if (entryDate.getTime() === today.getTime()) return 'Today';
+  if (entryDate.getTime() === yesterday.getTime()) return 'Yesterday';
+  if (now.getTime() - entryDate.getTime() < 7 * 24 * 60 * 60 * 1000) return 'This Week';
+  if (now.getTime() - entryDate.getTime() < 30 * 24 * 60 * 60 * 1000) return 'This Month';
+  return 'Older';
+}
+
+/**
+ * Truncate query text for display
+ */
+function truncateQuery(query: string, maxLength: number = 100): string {
+  const singleLine = query.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= maxLength) return singleLine;
+  return singleLine.substring(0, maxLength) + '...';
+}
+
+const QueryHistoryComponent: React.FC<QueryHistoryProps> = ({ 
+  collapsed = false, 
+  onToggleCollapse, 
+  onRefreshReady 
+}) => {
+  const { entries, isLoading, loadHistory, deleteEntry, clearHistory, setSearchTerm: setStoreSearchTerm, getFilteredEntries } = useQueryHistoryStore();
+  const { createTab, setTabQuery, updateTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    entry: QueryHistoryEntry;
+  } | null>(null);
+  const [hoveredEntry, setHoveredEntry] = useState<{
+    entry: QueryHistoryEntry;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
+
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadHistory, isLoading);
+    }
+  }, [onRefreshReady, loadHistory, isLoading]);
+
+  const handleEntryContextMenu = (event: React.MouseEvent, entry: QueryHistoryEntry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      entry,
+    });
+  };
+
+  const handleEntryMouseEnter = (event: React.MouseEvent, entry: QueryHistoryEntry) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredEntry({
+        entry,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleEntryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredEntry(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredEntry(null);
+  };
+
+  const handleOpenInNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { entry } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, entry.queryText);
+    updateTab(newTabId, {
+      title: `Query ${new Date(entry.executedAt).toLocaleTimeString()}`,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  const handleCopyQuery = () => {
+    if (!contextMenu) return;
+    navigator.clipboard.writeText(contextMenu.entry.queryText);
+    setContextMenu(null);
+  };
+
+  const handleDeleteEntry = () => {
+    if (!contextMenu) return;
+    deleteEntry(contextMenu.entry.id);
+    setContextMenu(null);
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm('Are you sure you want to clear all query history? This cannot be undone.')) {
+      clearHistory();
+    }
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [contextMenu?.visible]);
+
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
+
+  // Filter and group entries
+  const filteredEntries = useMemo(() => {
+    if (!searchTerm.trim()) {
+      return entries;
+    }
+    return getFilteredEntries();
+  }, [entries, searchTerm, getFilteredEntries]);
+
+  // Group entries by date
+  const groupedEntries = useMemo(() => {
+    const groups: { label: string; entries: QueryHistoryEntry[] }[] = [];
+    let currentGroup: string | null = null;
+
+    for (const entry of filteredEntries) {
+      const group = getDateGroup(entry.executedAt);
+      if (group !== currentGroup) {
+        groups.push({ label: group, entries: [entry] });
+        currentGroup = group;
+      } else {
+        groups[groups.length - 1].entries.push(entry);
+      }
+    }
+
+    return groups;
+  }, [filteredEntries]);
+
+  const getStatusIcon = (status: QueryHistoryEntry['status']) => {
+    switch (status) {
+      case 'completed':
+        return '✓';
+      case 'error':
+        return '✕';
+      case 'cancelled':
+        return '◯';
+      default:
+        return '•';
+    }
+  };
+
+  return (
+    <div className={`query-history ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="query-history-search">
+            <input
+              type="text"
+              className="query-history-search-input"
+              placeholder="Search history..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="query-history-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="query-history-content">
+            {isLoading && entries.length === 0 && (
+              <div className="query-history-loading">Loading history...</div>
+            )}
+            {filteredEntries.length === 0 && !isLoading && (
+              <div className="query-history-empty">
+                {searchTerm ? 'No matching queries found' : 'No query history yet'}
+              </div>
+            )}
+            {groupedEntries.map((group, groupIndex) => (
+              <React.Fragment key={group.label}>
+                <div className="query-history-date-separator">{group.label}</div>
+                {group.entries.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`query-history-item status-${entry.status}`}
+                    onContextMenu={(e) => handleEntryContextMenu(e, entry)}
+                    onMouseEnter={(e) => handleEntryMouseEnter(e, entry)}
+                    onMouseLeave={handleEntryMouseLeave}
+                  >
+                    <div className="query-history-item-header">
+                      <div className="query-history-item-status">
+                        <span className={`query-history-status-icon ${entry.status}`}>
+                          {getStatusIcon(entry.status)}
+                        </span>
+                      </div>
+                      <span className="query-history-item-time">
+                        {formatRelativeTime(entry.executedAt)}
+                      </span>
+                    </div>
+                    <div className="query-history-item-query">
+                      {truncateQuery(entry.queryText)}
+                    </div>
+                    <div className="query-history-item-meta">
+                      <span className="query-history-meta-item">
+                        <span className="query-history-meta-icon">⏱</span>
+                        {formatExecutionTime(entry.executionTimeMs)}
+                      </span>
+                      {entry.bytesProcessed !== undefined && (
+                        <span className="query-history-meta-item">
+                          
+                          {formatBytes(entry.bytesProcessed)}
+                        </span>
+                      )}
+                      {entry.totalRows !== undefined && (
+                        <span className="query-history-meta-item">
+                          <span className="query-history-meta-icon">↔</span>
+                          {entry.totalRows.toLocaleString()} rows
+                        </span>
+                      )}
+                    </div>
+                    {entry.status === 'error' && entry.errorMessage && (
+                      <div className="query-history-error-message">
+                        {entry.errorMessage}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+          </div>
+          {filteredEntries.length > 0 && (
+            <div className="query-history-footer">
+              <button 
+                className="query-history-clear-btn"
+                onClick={handleClearHistory}
+                title="Clear all history"
+              >
+                Clear History
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleOpenInNewTab}>
+            Open in new tab
+          </div>
+          <div className="context-menu-item" onClick={handleCopyQuery}>
+            Copy query
+          </div>
+          <div className="context-menu-separator" />
+          <div className="context-menu-item danger" onClick={handleDeleteEntry}>
+            Delete
+          </div>
+        </div>
+      )}
+      {hoveredEntry && (
+        <div
+          className="query-history-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredEntry.x}px`,
+            top: `${hoveredEntry.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="query-history-tooltip-code">{hoveredEntry.entry.queryText}</pre>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const QueryHistory = memo(QueryHistoryComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
+  );
+});
+````
+
 ## File: src/renderer/components/QueryResults/ColumnSortMenu.css
 ````css
 .column-sort-menu {
@@ -11995,270 +12989,194 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
 }
 ````
 
-## File: src/renderer/components/SampleDataModal/SampleDataModal.tsx
-````typescript
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useBigQuery } from '../../hooks/useBigQuery';
-import { CanvasTable } from '../QueryResults/CanvasTable';
-import type { QueryResult } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import './SampleDataModal.css';
-
-interface SampleDataModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
+## File: src/renderer/components/SampleDataModal/SampleDataModal.css
+````css
+.sample-data-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
 }
 
-const ROWS_PER_PAGE = 200;
+.sample-data-modal {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 1400px;
+  height: 85%;
+  max-height: 900px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
 
-export const SampleDataModal: React.FC<SampleDataModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const { executeQuery, isConnected } = useBigQuery();
-  const [results, setResults] = useState<QueryResult | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+.sample-data-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  border-radius: 4px 4px 0 0;
+}
 
-  useEffect(() => {
-    const loadSampleData = async () => {
-      if (!isConnected) {
-        setError('Not connected to BigQuery');
-        setIsLoading(false);
-        return;
-      }
+.sample-data-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
 
-      setIsLoading(true);
-      setError(null);
+.sample-data-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.5rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+  line-height: 1;
+}
 
-      try {
-        const tableRef = `\`${projectId}.${datasetId}.${tableId}\``;
-        const queryText = `SELECT * FROM ${tableRef} LIMIT 1000`;
-        const result = await executeQuery(queryText);
-        setResults(result);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load sample data');
-        console.error('Failed to load sample data:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+.sample-data-modal-close:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
 
-    loadSampleData();
-  }, [projectId, datasetId, tableId, executeQuery, isConnected]);
+.sample-data-modal-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+}
 
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
+.sample-data-loading,
+.sample-data-error,
+.sample-data-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  gap: 1rem;
+}
 
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, _rowIndex: number) => {
-    // No-op for sample data modal - could be extended in the future
-    e.preventDefault();
-  }, []);
+.sample-data-error {
+  color: var(--text-error);
+  flex-direction: column;
+  gap: 0.5rem;
+}
 
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, _columnIndex: number) => {
-    // No-op for sample data modal - could be extended in the future
-    e.preventDefault();
-  }, []);
+.sample-data-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-primary);
+}
 
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
+.sample-data-info span {
+  margin-right: 0.75rem;
+}
 
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
+.sample-data-canvas-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  min-height: 200px;
+}
 
-  // Sort rows based on selected column and direction
-  const sortedRows = useMemo(() => {
-    if (!results?.rows || sortColumn === null || sortDirection === null) {
-      return results?.rows || [];
-    }
+.sample-data-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border-primary);
+}
 
-    const sorted = [...results.rows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = results.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
+.pagination-button {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  min-width: 32px;
+}
 
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--border-primary);
+  border-color: var(--accent-primary);
+}
 
-      let comparison = 0;
+.pagination-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
+.pagination-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
 
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 4px;
+  background-color: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
 
-    return sorted;
-  }, [results?.rows, results?.columns, sortColumn, sortDirection]);
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: var(--accent-primary);
+  animation: loading-progress 1.5s ease-in-out infinite;
+}
 
-  // Pagination calculations
-  const totalRows = sortedRows.length;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + ROWS_PER_PAGE, totalRows);
-  const paginatedRows = sortedRows.slice(startIndex, endIndex);
+@keyframes loading-progress {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
 
-  // Create a QueryResult-like object for the CanvasTable with paginated rows
-  const paginatedResults: QueryResult | null = results
-    ? {
-        ...results,
-        rows: paginatedRows,
-      }
-    : null;
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [onClose]);
-
-  return (
-    <div className="sample-data-modal-overlay" onClick={onClose}>
-      <div className="sample-data-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="sample-data-modal-header">
-          <h2>Sample Data: {datasetId}.{tableId}</h2>
-          <button className="sample-data-modal-close" onClick={onClose} title="Close">
-            ×
-          </button>
-        </div>
-        
-        <div className="sample-data-modal-content">
-          {isLoading && (
-            <div className="sample-data-loading">
-              <div className="loading-progress-bar">
-                <div className="loading-progress-bar-fill"></div>
-              </div>
-              <div className="loading-text">Loading sample data...</div>
-            </div>
-          )}
-          
-          {error && (
-            <div className="sample-data-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          
-          {!isLoading && !error && results && (
-            <>
-              <div className="sample-data-info">
-                <span>{results.rowsReturned.toLocaleString()} rows</span>
-                {results.totalRows > results.rowsReturned && (
-                  <span> of {results.totalRows.toLocaleString()} total</span>
-                )}
-                <span> • {results.executionTimeMs}ms</span>
-                {results.bytesProcessed && (
-                  <span> • {(results.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-                )}
-              </div>
-              
-              {paginatedResults && paginatedResults.rows.length > 0 ? (
-                <>
-                  <div className="sample-data-canvas-container">
-                    <CanvasTable
-                      results={paginatedResults}
-                      columnWidths={columnWidths}
-                      onColumnResize={handleColumnResize}
-                      onRowContextMenu={handleRowContextMenu}
-                      onColumnContextMenu={handleColumnContextMenu}
-                      formatValue={formatValue}
-                      currentPage={currentPage}
-                      rowsPerPage={ROWS_PER_PAGE}
-                      sortColumn={sortColumn}
-                      sortDirection={sortDirection}
-                      onSortColumn={handleSortColumn}
-                    />
-                  </div>
-                  
-                  {totalPages > 1 && (
-                    <div className="sample-data-pagination">
-                      <button
-                        className="pagination-button"
-                        onClick={handlePreviousPage}
-                        disabled={currentPage === 1}
-                        title="Previous page"
-                      >
-                        ‹
-                      </button>
-                      <span className="pagination-info">
-                        {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-                      </span>
-                      <button
-                        className="pagination-button"
-                        onClick={handleNextPage}
-                        disabled={currentPage === totalPages}
-                        title="Next page"
-                      >
-                        ›
-                      </button>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="sample-data-empty">No data available</div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
+.loading-text {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
 ````
 
 ## File: src/renderer/components/SavedQueries/SavedQueries.css
@@ -13016,6 +13934,56 @@ export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, next
 }
 ````
 
+## File: src/renderer/components/SidebarSwitcher/SidebarSwitcher.tsx
+````typescript
+import React from 'react';
+import './SidebarSwitcher.css';
+
+export type SidebarView = 'explorer' | 'saved-queries' | 'history';
+
+interface SidebarSwitcherProps {
+  currentView: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+  collapsed?: boolean;
+}
+
+export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
+  currentView,
+  onViewChange,
+  collapsed = false,
+}) => {
+  if (collapsed) {
+    return null;
+  }
+
+  return (
+    <div className="sidebar-switcher">
+      <button
+        className={`sidebar-switcher-button ${currentView === 'explorer' ? 'active' : ''}`}
+        onClick={() => onViewChange('explorer')}
+        title="Explorer"
+      >
+        EXPLORER
+      </button>
+      <button
+        className={`sidebar-switcher-button ${currentView === 'saved-queries' ? 'active' : ''}`}
+        onClick={() => onViewChange('saved-queries')}
+        title="Saved Queries"
+      >
+        SAVED
+      </button>
+      <button
+        className={`sidebar-switcher-button ${currentView === 'history' ? 'active' : ''}`}
+        onClick={() => onViewChange('history')}
+        title="Query History"
+      >
+        HISTORY
+      </button>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/TabBar/TabBar.css
 ````css
 .tab-bar {
@@ -13192,6 +14160,130 @@ export function useBigQuery() {
     isConnected: !!connection,
   };
 }
+````
+
+## File: src/renderer/stores/query-history-store.ts
+````typescript
+import { create } from 'zustand';
+import type { QueryHistoryEntry } from '../../shared/types/query';
+
+interface QueryHistoryState {
+  entries: QueryHistoryEntry[];
+  isLoading: boolean;
+  searchTerm: string;
+  totalCount: number;
+  loadHistory: () => Promise<void>;
+  addEntry: (entry: Omit<QueryHistoryEntry, 'id'>) => Promise<void>;
+  updateEntryByJobId: (jobId: string, totalRows: number) => Promise<void>;
+  deleteEntry: (id: string) => Promise<void>;
+  clearHistory: () => Promise<void>;
+  setSearchTerm: (term: string) => void;
+  getFilteredEntries: () => QueryHistoryEntry[];
+}
+
+/**
+ * Generate a unique ID for history entries
+ */
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+export const useQueryHistoryStore = create<QueryHistoryState>((set, get) => ({
+  entries: [],
+  isLoading: false,
+  searchTerm: '',
+  totalCount: 0,
+
+  loadHistory: async () => {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+
+    set({ isLoading: true });
+    try {
+      const entries = await window.electronAPI.queryHistory.list(100, 0);
+      const totalCount = await window.electronAPI.queryHistory.count();
+      set({ entries, totalCount, isLoading: false });
+    } catch (error) {
+      set({ isLoading: false });
+      throw error;
+    }
+  },
+
+  addEntry: async (entryData: Omit<QueryHistoryEntry, 'id'>) => {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+
+    const entry: QueryHistoryEntry = {
+      ...entryData,
+      id: generateId(),
+    };
+
+    await window.electronAPI.queryHistory.add(entry);
+    
+    // Add to the beginning of the list (newest first)
+    set((state) => ({
+      entries: [entry, ...state.entries].slice(0, 100), // Keep max 100 in memory
+      totalCount: state.totalCount + 1,
+    }));
+  },
+
+  updateEntryByJobId: async (jobId: string, totalRows: number) => {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+
+    await window.electronAPI.queryHistory.updateByJobId(jobId, totalRows);
+    
+    // Update the entry in memory
+    set((state) => ({
+      entries: state.entries.map((e) =>
+        e.jobId === jobId ? { ...e, totalRows } : e
+      ),
+    }));
+  },
+
+  deleteEntry: async (id: string) => {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+
+    await window.electronAPI.queryHistory.delete(id);
+    set((state) => ({
+      entries: state.entries.filter((e) => e.id !== id),
+      totalCount: Math.max(0, state.totalCount - 1),
+    }));
+  },
+
+  clearHistory: async () => {
+    if (!window.electronAPI) {
+      throw new Error('Electron API not available');
+    }
+
+    await window.electronAPI.queryHistory.clear();
+    set({ entries: [], totalCount: 0 });
+  },
+
+  setSearchTerm: (term: string) => {
+    set({ searchTerm: term });
+  },
+
+  getFilteredEntries: () => {
+    const { entries, searchTerm } = get();
+    if (!searchTerm.trim()) {
+      return entries;
+    }
+
+    const lowerTerm = searchTerm.toLowerCase();
+    return entries.filter(
+      (e) =>
+        e.queryText.toLowerCase().includes(lowerTerm) ||
+        e.projectId.toLowerCase().includes(lowerTerm) ||
+        (e.errorMessage && e.errorMessage.toLowerCase().includes(lowerTerm))
+    );
+  },
+}));
 ````
 
 ## File: src/renderer/utils/export-utils.ts
@@ -13769,6 +14861,91 @@ export interface ConnectionConfiguration {
   lastConnected?: string; // ISO timestamp
   isActive: boolean;
   enableDbtSupport?: boolean; // Enable dbt syntax support (dbtify/de-dbtify)
+}
+````
+
+## File: src/shared/types/query.ts
+````typescript
+/**
+ * Query-related types
+ */
+
+export type TabType = 'query' | 'explorer' | 'saved-queries';
+
+export interface QueryTab {
+  id: string;
+  title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
+  queryText: string;
+  isModified: boolean;
+  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string; // ISO timestamp
+  lastExecutedQueryText?: string; // The query text that was last executed
+  savedQueryId?: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sqlText: string;
+  description?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  tags?: string[];
+}
+
+export interface SaveQueryInput {
+  name: string;
+  sqlText: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateQueryInput {
+  name?: string;
+  sqlText?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface QueryResult {
+  columns: ColumnMetadata[];
+  rows: Row[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
+  mode?: string; // NULLABLE, REQUIRED, REPEATED
+}
+
+export interface Row {
+  values: any[]; // Values matching column order
+}
+
+/**
+ * Query history entry - tracks executed queries with metadata
+ */
+export interface QueryHistoryEntry {
+  id: string;
+  queryText: string;
+  executedAt: string; // ISO timestamp
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  totalRows?: number;
+  status: 'completed' | 'error' | 'cancelled';
+  errorMessage?: string;
+  projectId: string;
+  jobId?: string;
 }
 ````
 
@@ -15384,119 +16561,6 @@ describe('SidebarHeader', () => {
 
       expect(screen.getByTitle('Refresh')).not.toBeDisabled();
     });
-  });
-});
-````
-
-## File: tests/unit/renderer/components/SidebarSwitcher.test.tsx
-````typescript
-import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { SidebarSwitcher, SidebarView } from '../../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher';
-
-describe('SidebarSwitcher', () => {
-  const mockOnViewChange = jest.fn();
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('should render both buttons', () => {
-    render(
-      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
-    );
-
-    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /saved queries/i })).toBeInTheDocument();
-  });
-
-  it('should highlight explorer button when current view is explorer', () => {
-    render(
-      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
-    );
-
-    const explorerButton = screen.getByRole('button', { name: /explorer/i });
-    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
-
-    expect(explorerButton).toHaveClass('active');
-    expect(savedQueriesButton).not.toHaveClass('active');
-  });
-
-  it('should highlight saved queries button when current view is saved-queries', () => {
-    render(
-      <SidebarSwitcher currentView="saved-queries" onViewChange={mockOnViewChange} />
-    );
-
-    const explorerButton = screen.getByRole('button', { name: /explorer/i });
-    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
-
-    expect(explorerButton).not.toHaveClass('active');
-    expect(savedQueriesButton).toHaveClass('active');
-  });
-
-  it('should call onViewChange with "explorer" when explorer button is clicked', () => {
-    render(
-      <SidebarSwitcher currentView="saved-queries" onViewChange={mockOnViewChange} />
-    );
-
-    const explorerButton = screen.getByRole('button', { name: /explorer/i });
-    fireEvent.click(explorerButton);
-
-    expect(mockOnViewChange).toHaveBeenCalledWith('explorer');
-  });
-
-  it('should call onViewChange with "saved-queries" when saved queries button is clicked', () => {
-    render(
-      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
-    );
-
-    const savedQueriesButton = screen.getByRole('button', { name: /saved queries/i });
-    fireEvent.click(savedQueriesButton);
-
-    expect(mockOnViewChange).toHaveBeenCalledWith('saved-queries');
-  });
-
-  it('should not render when collapsed is true', () => {
-    render(
-      <SidebarSwitcher
-        currentView="explorer"
-        onViewChange={mockOnViewChange}
-        collapsed={true}
-      />
-    );
-
-    expect(screen.queryByRole('button', { name: /explorer/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /saved queries/i })).not.toBeInTheDocument();
-  });
-
-  it('should render when collapsed is false', () => {
-    render(
-      <SidebarSwitcher
-        currentView="explorer"
-        onViewChange={mockOnViewChange}
-        collapsed={false}
-      />
-    );
-
-    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /saved queries/i })).toBeInTheDocument();
-  });
-
-  it('should render when collapsed is not provided', () => {
-    render(
-      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
-    );
-
-    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
-  });
-
-  it('should have correct title attributes', () => {
-    render(
-      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
-    );
-
-    expect(screen.getByTitle('Explorer')).toBeInTheDocument();
-    expect(screen.getByTitle('Saved Queries')).toBeInTheDocument();
   });
 });
 ````
@@ -18996,6 +20060,235 @@ module.exports = (env, argv) => {
 }
 ````
 
+## File: src/renderer/components/ConnectionDialog/ConnectionDialog.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import { useConnectionStore } from '../../stores/connection-store';
+import { validateConnectionConfig } from '../../../shared/utils/connection-validation';
+import type { ConnectionConfig } from '../../../shared/types/connection';
+import './ConnectionDialog.css';
+
+interface ConnectionDialogProps {
+  onClose: () => void;
+}
+
+export const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ onClose }) => {
+  const [projectId, setProjectId] = useState('');
+  const [authType, setAuthType] = useState<'service-account' | 'application-default'>(
+    'service-account'
+  );
+  const [serviceAccountKeyPath, setServiceAccountKeyPath] = useState('');
+  const [serviceAccountKey, setServiceAccountKey] = useState('');
+  const [location, setLocation] = useState('EU');
+  const [enableDbtSupport, setEnableDbtSupport] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  const { setConnection, setConnecting, setConnectionError } = useConnectionStore();
+
+  // Handle ESC key to close dialog
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  // Load saved connection settings when dialog opens
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.connection.getSaved().then((saved) => {
+        if (saved) {
+          setProjectId(saved.projectId);
+          setAuthType(saved.authType);
+          setServiceAccountKeyPath(saved.serviceAccountKeyPath || '');
+          setLocation(saved.location || 'EU');
+          setEnableDbtSupport(saved.enableDbtSupport || false);
+          // Note: We don't load the service account key content for security reasons
+          // User needs to re-enter it or use the file path
+        }
+      }).catch((err) => {
+        console.error('Failed to load saved connection:', err);
+      });
+    }
+  }, []);
+
+  const handleConnect = async () => {
+    setError(null);
+    setIsConnecting(true);
+    setConnecting(true);
+
+    const config: ConnectionConfig = {
+      projectId: projectId.trim(),
+      authType,
+      serviceAccountKeyPath: serviceAccountKeyPath.trim() || undefined,
+      serviceAccountKey: serviceAccountKey.trim() || undefined,
+      location: location.trim() || 'EU',
+      enableDbtSupport,
+    };
+
+    // Validate configuration
+    const validation = validateConnectionConfig(config);
+    if (!validation.valid) {
+      setError(validation.error || 'Invalid configuration');
+      setIsConnecting(false);
+      setConnecting(false);
+      return;
+    }
+
+    try {
+      if (!window.electronAPI) {
+        throw new Error('Electron API not available');
+      }
+
+      // Test connection first
+      const isValid = await window.electronAPI.connection.test(config);
+      if (!isValid) {
+        throw new Error('Connection test failed. Please check your credentials.');
+      }
+
+      // Configure connection
+      await window.electronAPI.connection.configure(config);
+
+      // Get active connection
+      const activeConnection = await window.electronAPI.connection.getActive();
+      if (activeConnection) {
+        setConnection(activeConnection);
+        onClose();
+      }
+    } catch (err: any) {
+      const errorMessage = err.message || 'Failed to connect to BigQuery';
+      setError(errorMessage);
+      setConnectionError(errorMessage);
+    } finally {
+      setIsConnecting(false);
+      setConnecting(false);
+    }
+  };
+
+  return (
+    <div className="connection-dialog-overlay" onClick={onClose}>
+      <div className="connection-dialog" onClick={(e) => e.stopPropagation()}>
+        <h2>Connect to BigQuery</h2>
+
+        <div className="form-group">
+          <label htmlFor="projectId">Project ID *</label>
+          <input
+            id="projectId"
+            type="text"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            placeholder="my-project-id"
+            disabled={isConnecting}
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="location">Location *</label>
+          <select
+            id="location"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            disabled={isConnecting}
+          >
+            <option value="EU">EU</option>
+            <option value="US">US</option>
+            <option value="asia-northeast1">Asia (Tokyo)</option>
+            <option value="asia-south1">Asia (Mumbai)</option>
+            <option value="asia-southeast1">Asia (Singapore)</option>
+            <option value="australia-southeast1">Australia (Sydney)</option>
+            <option value="europe-west1">Europe (Belgium)</option>
+            <option value="europe-west2">Europe (London)</option>
+            <option value="europe-west3">Europe (Frankfurt)</option>
+            <option value="europe-west4">Europe (Netherlands)</option>
+            <option value="europe-west6">Europe (Zurich)</option>
+            <option value="northamerica-northeast1">North America (Montreal)</option>
+            <option value="southamerica-east1">South America (São Paulo)</option>
+            <option value="us-central1">US (Iowa)</option>
+            <option value="us-east1">US (South Carolina)</option>
+            <option value="us-east4">US (Northern Virginia)</option>
+            <option value="us-west1">US (Oregon)</option>
+            <option value="us-west2">US (Los Angeles)</option>
+            <option value="us-west3">US (Salt Lake City)</option>
+            <option value="us-west4">US (Las Vegas)</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="authType">Authentication Method *</label>
+          <select
+            id="authType"
+            value={authType}
+            onChange={(e) =>
+              setAuthType(e.target.value as 'service-account' | 'application-default')
+            }
+            disabled={isConnecting}
+          >
+            <option value="service-account">Service Account Key</option>
+            <option value="application-default">Application Default Credentials</option>
+          </select>
+        </div>
+
+        {authType === 'service-account' && (
+          <>
+            <div className="form-group">
+              <label htmlFor="keyPath">Service Account Key File Path</label>
+              <input
+                id="keyPath"
+                type="text"
+                value={serviceAccountKeyPath}
+                onChange={(e) => setServiceAccountKeyPath(e.target.value)}
+                placeholder="/path/to/key.json"
+                disabled={isConnecting}
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="keyContent">Or Paste Service Account Key JSON</label>
+              <textarea
+                id="keyContent"
+                value={serviceAccountKey}
+                onChange={(e) => setServiceAccountKey(e.target.value)}
+                placeholder='{"type": "service_account", ...}'
+                rows={5}
+                disabled={isConnecting}
+              />
+            </div>
+          </>
+        )}
+
+        <div className="form-group checkbox-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={enableDbtSupport}
+              onChange={(e) => setEnableDbtSupport(e.target.checked)}
+              disabled={isConnecting}
+            />
+            Enable dbt syntax support
+          </label>
+          <span className="field-hint">Adds dbtify/de-dbtify button to convert between BigQuery and dbt syntax</span>
+        </div>
+
+        {error && <div className="error-message">{error}</div>}
+
+        <div className="dialog-actions">
+          <button onClick={onClose} disabled={isConnecting}>
+            Cancel
+          </button>
+          <button onClick={handleConnect} disabled={isConnecting || !projectId.trim()}>
+            {isConnecting ? 'Connecting...' : 'Connect'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/DatasetTree/DatasetTree.css
 ````css
 .dataset-tree {
@@ -19311,194 +20604,656 @@ module.exports = (env, argv) => {
 }
 ````
 
-## File: src/renderer/components/SampleDataModal/SampleDataModal.css
-````css
-.sample-data-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-}
+## File: src/renderer/components/QueryResults/QueryResults.tsx
+````typescript
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { RowContextMenu } from './RowContextMenu';
+import { ExportMenu, type ExportFormat } from './ExportMenu';
+import { CanvasTable } from './CanvasTable';
+import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
+import './QueryResults.css';
+import './ExportMenu.css';
 
-.sample-data-modal {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  width: 90%;
-  max-width: 1400px;
-  height: 85%;
-  max-height: 900px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-modal);
-}
+const ROWS_PER_PAGE = 200;
 
-.sample-data-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  border-radius: 4px 4px 0 0;
-}
+export const QueryResults: React.FC = () => {
+  // Use separate selectors to ensure reactivity for each property
+  const activeTabId = useTabsStore((state) => state.activeTabId);
+  const activeTab = useTabsStore((state) => {
+    if (!activeTabId) return null;
+    return state.tabs.find((t) => t.id === activeTabId) || null;
+  });
+  
+  // All hooks must be called before any conditional returns
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rowIndex?: number;
+    columnIndex?: number;
+    isRowNumberColumn?: boolean;
+  } | null>(null);
+  const [exportMenu, setExportMenu] = useState<{ x: number; y: number } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
+  const error = activeTab?.error;
+  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
+  const jobId = activeTab?.jobId;
+  
+  // Listen for progress events during query execution AND background fetching
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onProgress) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
+      // Show progress during initial execution or background page fetching
+      if (data.jobId === jobId) {
+        setProgressMessage(data.message);
+        setIsBackgroundFetching(!data.isComplete);
+      }
+    });
+    
+    return unsubscribe;
+  }, [jobId]);
+  
+  // Clear progress when execution status changes to idle or error
+  useEffect(() => {
+    if (executionStatus === 'idle' || executionStatus === 'error') {
+      setProgressMessage(null);
+      setIsBackgroundFetching(false);
+    }
+  }, [executionStatus]);
+  
+  // Listen for rows updates (background fetching of additional pages)
+  // Data is saved directly to SQLite by the main process - we just reload from cache
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
+      // Only process updates for the current job
+      if (data.jobId !== jobId) return;
+      
+      // Data is already in SQLite cache - just reload metadata and current page
+      if (window.electronAPI?.resultsCache) {
+        // Reload metadata to reflect final row count
+        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
+        if (metadata) {
+          setResultsMetadata(metadata);
+        }
+        
+        // Reload current page to ensure we have latest data
+        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        }
+        
+        // Clear loading indicators
+        setProgressMessage(null);
+        setIsBackgroundFetching(false);
+      }
+    });
+    
+    return unsubscribe;
+  }, [activeTabId, jobId, currentPage]);
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!activeTabId || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(activeTabId)
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [activeTabId, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(activeTabId, currentPage)
+      .then((pageRows: Row[] | null) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [activeTabId, currentPage, resultsMetadata]);
+  
+  // Reset column widths when results change (use jobId as stable identifier)
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
+  
+  useEffect(() => {
+    if (resultsJobId !== undefined) {
+      setColumnWidths({});
+      setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
+    }
+  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
 
-.sample-data-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
 
-.sample-data-modal-close {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1.5rem;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-  line-height: 1;
-}
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
 
-.sample-data-modal-close:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
 
-.sample-data-modal-content {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  padding: 1rem;
-}
+      let comparison = 0;
 
-.sample-data-loading,
-.sample-data-error,
-.sample-data-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  gap: 1rem;
-}
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
 
-.sample-data-error {
-  color: var(--text-error);
-  flex-direction: column;
-  gap: 0.5rem;
-}
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
 
-.sample-data-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--border-primary);
-}
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
 
-.sample-data-info span {
-  margin-right: 0.75rem;
-}
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
 
-.sample-data-canvas-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  min-height: 200px;
-}
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
 
-.sample-data-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 0.75rem 0;
-  margin-top: 0.75rem;
-  border-top: 1px solid var(--border-primary);
-}
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      rowIndex,
+      isRowNumberColumn,
+    });
+  }, []);
 
-.pagination-button {
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-  min-width: 32px;
-}
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
 
-.pagination-button:hover:not(:disabled) {
-  background-color: var(--border-primary);
-  border-color: var(--accent-primary);
-}
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
+    // Escape commas, quotes, and newlines in values
+    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
+      return `"${formatted.replace(/"/g, '""')}"`;
+    }
+    return formatted;
+  }, [formatValue]);
 
-.pagination-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+  const handleCopyRowValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
 
-.pagination-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
+    // Use sorted rows from results (which matches what's displayed)
+    const rowIndex = contextMenu.rowIndex;
+    const row = results.rows[rowIndex];
+    
+    if (!row) return;
 
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 4px;
-  background-color: var(--bg-tertiary);
-  border-radius: 2px;
-  overflow: hidden;
-}
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
 
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: var(--accent-primary);
-  animation: loading-progress 1.5s ease-in-out infinite;
-}
+    // Format: header1,header2,header3\nvalue1,value2,value3
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
 
-@keyframes loading-progress {
-  0% {
-    width: 0%;
-    transform: translateX(0);
+  const handleCopyColumnValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
+
+    const columnIndex = contextMenu.columnIndex;
+    const column = results.columns[columnIndex];
+    
+    if (!column) return;
+
+    // Get header
+    const header = formatCSVValue(column.name);
+    
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+
+    // Format: header\nvalue1\nvalue2\nvalue3...
+    const csvText = [header, ...values].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      columnIndex,
+    });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  // Export button click handler
+  const handleExportClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setExportMenu({
+      x: rect.left,
+      y: rect.bottom + 4,
+    });
+  }, []);
+
+  // Handle export action - fetches all rows from cache
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    if (!activeTabId || !resultsMetadata || isExporting) return;
+
+    setIsExporting(true);
+    setExportMenu(null);
+
+    try {
+      // Fetch all rows from cache for export
+      const allResults = await window.electronAPI?.resultsCache?.get(activeTabId);
+      
+      if (!allResults) {
+        console.error('Failed to fetch results for export');
+        return;
+      }
+
+      const columns = allResults.columns;
+      const rows = allResults.rows;
+
+      if (format === 'csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        const result = await window.electronAPI.export.saveFile(csvContent, {
+          format: 'csv',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        const result = await window.electronAPI.export.saveFile(jsonContent, {
+          format: 'json',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'clipboard-csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        await navigator.clipboard.writeText(csvContent);
+      } else if (format === 'clipboard-json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        await navigator.clipboard.writeText(jsonContent);
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [activeTabId, resultsMetadata, isExporting]);
+
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Now we can do conditional returns after all hooks
+  if (error) {
+    return (
+      <div className="query-results">
+        <div className="error-results">
+          <strong>Error:</strong> {error}
+        </div>
+      </div>
+    );
   }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
 
-.loading-text {
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-}
+  if (!resultsMetadata) {
+    // Show progress message if available, otherwise show default messages
+    const message = executionStatus === 'running' 
+      ? (progressMessage || 'Executing query...')
+      : isLoadingCache
+      ? 'Loading results...'
+      : 'Execute a query to see results here.';
+    
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>{message}</div>
+          {(executionStatus === 'running' || isLoadingCache) && (
+            <div className="query-spinner-container">
+              <div className="query-spinner"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if we have columns and rows to display
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
+
+  // Determine how to display row count
+  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
+  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
+  // - hasMore indicates if there are more rows beyond our limit
+  const displayRowCount = () => {
+    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
+      // We hit the limit - show how many we have of the total
+      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else if (resultsMetadata.hasMore) {
+      // Still loading more rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else {
+      // We have all rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    }
+  };
+
+  if (!hasColumns && !hasRows) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">No data to display (empty result set).</div>
+      </div>
+    );
+  }
+
+  if (!hasColumns) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">Error: No column information available.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="query-results">
+      <div className="results-header">
+        <div className="results-info">
+          <span>{displayRowCount()}</span>
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+          {progressMessage && (
+            <span className="loading-indicator"> • {progressMessage}</span>
+          )}
+        </div>
+        <button
+          className="export-button"
+          onClick={handleExportClick}
+          disabled={isExporting || !hasRows}
+          title="Export results"
+        >
+          <span className="export-button-icon">⬇</span>
+          <span className="export-button-text">Export</span>
+        </button>
+      </div>
+      <div className="results-table-container">
+        {hasRows && results ? (
+          <CanvasTable
+            results={results}
+            columnWidths={columnWidths}
+            onColumnResize={handleColumnResize}
+            onRowContextMenu={handleRowContextMenu}
+            onColumnContextMenu={handleColumnContextMenu}
+            formatValue={formatValue}
+            currentPage={currentPage}
+            rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
+          />
+        ) : (
+          <div className="no-rows-message">No rows returned</div>
+        )}
+      </div>
+      {hasRows && totalPages > 1 && (
+        <div className="results-pagination">
+          <button
+            className="pagination-button"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+            title="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+          </span>
+          <button
+            className="pagination-button"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+            title="Next page"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {contextMenu && (
+        <RowContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
+        />
+      )}
+      {exportMenu && (
+        <ExportMenu
+          x={exportMenu.x}
+          y={exportMenu.y}
+          onClose={() => setExportMenu(null)}
+          onExport={handleExport}
+          isExporting={isExporting}
+        />
+      )}
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
@@ -20219,472 +21974,150 @@ body {
 }
 ````
 
-## File: src/renderer/App.tsx
+## File: tests/unit/renderer/components/SidebarSwitcher.test.tsx
 ````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './themes.css';
-import './App.css';
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { SidebarSwitcher, SidebarView } from '../../../../src/renderer/components/SidebarSwitcher/SidebarSwitcher';
 
-type Theme = 'dark' | 'light';
+describe('SidebarSwitcher', () => {
+  const mockOnViewChange = jest.fn();
 
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
+  it('should render all three buttons', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
 
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
+    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /saved/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /history/i })).toBeInTheDocument();
+  });
 
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
+  it('should highlight explorer button when current view is explorer', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
 
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    const historyButton = screen.getByRole('button', { name: /history/i });
 
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
+    expect(explorerButton).toHaveClass('active');
+    expect(savedQueriesButton).not.toHaveClass('active');
+    expect(historyButton).not.toHaveClass('active');
+  });
 
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
+  it('should highlight saved queries button when current view is saved-queries', () => {
+    render(
+      <SidebarSwitcher currentView="saved-queries" onViewChange={mockOnViewChange} />
+    );
 
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    const historyButton = screen.getByRole('button', { name: /history/i });
 
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
+    expect(explorerButton).not.toHaveClass('active');
+    expect(savedQueriesButton).toHaveClass('active');
+    expect(historyButton).not.toHaveClass('active');
+  });
 
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
+  it('should highlight history button when current view is history', () => {
+    render(
+      <SidebarSwitcher currentView="history" onViewChange={mockOnViewChange} />
+    );
 
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-      };
-    }
-  }, [handleToggleTheme]);
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    const historyButton = screen.getByRole('button', { name: /history/i });
 
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
+    expect(explorerButton).not.toHaveClass('active');
+    expect(savedQueriesButton).not.toHaveClass('active');
+    expect(historyButton).toHaveClass('active');
+  });
 
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
+  it('should call onViewChange with "explorer" when explorer button is clicked', () => {
+    render(
+      <SidebarSwitcher currentView="saved-queries" onViewChange={mockOnViewChange} />
+    );
 
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
+    const explorerButton = screen.getByRole('button', { name: /explorer/i });
+    fireEvent.click(explorerButton);
 
-  useEffect(() => {
-    if (!isResizing) return;
+    expect(mockOnViewChange).toHaveBeenCalledWith('explorer');
+  });
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
+  it('should call onViewChange with "saved-queries" when saved queries button is clicked', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
 
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
+    const savedQueriesButton = screen.getByRole('button', { name: /saved/i });
+    fireEvent.click(savedQueriesButton);
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
+    expect(mockOnViewChange).toHaveBeenCalledWith('saved-queries');
+  });
 
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
+  it('should call onViewChange with "history" when history button is clicked', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
 
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
+    const historyButton = screen.getByRole('button', { name: /history/i });
+    fireEvent.click(historyButton);
 
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
+    expect(mockOnViewChange).toHaveBeenCalledWith('history');
+  });
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
+  it('should not render when collapsed is true', () => {
+    render(
+      <SidebarSwitcher
+        currentView="explorer"
+        onViewChange={mockOnViewChange}
+        collapsed={true}
+      />
+    );
 
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
+    expect(screen.queryByRole('button', { name: /explorer/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /saved/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /history/i })).not.toBeInTheDocument();
+  });
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
+  it('should render when collapsed is false', () => {
+    render(
+      <SidebarSwitcher
+        currentView="explorer"
+        onViewChange={mockOnViewChange}
+        collapsed={false}
+      />
+    );
 
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
+    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /saved/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /history/i })).toBeInTheDocument();
+  });
 
-    let currentWidth = resizeStartWidthRightRef.current;
+  it('should render when collapsed is not provided', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
+    expect(screen.getByRole('button', { name: /explorer/i })).toBeInTheDocument();
+  });
 
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
+  it('should have correct title attributes', () => {
+    render(
+      <SidebarSwitcher currentView="explorer" onViewChange={mockOnViewChange} />
+    );
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
+    expect(screen.getByTitle('Explorer')).toBeInTheDocument();
+    expect(screen.getByTitle('Saved Queries')).toBeInTheDocument();
+    expect(screen.getByTitle('Query History')).toBeInTheDocument();
+  });
+});
 ````
 
 ## File: tests/unit/renderer/hooks/useBigQuery.test.ts
@@ -21039,3343 +22472,6 @@ Desktop.ini
 # Electron specific
 app/dist/
 release/
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.css
-````css
-.query-results {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-}
-
-.results-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 1rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.results-info {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.results-info span {
-  margin-right: 0.5rem;
-}
-
-.results-info span.loading-indicator {
-  color: var(--text-secondary);
-  animation: loading-pulse 1s ease-in-out infinite;
-}
-
-@keyframes loading-pulse {
-  0%, 100% { 
-    opacity: 1; 
-  }
-  50% { 
-    opacity: 0.4; 
-  }
-}
-
-.results-table-container {
-  flex: 1;
-  overflow: hidden;
-  background-color: var(--bg-primary);
-  position: relative;
-}
-
-.canvas-table-container {
-  width: 100%;
-  height: 100%;
-  overflow-x: scroll;
-  overflow-y: scroll;
-  background-color: var(--bg-primary);
-  /* Ensure scrollbars are always visible when content overflows */
-  scrollbar-width: thin;
-  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
-  /* Force scrollbars to be visible on macOS and Windows */
-  -webkit-overflow-scrolling: touch;
-  /* Force scrollbars to always be visible (not auto-hide on macOS) */
-  overflow: -moz-scrollbars-vertical;
-  overflow: -moz-scrollbars-horizontal;
-}
-
-.canvas-table-container::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-  -webkit-appearance: none;
-  /* Force scrollbars to always be visible on macOS */
-  display: block;
-}
-
-.canvas-table-container::-webkit-scrollbar-track {
-  background: var(--bg-primary);
-  border: 1px solid var(--bg-tertiary);
-  /* Ensure track is always visible */
-  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb {
-  background: var(--bg-scrollbar-thumb);
-  border-radius: 6px;
-  border: 2px solid var(--bg-primary);
-  min-height: 20px;
-  min-width: 20px;
-  /* Make thumb more visible */
-  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-scrollbar-thumb-hover);
-}
-
-.canvas-table-container::-webkit-scrollbar-thumb:active {
-  background: var(--bg-scrollbar-thumb-active);
-}
-
-.canvas-table-container::-webkit-scrollbar-corner {
-  background: var(--bg-primary);
-}
-
-.no-rows-message {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.results-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.75rem;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  color: var(--text-primary);
-}
-
-.results-table thead {
-  position: sticky;
-  top: 0;
-  background-color: var(--bg-secondary);
-  z-index: 1;
-}
-
-.results-table th {
-  padding: 0;
-  text-align: left;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-primary);
-  border-right: 1px solid var(--border-primary);
-  background-color: var(--bg-secondary);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  position: relative;
-  min-width: 50px;
-}
-
-.results-table th:last-child {
-  border-right: none;
-}
-
-.results-table th .th-content {
-  padding: 0.375rem 0.5rem;
-  display: flex;
-  align-items: center;
-  position: relative;
-  height: 100%;
-}
-
-.results-table th .resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-  background-color: transparent;
-  z-index: 2;
-  transition: background-color 0.15s ease;
-}
-
-.results-table th .resize-handle:hover {
-  background-color: var(--accent-primary);
-}
-
-.results-table th:last-child .resize-handle {
-  display: none;
-}
-
-.results-table td {
-  padding: 0.375rem 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  border-right: 1px solid var(--border-primary);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-}
-
-.results-table td:last-child {
-  border-right: none;
-}
-
-.results-table tbody tr:nth-child(even) {
-  background-color: var(--bg-secondary);
-}
-
-.results-table tbody tr:nth-child(odd) {
-  background-color: var(--bg-primary);
-}
-
-.results-table tbody tr:hover {
-  background-color: var(--bg-hover);
-}
-
-.no-results {
-  padding: 2rem;
-  text-align: center;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  min-height: 200px;
-}
-
-.query-spinner-container {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 0.5rem;
-}
-
-.query-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-primary);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: query-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes query-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.error-results {
-  padding: 2rem;
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  border-radius: 3px;
-  margin: 1rem;
-  border: 1px solid var(--border-error);
-}
-
-.results-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 200px;
-  gap: 1rem;
-  padding: 2rem;
-}
-
-.loading-progress-bar {
-  width: 100%;
-  max-width: 400px;
-  height: 6px;
-  background-color: var(--border-primary);
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
-
-.loading-progress-bar-fill {
-  height: 100%;
-  background-color: var(--accent-primary);
-  border-radius: 3px;
-  width: 0%;
-  animation: progress-bar-animation 1.5s ease-in-out infinite;
-  display: block;
-}
-
-@keyframes progress-bar-animation {
-  0% {
-    width: 0%;
-    transform: translateX(0);
-  }
-  50% {
-    width: 70%;
-    transform: translateX(0);
-  }
-  100% {
-    width: 100%;
-    transform: translateX(100%);
-  }
-}
-
-.loading-text {
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.results-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.pagination-button {
-  background: transparent;
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 1rem;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  padding: 0;
-  line-height: 1;
-}
-
-.pagination-button:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  border-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.pagination-button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.pagination-info {
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  min-width: 100px;
-  text-align: center;
-}
-````
-
-## File: src/renderer/components/QueryResults/QueryResults.tsx
-````typescript
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import { RowContextMenu } from './RowContextMenu';
-import { ExportMenu, type ExportFormat } from './ExportMenu';
-import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
-import './QueryResults.css';
-import './ExportMenu.css';
-
-const ROWS_PER_PAGE = 200;
-
-export const QueryResults: React.FC = () => {
-  // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
-  const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
-  });
-  
-  // All hooks must be called before any conditional returns
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [currentPage, setCurrentPage] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    rowIndex?: number;
-    columnIndex?: number;
-    isRowNumberColumn?: boolean;
-  } | null>(null);
-  const [exportMenu, setExportMenu] = useState<{ x: number; y: number } | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
-  
-  // Store metadata and current page separately for efficient cache access
-  const [resultsMetadata, setResultsMetadata] = useState<{
-    columns: any[];
-    totalRows: number;
-    rowsReturned: number;
-    executionTimeMs: number;
-    bytesProcessed?: number;
-    jobId: string;
-    hasMore: boolean;
-  } | null>(null);
-  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
-  const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isLoadingPage, setIsLoadingPage] = useState(false);
-  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  const jobId = activeTab?.jobId;
-  
-  // Listen for progress events during query execution AND background fetching
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onProgress) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
-      // Show progress during initial execution or background page fetching
-      if (data.jobId === jobId) {
-        setProgressMessage(data.message);
-        setIsBackgroundFetching(!data.isComplete);
-      }
-    });
-    
-    return unsubscribe;
-  }, [jobId]);
-  
-  // Clear progress when execution status changes to idle or error
-  useEffect(() => {
-    if (executionStatus === 'idle' || executionStatus === 'error') {
-      setProgressMessage(null);
-      setIsBackgroundFetching(false);
-    }
-  }, [executionStatus]);
-  
-  // Listen for rows updates (background fetching of additional pages)
-  // Data is saved directly to SQLite by the main process - we just reload from cache
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
-      // Only process updates for the current job
-      if (data.jobId !== jobId) return;
-      
-      // Data is already in SQLite cache - just reload metadata and current page
-      if (window.electronAPI?.resultsCache) {
-        // Reload metadata to reflect final row count
-        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
-        if (metadata) {
-          setResultsMetadata(metadata);
-        }
-        
-        // Reload current page to ensure we have latest data
-        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        }
-        
-        // Clear loading indicators
-        setProgressMessage(null);
-        setIsBackgroundFetching(false);
-      }
-    });
-    
-    return unsubscribe;
-  }, [activeTabId, jobId, currentPage]);
-  
-  // Load metadata from cache when tab changes or when execution completes
-  useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // If query is running, don't load from cache (wait for new results)
-    if (executionStatus === 'running') {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // Load metadata from cache
-    setIsLoadingCache(true);
-    window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
-      .then((metadata: {
-        columns: ColumnMetadata[];
-        totalRows: number;
-        rowsReturned: number;
-        executionTimeMs: number;
-        bytesProcessed?: number;
-        jobId: string;
-        hasMore: boolean;
-      } | null) => {
-        if (metadata) {
-          setResultsMetadata(metadata);
-          setIsLoadingCache(false);
-        } else {
-          setResultsMetadata(null);
-          setCurrentPageRows([]);
-          setIsLoadingCache(false);
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load results metadata from cache:', err);
-        setResultsMetadata(null);
-        setCurrentPageRows([]);
-        setIsLoadingCache(false);
-      });
-  }, [activeTabId, executionStatus]);
-  
-  // Load current page from cache when metadata or page changes
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    setIsLoadingPage(true);
-    window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
-      .then((pageRows: Row[] | null) => {
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        } else {
-          setCurrentPageRows([]);
-        }
-        setIsLoadingPage(false);
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load page from cache:', err);
-        setCurrentPageRows([]);
-        setIsLoadingPage(false);
-      });
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Prefetch adjacent pages for smoother navigation
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      return;
-    }
-    
-    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
-    
-    // Prefetch next page if available
-    if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-    
-    // Prefetch previous page if available
-    if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = resultsMetadata?.jobId;
-  const resultsColumnCount = resultsMetadata?.columns?.length;
-  
-  useEffect(() => {
-    if (resultsJobId !== undefined) {
-      setColumnWidths({});
-      setCurrentPage(1); // Reset to first page when results change
-      setSortColumn(null); // Reset sorting when results change
-      setSortDirection(null);
-    }
-  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = React.useMemo(() => {
-    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
-      return currentPageRows;
-    }
-
-    const sorted = [...currentPageRows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = resultsMetadata?.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
-
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: sortedRows, // Use sorted rows instead of currentPageRows
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      rowIndex,
-      isRowNumberColumn,
-    });
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    // Pass both type and name to formatter for better date detection
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
-    const formatted = formatValue(val, columnType, columnName);
-    // Escape commas, quotes, and newlines in values
-    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
-      return `"${formatted.replace(/"/g, '""')}"`;
-    }
-    return formatted;
-  }, [formatValue]);
-
-  const handleCopyRowValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
-
-    // Use sorted rows from results (which matches what's displayed)
-    const rowIndex = contextMenu.rowIndex;
-    const row = results.rows[rowIndex];
-    
-    if (!row) return;
-
-    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => {
-      const col = results.columns[idx];
-      return formatCSVValue(val, col?.type, col?.name);
-    });
-
-    // Format: header1,header2,header3\nvalue1,value2,value3
-    const csvText = [headers.join(','), values.join(',')].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleCopyColumnValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
-
-    const columnIndex = contextMenu.columnIndex;
-    const column = results.columns[columnIndex];
-    
-    if (!column) return;
-
-    // Get header
-    const header = formatCSVValue(column.name);
-    
-    // Get all values for this column from sorted rows (matches what's displayed)
-    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
-
-    // Format: header\nvalue1\nvalue2\nvalue3...
-    const csvText = [header, ...values].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      columnIndex,
-    });
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  // Export button click handler
-  const handleExportClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    setExportMenu({
-      x: rect.left,
-      y: rect.bottom + 4,
-    });
-  }, []);
-
-  // Handle export action - fetches all rows from cache
-  const handleExport = useCallback(async (format: ExportFormat) => {
-    if (!activeTabId || !resultsMetadata || isExporting) return;
-
-    setIsExporting(true);
-    setExportMenu(null);
-
-    try {
-      // Fetch all rows from cache for export
-      const allResults = await window.electronAPI?.resultsCache?.get(activeTabId);
-      
-      if (!allResults) {
-        console.error('Failed to fetch results for export');
-        return;
-      }
-
-      const columns = allResults.columns;
-      const rows = allResults.rows;
-
-      if (format === 'csv') {
-        const csvContent = resultsToCSV(columns, rows);
-        const result = await window.electronAPI.export.saveFile(csvContent, {
-          format: 'csv',
-          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
-        });
-        if (result.error) {
-          console.error('Export failed:', result.error);
-        }
-      } else if (format === 'json') {
-        const jsonContent = resultsToJSON(columns, rows);
-        const result = await window.electronAPI.export.saveFile(jsonContent, {
-          format: 'json',
-          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
-        });
-        if (result.error) {
-          console.error('Export failed:', result.error);
-        }
-      } else if (format === 'clipboard-csv') {
-        const csvContent = resultsToCSV(columns, rows);
-        await navigator.clipboard.writeText(csvContent);
-      } else if (format === 'clipboard-json') {
-        const jsonContent = resultsToJSON(columns, rows);
-        await navigator.clipboard.writeText(jsonContent);
-      }
-    } catch (error) {
-      console.error('Export failed:', error);
-    } finally {
-      setIsExporting(false);
-    }
-  }, [activeTabId, resultsMetadata, isExporting]);
-
-  // Pagination calculations - use metadata for total rows, current page rows are already loaded
-  const totalRows = resultsMetadata?.rowsReturned || 0;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Now we can do conditional returns after all hooks
-  if (error) {
-    return (
-      <div className="query-results">
-        <div className="error-results">
-          <strong>Error:</strong> {error}
-        </div>
-      </div>
-    );
-  }
-
-  if (!resultsMetadata) {
-    // Show progress message if available, otherwise show default messages
-    const message = executionStatus === 'running' 
-      ? (progressMessage || 'Executing query...')
-      : isLoadingCache
-      ? 'Loading results...'
-      : 'Execute a query to see results here.';
-    
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>{message}</div>
-          {(executionStatus === 'running' || isLoadingCache) && (
-            <div className="query-spinner-container">
-              <div className="query-spinner"></div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-  
-  // Show loading indicator while page is loading
-  if (isLoadingPage && currentPageRows.length === 0) {
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>Loading page {currentPage}...</div>
-          <div className="query-spinner-container">
-            <div className="query-spinner"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if we have columns and rows to display
-  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
-  const hasRows = currentPageRows && currentPageRows.length > 0;
-
-  // Determine how to display row count
-  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
-  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
-  // - hasMore indicates if there are more rows beyond our limit
-  const displayRowCount = () => {
-    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
-      // We hit the limit - show how many we have of the total
-      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else if (resultsMetadata.hasMore) {
-      // Still loading more rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else {
-      // We have all rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    }
-  };
-
-  if (!hasColumns && !hasRows) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">No data to display (empty result set).</div>
-      </div>
-    );
-  }
-
-  if (!hasColumns) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">Error: No column information available.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="query-results">
-      <div className="results-header">
-        <div className="results-info">
-          <span>{displayRowCount()}</span>
-          <span> • {resultsMetadata.executionTimeMs}ms</span>
-          {resultsMetadata.bytesProcessed && (
-            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-          )}
-          {progressMessage && (
-            <span className="loading-indicator"> • {progressMessage}</span>
-          )}
-        </div>
-        <button
-          className="export-button"
-          onClick={handleExportClick}
-          disabled={isExporting || !hasRows}
-          title="Export results"
-        >
-          <span className="export-button-icon">⬇</span>
-          <span className="export-button-text">Export</span>
-        </button>
-      </div>
-      <div className="results-table-container">
-        {hasRows && results ? (
-          <CanvasTable
-            results={results}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-            onRowContextMenu={handleRowContextMenu}
-            onColumnContextMenu={handleColumnContextMenu}
-            formatValue={formatValue}
-            currentPage={currentPage}
-            rowsPerPage={ROWS_PER_PAGE}
-            sortColumn={sortColumn}
-            sortDirection={sortDirection}
-            onSortColumn={handleSortColumn}
-          />
-        ) : (
-          <div className="no-rows-message">No rows returned</div>
-        )}
-      </div>
-      {hasRows && totalPages > 1 && (
-        <div className="results-pagination">
-          <button
-            className="pagination-button"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
-          <span className="pagination-info">
-            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      {contextMenu && (
-        <RowContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={
-            contextMenu.columnIndex !== undefined 
-              ? 'Copy column values (with header)' 
-              : contextMenu.isRowNumberColumn 
-                ? 'Copy row as CSV' 
-                : 'Copy values (with headers)'
-          }
-        />
-      )}
-      {exportMenu && (
-        <ExportMenu
-          x={exportMenu.x}
-          y={exportMenu.y}
-          onClose={() => setExportMenu(null)}
-          onExport={handleExport}
-          isExporting={isExporting}
-        />
-      )}
-    </div>
-  );
-};
-````
-
-## File: tests/setup.ts
-````typescript
-import '@testing-library/jest-dom';
-
-// Mock HTMLCanvasElement.getContext for jsdom
-HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
-  clearRect: jest.fn(),
-  fillRect: jest.fn(),
-  getImageData: jest.fn(),
-  putImageData: jest.fn(),
-  createImageData: jest.fn(),
-  setTransform: jest.fn(),
-  drawImage: jest.fn(),
-  save: jest.fn(),
-  restore: jest.fn(),
-  beginPath: jest.fn(),
-  moveTo: jest.fn(),
-  lineTo: jest.fn(),
-  closePath: jest.fn(),
-  stroke: jest.fn(),
-  fill: jest.fn(),
-  translate: jest.fn(),
-  scale: jest.fn(),
-  rotate: jest.fn(),
-  arc: jest.fn(),
-  measureText: jest.fn(() => ({ width: 0 })),
-  fillText: jest.fn(),
-  strokeText: jest.fn(),
-  clip: jest.fn(),
-})) as jest.Mock;
-
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getTheme: jest.fn().mockResolvedValue('dark'),
-    setTheme: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-    onToggleTheme: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
-};
-
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
-````
-
-## File: src/main/ipc/bigquery.ts
-````typescript
-import { ipcMain } from 'electron';
-import { getBigQueryClient, getActiveConnection } from './connection';
-import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
-import { BigQueryErrorCode } from '../../shared/types/bigquery';
-import { saveResults, createStreamingSaver } from '../storage/results-cache-sqlite';
-
-/**
- * Serializes a value to ensure it can be cloned and sent through IPC.
- * Handles Date objects, BigNumber objects, Buffers, and nested structures.
- * Uses a WeakSet to track visited objects to prevent circular reference issues.
- * @param value - The value to serialize
- * @param visited - WeakSet to track visited objects (for circular reference detection)
- * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
- */
-function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
-  // Normalize column type early so it's available throughout the function
-  const normalizedColumnType = columnType?.toUpperCase() || '';
-  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
-                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
-  
-  // Handle null and undefined
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
-  // These objects have a 'value' property containing the string representation
-  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it's a BigQuery date/time object with a 'value' property
-    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
-    if ('value' in value && typeof value.value === 'string') {
-      const valueStr = value.value;
-      // Verify it looks like a date/time string
-      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
-          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
-        return valueStr;
-      }
-    }
-  }
-
-  // Handle Date objects - convert to ISO string
-  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
-  if (value instanceof Date) {
-    // Check if it's a valid date
-    if (isNaN(value.getTime())) {
-      return null; // Invalid dates become null
-    }
-    // Format based on column type if available
-    if (normalizedColumnType === 'DATE') {
-      return value.toISOString().split('T')[0]; // YYYY-MM-DD
-    }
-    if (normalizedColumnType === 'TIME') {
-      const hours = String(value.getUTCHours()).padStart(2, '0');
-      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-      const ms = value.getUTCMilliseconds();
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    if (normalizedColumnType === 'DATETIME') {
-      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
-    }
-    // Default: ISO string for TIMESTAMP or unknown
-    return value.toISOString();
-  }
-  
-  // CRITICAL: Check for Date-like objects BEFORE general object handling
-  // BigQuery might return Date objects that aren't instanceof Date
-  // Check for objects with Date-like methods or properties
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
-    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-      try {
-        // Try to convert to Date
-        let date: Date | null = null;
-        if (typeof value.getTime === 'function') {
-          const time = value.getTime();
-          if (typeof time === 'number' && !isNaN(time)) {
-            date = new Date(time);
-          }
-        } else if (typeof value.toISOString === 'function') {
-          const isoStr = value.toISOString();
-          date = new Date(isoStr);
-        }
-        
-        if (date && !isNaN(date.getTime())) {
-          // Format based on column type
-          if (normalizedColumnType === 'DATE') {
-            return date.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-            const ms = date.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return date.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return date.toISOString();
-        }
-      } catch {
-        // If conversion fails, continue with normal handling
-      }
-    }
-  }
-
-  // Handle Buffer objects - convert to base64 string
-  if (Buffer.isBuffer(value)) {
-    return value.toString('base64');
-  }
-
-  // Handle BigNumber-like objects (from @google-cloud/bigquery)
-  // Check for common BigNumber properties
-  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
-    // Check if it's a BigNumber by looking for valueOf or toNumber methods
-    if ('valueOf' in value || 'toNumber' in value) {
-      try {
-        // Try to convert to number first, fallback to string
-        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
-        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
-          return numValue;
-        }
-        return String(value);
-      } catch {
-        return String(value);
-      }
-    }
-  }
-
-  // Handle arrays - recursively serialize each element
-  if (Array.isArray(value)) {
-    return value.map((item) => serializeValue(item, visited, columnType));
-  }
-
-  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
-  // BigQuery may return these as objects with special properties or methods
-  // This must come after array check but before general object handling
-  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
-    // BigQuery might return DATE as objects in various formats
-    if (isDateType) {
-      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
-      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
-      // This check should be very lenient - just check if 'value' exists and is a string
-      if ('value' in value) {
-        const innerValue = value.value;
-        // If inner value is a string, return it directly (this is the most common case)
-        if (typeof innerValue === 'string') {
-          return innerValue;
-        }
-        // If inner value is a Date, convert to ISO string
-        if (innerValue instanceof Date) {
-          if (normalizedColumnType === 'DATE') {
-            return innerValue.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
-            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
-            const ms = innerValue.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return innerValue.toISOString();
-        }
-        // Recursively serialize the inner value
-        return serializeValue(innerValue, visited, columnType);
-      }
-      
-      // Check for BigQuery Date object structure - might have year, month, day properties
-      if ('year' in value || 'month' in value || 'day' in value) {
-        const year = value.year ?? new Date().getFullYear();
-        const monthVal = value.month ?? 1;
-        const month = String(monthVal).padStart(2, '0');
-        const day = String(value.day ?? 1).padStart(2, '0');
-        if (normalizedColumnType === 'DATE') {
-          return `${year}-${month}-${day}`;
-        }
-        // For DATETIME/TIMESTAMP, check for time components
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        if (normalizedColumnType === 'DATETIME') {
-          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      
-      // Check for TIME object structure
-      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${hours}:${minutes}:${seconds}.${msStr}`;
-        }
-        return `${hours}:${minutes}:${seconds}`;
-      }
-      
-      // For any other object structure for DATE/TIME, try to extract a string value
-      // Check all properties for date-like strings
-      const objKeys = Object.keys(value);
-      for (const key of objKeys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-      
-      // If we can't extract a date string, return a placeholder instead of serializing to {}
-      return '[Invalid Date Object]';
-    }
-    
-    // For non-date types, check if it's a BigQuery date object with a value property
-    if ('value' in value && Object.keys(value).length === 1) {
-      const innerValue = value.value;
-      // If inner value is a string that looks like a date, return it
-      if (typeof innerValue === 'string') {
-        return innerValue;
-      }
-      // If inner value is a Date, convert to ISO string
-      if (innerValue instanceof Date) {
-        return innerValue.toISOString();
-      }
-      // Recursively serialize the inner value
-      return serializeValue(innerValue, visited, columnType);
-    }
-    
-    // For DATE/TIME columns, try toString() first before checking properties
-    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-            return str;
-          }
-        }
-      } catch {
-        // Continue with property checking if toString fails
-      }
-      
-      // Also check if any property value is a date-like string
-      const keys = Object.keys(value);
-      for (const key of keys) {
-        const propValue = value[key];
-        if (typeof propValue === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-            return propValue;
-          }
-        }
-      }
-    }
-    
-    // Check for date-like objects with year/month/day properties
-    if ('year' in value && 'month' in value && 'day' in value) {
-      const year = value.year;
-      const month = String(value.month ?? 1).padStart(2, '0');
-      const day = String(value.day ?? 1).padStart(2, '0');
-      // Check if it also has time components (DATETIME/TIMESTAMP)
-      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
-        const hours = String(value.hours ?? 0).padStart(2, '0');
-        const minutes = String(value.minutes ?? 0).padStart(2, '0');
-        const seconds = String(value.seconds ?? 0).padStart(2, '0');
-        const ms = value.milliseconds ?? 0;
-        if (ms > 0) {
-          const msStr = String(ms).padStart(3, '0');
-          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
-        }
-        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
-      }
-      // Just date components (DATE)
-      return `${year}-${month}-${day}`;
-    }
-    
-    // Check for time-only objects (TIME)
-    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
-        !('year' in value || 'month' in value || 'day' in value)) {
-      const hours = String(value.hours ?? 0).padStart(2, '0');
-      const minutes = String(value.minutes ?? 0).padStart(2, '0');
-      const seconds = String(value.seconds ?? 0).padStart(2, '0');
-      const ms = value.milliseconds ?? 0;
-      if (ms > 0) {
-        const msStr = String(ms).padStart(3, '0');
-        return `${hours}:${minutes}:${seconds}.${msStr}`;
-      }
-      return `${hours}:${minutes}:${seconds}`;
-    }
-    
-    // Try to call toString() if it exists and might give us a useful string
-    // (Only if we haven't already tried it above for date types)
-    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
-      try {
-        const str = value.toString();
-        // If toString gives us something useful (not [object Object]), use it
-        if (str && str !== '[object Object]' && typeof str === 'string') {
-          // Check if it looks like a date/time string
-          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
-            return str;
-          }
-        }
-      } catch {
-        // Ignore toString errors
-      }
-    }
-  }
-
-  // Handle objects - recursively serialize each property
-  if (typeof value === 'object') {
-    // Check for circular references
-    if (visited.has(value)) {
-      return '[Circular]';
-    }
-    visited.add(value);
-
-    try {
-      // Check if it's a plain object (not a class instance)
-      const proto = Object.getPrototypeOf(value);
-      if (proto === null || proto === Object.prototype) {
-        // For DATE/TIME columns, be very aggressive about converting objects to strings
-        if (isDateType) {
-          // Try toString() first
-          if ('toString' in value && typeof value.toString === 'function') {
-            try {
-              const str = value.toString();
-              if (str && str !== '[object Object]' && typeof str === 'string') {
-                // Check if it looks like a date/time string
-                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
-                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
-                  return str;
-                }
-              }
-            } catch {
-              // Continue with property checking if toString fails
-            }
-          }
-          
-          // Check all properties for date-like strings
-          const keys = Object.keys(value);
-          for (const key of keys) {
-            const propValue = value[key];
-            if (typeof propValue === 'string') {
-              // Check if it looks like a date/time string
-              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                return propValue;
-              }
-            }
-            // If property is a Date, convert it
-            if (propValue instanceof Date) {
-              if (normalizedColumnType === 'DATE') {
-                return propValue.toISOString().split('T')[0];
-              }
-              return propValue.toISOString();
-            }
-          }
-          
-          // If we still haven't found a date string, try JSON.stringify to extract it
-          try {
-            const jsonStr = JSON.stringify(value);
-            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
-            if (dateMatch) {
-              const dateStr = dateMatch[1];
-              if (normalizedColumnType === 'DATE') {
-                return dateStr.split('T')[0]; // Just the date part
-              }
-              return dateStr.replace('T', ' ').replace(/Z$/, '');
-            }
-            // Also try to find any date-like string in the JSON
-            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
-            for (const match of allDateMatches) {
-              const dateStr = match[1];
-              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
-                return dateStr;
-              }
-              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
-                return dateStr.replace('T', ' ').replace(/Z$/, '');
-              }
-            }
-          } catch {
-            // JSON.stringify failed, continue with normal serialization
-          }
-          
-          // Last resort for DATE columns: convert object to string representation
-          // This prevents [object Object] from being sent through IPC
-          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
-              normalizedColumnType === 'TIMESTAMP') {
-            // Try to create a meaningful string from the object
-            const keys = Object.keys(value);
-            if (keys.length === 0) {
-              return '[Empty Date Object]';
-            }
-            // Return first property value if it's a string or number
-            const firstKey = keys[0];
-            const firstValue = value[firstKey];
-            if (typeof firstValue === 'string') {
-              return firstValue;
-            }
-            if (typeof firstValue === 'number') {
-              // Try to interpret as date
-              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
-              if (!isNaN(date.getTime())) {
-                if (normalizedColumnType === 'DATE') {
-                  return date.toISOString().split('T')[0];
-                }
-                return date.toISOString();
-              }
-            }
-            // Return object structure as string
-            return `{${keys.slice(0, 2).join(', ')}}`;
-          }
-        } else {
-          // For non-date types, check if this might be a date-like object
-          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
-          const keys = Object.keys(value);
-          // If object has very few keys and one looks date-like, try toString first
-          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
-            try {
-              const str = value.toString();
-              if (str && str !== '[object Object]' && typeof str === 'string') {
-                // Check if it looks like a date/time string
-                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
-                  return str;
-                }
-              }
-            } catch {
-              // Continue with normal serialization if toString fails
-            }
-          }
-        }
-        
-        const serialized: any = {};
-        for (const key in value) {
-          if (Object.prototype.hasOwnProperty.call(value, key)) {
-            serialized[key] = serializeValue(value[key], visited, columnType);
-          }
-        }
-        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
-        // This prevents empty objects from being stored and later displayed as "[object Object]"
-        if (Object.keys(serialized).length === 0 && isDateType) {
-          return '[Invalid Date]';
-        }
-        return serialized;
-      } else {
-        // For non-plain objects (class instances), try to serialize
-        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
-        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
-        if (value instanceof Date) {
-          if (isNaN(value.getTime())) {
-            return null;
-          }
-          if (normalizedColumnType === 'DATE') {
-            return value.toISOString().split('T')[0];
-          }
-          if (normalizedColumnType === 'TIME') {
-            const hours = String(value.getUTCHours()).padStart(2, '0');
-            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-            const ms = value.getUTCMilliseconds();
-            if (ms > 0) {
-              const msStr = String(ms).padStart(3, '0');
-              return `${hours}:${minutes}:${seconds}.${msStr}`;
-            }
-            return `${hours}:${minutes}:${seconds}`;
-          }
-          if (normalizedColumnType === 'DATETIME') {
-            return value.toISOString().replace('T', ' ').slice(0, 19);
-          }
-          return value.toISOString();
-        }
-        
-        // Check for Date-like objects (objects with Date methods)
-        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
-          try {
-            let date: Date | null = null;
-            if (typeof value.getTime === 'function') {
-              const time = value.getTime();
-              if (typeof time === 'number' && !isNaN(time)) {
-                date = new Date(time);
-              }
-            } else if (typeof value.toISOString === 'function') {
-              const isoStr = value.toISOString();
-              date = new Date(isoStr);
-            }
-            
-            if (date && !isNaN(date.getTime())) {
-              if (normalizedColumnType === 'DATE') {
-                return date.toISOString().split('T')[0];
-              }
-              if (normalizedColumnType === 'TIME') {
-                const hours = String(date.getUTCHours()).padStart(2, '0');
-                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-                const ms = date.getUTCMilliseconds();
-                if (ms > 0) {
-                  const msStr = String(ms).padStart(3, '0');
-                  return `${hours}:${minutes}:${seconds}.${msStr}`;
-                }
-                return `${hours}:${minutes}:${seconds}`;
-              }
-              if (normalizedColumnType === 'DATETIME') {
-                return date.toISOString().replace('T', ' ').slice(0, 19);
-              }
-              return date.toISOString();
-            }
-          } catch {
-            // If conversion fails, continue with normal serialization
-          }
-        }
-        
-        // First try JSON.stringify/parse which handles most cases
-        // BUT: This will convert Date objects to {}, so we check for Dates above
-        try {
-          const jsonStr = JSON.stringify(value);
-          // Check if JSON.stringify produced an empty object for a date type
-          // This happens when Date objects are stringified
-          if (jsonStr === '{}' && isDateType) {
-            // This is likely a Date object that was stringified to {}
-            return '[Invalid Date]';
-          }
-          return JSON.parse(jsonStr);
-        } catch {
-          // If JSON serialization fails (e.g., circular refs, functions),
-          // try to extract enumerable properties
-          const serialized: any = {};
-          for (const key in value) {
-            if (Object.prototype.hasOwnProperty.call(value, key)) {
-              serialized[key] = serializeValue(value[key], visited, columnType);
-            }
-          }
-          // If we got nothing, check if it's a date type before converting to string
-          if (Object.keys(serialized).length === 0 && isDateType) {
-            return '[Invalid Date]';
-          }
-          // If we got nothing, convert to string as last resort
-          return Object.keys(serialized).length > 0 ? serialized : String(value);
-        }
-      }
-    } catch (error) {
-      // If anything goes wrong, check if it's a Date object before converting to string
-      // This prevents [object Object] from being returned for Date objects
-      if (value instanceof Date) {
-        if (isNaN(value.getTime())) {
-          return null;
-        }
-        if (normalizedColumnType === 'DATE') {
-          return value.toISOString().split('T')[0];
-        }
-        if (normalizedColumnType === 'TIME') {
-          const hours = String(value.getUTCHours()).padStart(2, '0');
-          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
-          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
-          const ms = value.getUTCMilliseconds();
-          if (ms > 0) {
-            const msStr = String(ms).padStart(3, '0');
-            return `${hours}:${minutes}:${seconds}.${msStr}`;
-          }
-          return `${hours}:${minutes}:${seconds}`;
-        }
-        if (normalizedColumnType === 'DATETIME') {
-          return value.toISOString().replace('T', ' ').slice(0, 19);
-        }
-        return value.toISOString();
-      }
-      // For date types, return a placeholder instead of [object Object]
-      if (isDateType && typeof value === 'object' && value !== null) {
-        return '[Invalid Date]';
-      }
-      // Last resort: convert to string
-      return String(value);
-    }
-  }
-
-  // For primitives (string, number, boolean), return as-is
-  return value;
-}
-
-// Helper function to transform raw BigQuery rows to our Row format
-function transformRows(rows: any[], columns: ColumnMetadata[]): Row[] {
-  return rows.map((row: any) => ({
-    values: columns.map((col) => {
-      const value = row[col.name];
-      
-      // Pass column type to serializeValue to help with date/time serialization
-      let serialized = serializeValue(value, new WeakSet(), col.type);
-      
-      // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
-      const colTypeUpper = (col.type || '').toUpperCase();
-      if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
-          colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
-        if (typeof serialized === 'object' && serialized !== null) {
-          const keys = Object.keys(serialized);
-          for (const key of keys) {
-            const propValue = serialized[key];
-            if (typeof propValue === 'string') {
-              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
-                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
-                serialized = propValue;
-                break;
-              }
-            }
-          }
-          if (typeof serialized === 'object' && serialized !== null) {
-            serialized = '[Invalid Date]';
-          }
-        }
-        if (typeof serialized === 'string' && serialized === '[object Object]') {
-          serialized = '[Invalid Date]';
-        }
-        if (typeof serialized !== 'string') {
-          if (serialized === null || serialized === undefined) {
-            serialized = '[Invalid Date]';
-          } else {
-            serialized = String(serialized);
-            if (serialized === '[object Object]') {
-              serialized = '[Invalid Date]';
-            }
-          }
-        }
-      }
-      
-      return serialized;
-    }),
-  }));
-}
-
-export function registerBigQueryHandlers(): void {
-  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string, tabId?: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    // Get the sender's webContents for streaming updates
-    const sender = _event.sender;
-
-    try {
-      const startTime = Date.now();
-
-      // Get location from active connection, default to EU
-      const connection = getActiveConnection();
-      const location = connection?.location || 'EU';
-
-      // Create query job
-      const [job] = await client.createQueryJob({
-        query: queryText,
-        location,
-      });
-
-      // Wait for the job to complete first
-      const [jobResult] = await job.getMetadata();
-      
-      // Poll until job is done (getQueryResults should do this, but let's be explicit)
-      if (jobResult.status?.state !== 'DONE') {
-        await job.promise(); // This waits for the job to complete
-      }
-
-      // Get job metadata early to get schema and total row count
-      const [jobMetadata] = await job.getMetadata();
-      
-      // Get schema from job metadata
-      let schema = jobMetadata.configuration?.query?.schema || 
-                   jobMetadata.statistics?.query?.schema ||
-                   jobMetadata.schema;
-
-      // Build columns from schema
-      let columns: ColumnMetadata[] = [];
-      if (schema?.fields && schema.fields.length > 0) {
-        columns = schema.fields.map((field: any) => ({
-          name: field.name,
-          type: field.type,
-          mode: field.mode,
-        }));
-      }
-
-      // Fetch first page of results
-      const [firstPageRows, firstNextQuery] = await job.getQueryResults({ maxResults: 10000 });
-      const hasMorePages = !!firstNextQuery?.pageToken;
-      
-      // Get total row count from the query response metadata
-      // This is available immediately without fetching all rows
-      // The BigQuery API returns totalRows but the TypeScript types don't include it
-      const queryMetadata = firstNextQuery as any;
-      const totalRowCount = queryMetadata?.totalRows 
-        ? parseInt(String(queryMetadata.totalRows), 10) 
-        : undefined;
-
-      // If no schema from metadata, extract from first row
-      if (columns.length === 0 && firstPageRows.length > 0) {
-        const firstRow = firstPageRows[0];
-        columns = Object.keys(firstRow).map((key) => {
-          const value = firstRow[key];
-          let type = 'STRING';
-          if (typeof value === 'number') {
-            type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
-          } else if (typeof value === 'boolean') {
-            type = 'BOOLEAN';
-          } else if (value instanceof Date) {
-            type = 'TIMESTAMP';
-          } else if (Array.isArray(value)) {
-            type = 'ARRAY';
-          } else if (value && typeof value === 'object') {
-            type = 'RECORD';
-          }
-          return { name: key, type, mode: 'NULLABLE' };
-        });
-      }
-
-      const executionTimeMs = Date.now() - startTime;
-      const bytesProcessed = parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10);
-
-      // Transform first page rows
-      const transformedFirstPage = transformRows(firstPageRows, columns);
-
-      // Build initial result with first page
-      // Use totalRowCount from BigQuery metadata if available (gives accurate count immediately)
-      // Otherwise fall back to first page length (will be updated after fetching all pages)
-      const initialResult: QueryResult = {
-        columns,
-        rows: transformedFirstPage,
-        totalRows: totalRowCount ?? transformedFirstPage.length,
-        rowsReturned: transformedFirstPage.length,
-        executionTimeMs,
-        bytesProcessed,
-        jobId: job.id || '',
-        hasMore: hasMorePages,
-      };
-
-      // If there are more pages, fetch them in background and send updates
-      // With SQLite-backed cache, we can handle much larger datasets
-      // 500,000 rows is a good balance between usefulness and fetch time (~1-2 min)
-      const MAX_ROWS = 500000;
-      
-      // Save first page to SQLite immediately if we have a tabId
-      if (tabId) {
-        saveResults(tabId, initialResult);
-      }
-      
-      if (hasMorePages) {
-        // Start background fetch - don't await, let it run async
-        (async () => {
-          try {
-            let pageToken = firstNextQuery?.pageToken;
-            let allRows = [...firstPageRows];
-            let pageCount = 1;
-            
-            // Fetch additional pages up to the max limit
-            while (pageToken && allRows.length < MAX_ROWS) {
-              const [rows, nextQuery] = await job.getQueryResults({ 
-                maxResults: 10000, 
-                pageToken 
-              });
-              allRows.push(...rows);
-              pageToken = nextQuery?.pageToken;
-              pageCount++;
-              
-              // Only send lightweight progress updates during fetching (no row data)
-              sender.send('bigquery:progress', {
-                jobId: job.id,
-                rowsFetched: allRows.length,
-                isComplete: false,
-                message: totalRowCount 
-                  ? `Loading... ${allRows.length.toLocaleString()} of ${Math.min(totalRowCount, MAX_ROWS).toLocaleString()} rows`
-                  : `Loading... ${allRows.length.toLocaleString()} rows`,
-              });
-              
-              // Stop if we've reached the max
-              if (allRows.length >= MAX_ROWS) {
-                break;
-              }
-            }
-            
-            // Transform all rows only once at the end
-            const transformedRows = transformRows(allRows, columns);
-            
-            // Determine if there are more rows than we fetched
-            const hitLimit = allRows.length >= MAX_ROWS && !!pageToken;
-            const actualTotalRows = totalRowCount ?? transformedRows.length;
-            
-            // Save complete results to SQLite cache (this is fast!)
-            if (tabId) {
-              const completeResult: QueryResult = {
-                columns,
-                rows: transformedRows,
-                totalRows: actualTotalRows,
-                rowsReturned: transformedRows.length,
-                executionTimeMs,
-                bytesProcessed,
-                jobId: job.id || '',
-                hasMore: hitLimit,
-              };
-              saveResults(tabId, completeResult);
-            }
-            
-            // Send lightweight notification that more rows are available
-            // No row data over IPC - renderer will read from SQLite cache
-            sender.send('bigquery:rows-update', {
-              jobId: job.id,
-              columns,
-              rows: [], // Don't send rows over IPC - they're in SQLite
-              totalRows: actualTotalRows,
-              rowsReturned: transformedRows.length,
-              executionTimeMs,
-              bytesProcessed,
-              hasMore: hitLimit, // True if we hit the limit
-              message: hitLimit 
-                ? `Showing ${transformedRows.length.toLocaleString()} of ${actualTotalRows.toLocaleString()} rows (limited to ${MAX_ROWS.toLocaleString()})`
-                : `Complete: ${transformedRows.length.toLocaleString()} rows`,
-            });
-          } catch (err) {
-            console.error('[BigQuery] Background fetch error:', err);
-            sender.send('bigquery:rows-error', {
-              jobId: job.id,
-              error: (err as Error).message || 'Failed to fetch additional rows',
-            });
-          }
-        })();
-      }
-
-      return initialResult;
-    } catch (error: any) {
-      console.error(`[BigQuery] Query execution error:`, error);
-      
-      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-        const err = new Error('Network error: Unable to connect to BigQuery');
-        (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      if (error.code === 403 || error.code === 401) {
-        const err = new Error('Authentication error');
-        (err as any).code = BigQueryErrorCode.AUTH_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      
-      // Extract error message from BigQuery error
-      let errorMessage = error.message || 'Query execution failed';
-      
-      // If error has details array, try to extract message from first detail
-      if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
-        const firstError = error.errors[0];
-        if (firstError.message) {
-          errorMessage = firstError.message;
-        } else if (typeof firstError === 'string') {
-          errorMessage = firstError;
-        }
-      }
-      
-      const err = new Error(errorMessage);
-      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-      (err as any).details = error.errors || error;
-      throw err;
-    }
-  });
-
-  ipcMain.handle('bigquery:cancel', async (_event, jobId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const job = client.job(jobId);
-      await job.cancel();
-    } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.JOB_NOT_FOUND,
-          message: 'Job not found or already completed',
-        };
-      }
-      throw {
-        code: BigQueryErrorCode.CANCEL_FAILED,
-        message: 'Failed to cancel job',
-        details: error.message,
-      };
-    }
-  });
-
-  ipcMain.handle('bigquery:listDatasets', async () => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const [datasets] = await client.getDatasets();
-      return datasets.map((dataset) => ({
-        id: dataset.id,
-        name: dataset.id,
-        location: dataset.metadata?.location || 'US',
-      }));
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to list datasets',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  ipcMain.handle('bigquery:listTables', async (_event, datasetId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const dataset = client.dataset(datasetId);
-      const [tables] = await dataset.getTables();
-      return tables.map((table) => ({
-        id: table.id,
-        name: table.id,
-        type: table.metadata?.type || 'TABLE',
-      }));
-    } catch (error: any) {
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to list tables',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  // Wrap handler to suppress error logging for table not found errors
-  ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
-    try {
-      return await (async () => {
-        const client = getBigQueryClient();
-        if (!client) {
-          throw {
-            code: BigQueryErrorCode.CONNECTION_FAILED,
-            message: 'No active BigQuery connection',
-          };
-        }
-
-        try {
-          const table = client.dataset(datasetId).table(tableId);
-          const [metadata] = await table.getMetadata();
-          
-          // Extract schema fields
-          const schema = metadata.schema;
-          if (!schema || !schema.fields) {
-            return {
-              fields: [],
-            };
-          }
-
-          // Recursively transform fields to include nested structures
-          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
-            const result: ColumnMetadata & { fields?: any[] } = {
-              name: field.name,
-              type: field.type,
-              mode: field.mode || 'NULLABLE',
-            };
-            
-            if (field.fields && field.fields.length > 0) {
-              result.fields = field.fields.map(transformField);
-            }
-            
-            return result;
-          };
-
-          // Extract table metadata
-          // BigQuery timestamps are in milliseconds, can be string or number
-          const creationTime = metadata.creationTime 
-            ? (typeof metadata.creationTime === 'string' 
-                ? parseInt(metadata.creationTime, 10) 
-                : metadata.creationTime)
-            : undefined;
-          const lastModifiedTime = metadata.lastModifiedTime
-            ? (typeof metadata.lastModifiedTime === 'string'
-                ? parseInt(metadata.lastModifiedTime, 10)
-                : metadata.lastModifiedTime)
-            : undefined;
-          const numRows = metadata.numRows
-            ? (typeof metadata.numRows === 'string'
-                ? parseInt(metadata.numRows, 10)
-                : metadata.numRows)
-            : undefined;
-          const numBytes = metadata.numBytes
-            ? (typeof metadata.numBytes === 'string'
-                ? parseInt(metadata.numBytes, 10)
-                : metadata.numBytes)
-            : undefined;
-
-          return {
-            fields: schema.fields.map(transformField),
-            metadata: {
-              creationTime,
-              lastModifiedTime,
-              numRows,
-              numBytes,
-            },
-          };
-        } catch (error: any) {
-          if (error.code === 404) {
-            // Create error but suppress Electron's automatic logging for table not found errors
-            // These errors are handled in the UI and don't need to be logged
-            const err = new Error('Table not found');
-            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-            (err as any).details = error.message;
-            // Mark error to suppress logging
-            (err as any).suppressLogging = true;
-            throw err;
-          }
-          const err = new Error(error.message || 'Failed to get table schema');
-          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-          (err as any).details = error.errors || error;
-          throw err;
-        }
-      })();
-    } catch (error: any) {
-      // Suppress Electron's automatic error logging for table not found errors
-      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
-          error?.message === 'Table not found') {
-        // Re-throw without Electron logging by using a custom error handler
-        // Electron will still pass the error to the renderer, but won't log it
-        const err = new Error('Table not found');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        (err as any).details = error.details || error.message;
-        // Use a custom property to signal this shouldn't be logged
-        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
-        throw err;
-      }
-      // Re-throw other errors normally
-      throw error;
-    }
-  });
-
-  ipcMain.handle('bigquery:getViewDefinition', async (_event, datasetId: string, tableId: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      const table = client.dataset(datasetId).table(tableId);
-      const [metadata] = await table.getMetadata();
-      
-      // Check if this is actually a view
-      if (metadata.type !== 'VIEW' && metadata.type !== 'MATERIALIZED_VIEW') {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'Table is not a view',
-        };
-      }
-
-      // Get view definition from metadata
-      // For regular views: metadata.view.query
-      // For materialized views: metadata.materializedView.query
-      let viewDefinition = '';
-      if (metadata.type === 'VIEW' && metadata.view) {
-        viewDefinition = metadata.view.query || '';
-      } else if (metadata.type === 'MATERIALIZED_VIEW' && metadata.materializedView) {
-        viewDefinition = metadata.materializedView.query || '';
-      }
-      
-      if (!viewDefinition) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'View definition not found',
-        };
-      }
-
-      return {
-        definition: viewDefinition,
-      };
-    } catch (error: any) {
-      if (error.code === 404) {
-        throw {
-          code: BigQueryErrorCode.BIGQUERY_ERROR,
-          message: 'View not found',
-          details: error.message,
-        };
-      }
-      if (error.code) {
-        throw error;
-      }
-      throw {
-        code: BigQueryErrorCode.BIGQUERY_ERROR,
-        message: error.message || 'Failed to get view definition',
-        details: error.errors || error,
-      };
-    }
-  });
-
-  /**
-   * Perform a dry run of a query to estimate bytes processed without executing.
-   * This uses BigQuery's native dry run feature which accounts for:
-   * - Column selection (only selected columns count)
-   * - Partitioning (only scanned partitions count)
-   * - Clustering benefits
-   * - Query optimization
-   */
-  ipcMain.handle('bigquery:dryRun', async (_event, queryText: string) => {
-    const client = getBigQueryClient();
-    if (!client) {
-      throw {
-        code: BigQueryErrorCode.CONNECTION_FAILED,
-        message: 'No active BigQuery connection',
-      };
-    }
-
-    try {
-      // Get location from active connection, default to EU
-      const connection = getActiveConnection();
-      const location = connection?.location || 'EU';
-
-      // Create a dry run query job - this validates and estimates without executing
-      // For dry runs, the job is not actually created in BigQuery, so we can't call getMetadata()
-      // The statistics are returned directly in job.metadata
-      const [job] = await client.createQueryJob({
-        query: queryText,
-        location,
-        dryRun: true,
-      });
-
-      // For dry runs, metadata is available directly on the job object
-      // Don't call getMetadata() as dry run jobs don't actually exist in BigQuery
-      const metadata = job.metadata;
-      
-      // totalBytesProcessed is in statistics
-      const totalBytesProcessed = parseInt(
-        metadata?.statistics?.totalBytesProcessed || '0', 
-        10
-      );
-
-      return {
-        totalBytesProcessed,
-        // Include additional useful statistics if available
-        cacheHit: metadata?.statistics?.query?.cacheHit || false,
-        statementType: metadata?.statistics?.query?.statementType || null,
-      };
-    } catch (error: any) {
-      // Electron IPC requires Error objects with message property to serialize properly
-      // Plain objects thrown will appear as [object Object]
-      
-      // Handle specific BigQuery errors
-      if (error.code === 404) {
-        const err = new Error('Table not found');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        (err as any).details = error.message;
-        throw err;
-      }
-      
-      // Handle syntax errors and other query errors
-      // BigQuery errors include location info (line, column) which we pass through
-      if (error.errors && error.errors.length > 0) {
-        const firstError = error.errors[0];
-        const err = new Error(firstError.message || 'Query validation failed');
-        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-        // Include location info if available
-        if (firstError.location) {
-          (err as any).location = {
-            line: firstError.location.line,
-            column: firstError.location.column,
-          };
-        }
-        (err as any).details = JSON.stringify(error.errors);
-        throw err;
-      }
-      
-      const err = new Error(error.message || 'Dry run failed');
-      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
-      (err as any).details = error.errors ? JSON.stringify(error.errors) : String(error);
-      throw err;
-    }
-  });
-}
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { registerExportHandlers } from './ipc/export';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-registerExportHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-});
-````
-
-## File: src/main/preload.ts
-````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
-
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-  };
-
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
-
-  // Export operations
-  export: {
-    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
-  };
-}
-
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string, tabId?: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:progress', handler);
-      return () => ipcRenderer.removeListener('bigquery:progress', handler);
-    },
-    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:rows-update', handler);
-      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
-    },
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
-    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    getRange: (tabId: string, startIndex: number, count: number) =>
-      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-    stats: () => ipcRenderer.invoke('results-cache:stats'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-    onToggleTheme: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:toggle-theme', handler);
-      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-  export: {
-    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
-      ipcRenderer.invoke('export:saveFile', content, options),
-  },
-} as ElectronAPI);
-
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
-````
-
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: var(--bg-primary);
-}
-
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
-
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background-color: var(--button-secondary);
-  color: var(--text-disabled);
-}
-
-.tools-dropdown {
-  position: relative;
-}
-
-.query-editor-toolbar .tools-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar .tools-button.open {
-  background-color: var(--button-secondary-hover);
-}
-
-.tools-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
-  min-width: 170px;
-  padding: 0.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  z-index: 5;
-}
-
-.tools-menu .tools-menu-item {
-  background: transparent;
-  color: var(--text-primary);
-  width: 100%;
-  justify-content: flex-start;
-  padding: 0.5rem 0.75rem;
-}
-
-.tools-menu .tools-menu-item:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.tools-menu .tools-menu-item:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
-
-.query-editor-toolbar .run-button {
-  background-color: var(--accent-primary);
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: var(--accent-orange);
-  color: var(--text-white);
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: var(--accent-orange-hover);
-}
-
-.query-editor-toolbar .save-button {
-  background-color: var(--accent-success);
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: var(--accent-success-hover);
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: var(--accent-danger);
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: var(--accent-danger-hover);
-}
-
-.connection-warning {
-  color: var(--text-warning);
-  background-color: var(--button-secondary);
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: var(--text-success);
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: var(--text-error);
-}
-
-.editor-status-bar .status-valid {
-  color: var(--text-success);
-}
-
-.editor-status-bar .status-invalid {
-  color: var(--text-error);
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: var(--text-white);
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -25612,6 +23708,1339 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 };
 ````
 
+## File: src/renderer/components/QueryResults/QueryResults.css
+````css
+.query-results {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.results-info {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.results-info span {
+  margin-right: 0.5rem;
+}
+
+.results-info span.loading-indicator {
+  color: var(--text-secondary);
+  animation: loading-pulse 1s ease-in-out infinite;
+}
+
+@keyframes loading-pulse {
+  0%, 100% { 
+    opacity: 1; 
+  }
+  50% { 
+    opacity: 0.4; 
+  }
+}
+
+.results-table-container {
+  flex: 1;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  position: relative;
+}
+
+.canvas-table-container {
+  width: 100%;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: scroll;
+  background-color: var(--bg-primary);
+  /* Ensure scrollbars are always visible when content overflows */
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-scrollbar-thumb) var(--bg-primary);
+  /* Force scrollbars to be visible on macOS and Windows */
+  -webkit-overflow-scrolling: touch;
+  /* Force scrollbars to always be visible (not auto-hide on macOS) */
+  overflow: -moz-scrollbars-vertical;
+  overflow: -moz-scrollbars-horizontal;
+}
+
+.canvas-table-container::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  -webkit-appearance: none;
+  /* Force scrollbars to always be visible on macOS */
+  display: block;
+}
+
+.canvas-table-container::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+  border: 1px solid var(--bg-tertiary);
+  /* Ensure track is always visible */
+  -webkit-box-shadow: inset 0 0 0 1px rgba(45, 45, 48, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--bg-primary);
+  min-height: 20px;
+  min-width: 20px;
+  /* Make thumb more visible */
+  -webkit-box-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+.canvas-table-container::-webkit-scrollbar-thumb:active {
+  background: var(--bg-scrollbar-thumb-active);
+}
+
+.canvas-table-container::-webkit-scrollbar-corner {
+  background: var(--bg-primary);
+}
+
+.no-rows-message {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  color: var(--text-primary);
+}
+
+.results-table thead {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-secondary);
+  z-index: 1;
+}
+
+.results-table th {
+  padding: 0;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  position: relative;
+  min-width: 50px;
+}
+
+.results-table th:last-child {
+  border-right: none;
+}
+
+.results-table th .th-content {
+  padding: 0.375rem 0.5rem;
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 100%;
+}
+
+.results-table th .resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background-color: transparent;
+  z-index: 2;
+  transition: background-color 0.15s ease;
+}
+
+.results-table th .resize-handle:hover {
+  background-color: var(--accent-primary);
+}
+
+.results-table th:last-child .resize-handle {
+  display: none;
+}
+
+.results-table td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  border-right: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.results-table td:last-child {
+  border-right: none;
+}
+
+.results-table tbody tr:nth-child(even) {
+  background-color: var(--bg-secondary);
+}
+
+.results-table tbody tr:nth-child(odd) {
+  background-color: var(--bg-primary);
+}
+
+.results-table tbody tr:hover {
+  background-color: var(--bg-hover);
+}
+
+.no-results {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 200px;
+}
+
+.query-spinner-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.query-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: query-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes query-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.error-results {
+  padding: 2rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  margin: 1rem;
+  border: 1px solid var(--border-error);
+}
+
+.results-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 200px;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.loading-progress-bar {
+  width: 100%;
+  max-width: 400px;
+  height: 6px;
+  background-color: var(--border-primary);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.loading-progress-bar-fill {
+  height: 100%;
+  background-color: var(--accent-primary);
+  border-radius: 3px;
+  width: 0%;
+  animation: progress-bar-animation 1.5s ease-in-out infinite;
+  display: block;
+}
+
+@keyframes progress-bar-animation {
+  0% {
+    width: 0%;
+    transform: translateX(0);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(100%);
+  }
+}
+
+.loading-text {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.results-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.pagination-button {
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.pagination-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  min-width: 100px;
+  text-align: center;
+}
+````
+
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { QueryHistory } from './components/QueryHistory/QueryHistory';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import './themes.css';
+import './App.css';
+
+type Theme = 'dark' | 'light';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : sidebarView === 'history' ? (
+              <QueryHistory 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor theme={theme} />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getTheme: jest.fn().mockResolvedValue('dark'),
+    setTheme: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+    onToggleTheme: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
+````
+
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-primary);
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
+}
+
+.tools-dropdown {
+  position: relative;
+}
+
+.query-editor-toolbar .tools-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar .tools-button.open {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
+  min-width: 170px;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 5;
+}
+
+.tools-menu .tools-menu-item {
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0.5rem 0.75rem;
+}
+
+.tools-menu .tools-menu-item:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu .tools-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+
+.query-editor-toolbar .run-button {
+  background-color: var(--accent-primary);
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: var(--accent-orange);
+  color: var(--text-white);
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: var(--accent-orange-hover);
+}
+
+.query-editor-toolbar .save-button {
+  background-color: var(--accent-success);
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: var(--accent-success-hover);
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: var(--accent-danger);
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.connection-warning {
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: var(--text-success);
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: var(--text-error);
+}
+
+.editor-status-bar .status-valid {
+  color: var(--text-success);
+}
+
+.editor-status-bar .status-invalid {
+  color: var(--text-error);
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-white);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+````
+
 ## File: README.md
 ````markdown
 # QueryForge
@@ -25903,11 +25332,1636 @@ If you find QueryForge useful, please consider supporting its development:
 MIT
 ````
 
-## File: src/renderer/types/electron-api.d.ts
+## File: src/main/ipc/bigquery.ts
 ````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
+import { ipcMain } from 'electron';
+import { getBigQueryClient, getActiveConnection } from './connection';
+import type { QueryResult, ColumnMetadata, Row } from '../../shared/types/query';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+import { saveResults, createStreamingSaver } from '../storage/results-cache-sqlite';
+
+/**
+ * Serializes a value to ensure it can be cloned and sent through IPC.
+ * Handles Date objects, BigNumber objects, Buffers, and nested structures.
+ * Uses a WeakSet to track visited objects to prevent circular reference issues.
+ * @param value - The value to serialize
+ * @param visited - WeakSet to track visited objects (for circular reference detection)
+ * @param columnType - Optional BigQuery column type (e.g., 'DATE', 'TIMESTAMP') to help with serialization
+ */
+function serializeValue(value: any, visited: WeakSet<object> = new WeakSet(), columnType?: string): any {
+  // Normalize column type early so it's available throughout the function
+  const normalizedColumnType = columnType?.toUpperCase() || '';
+  const isDateType = normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+                     normalizedColumnType === 'TIME' || normalizedColumnType === 'TIMESTAMP';
+  
+  // Handle null and undefined
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  // CRITICAL: Handle BigQueryDate/BigQueryTime objects FIRST, before any other object handling
+  // These objects have a 'value' property containing the string representation
+  // This must come BEFORE Date instance check because BigQueryDate is not instanceof Date
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it's a BigQuery date/time object with a 'value' property
+    // This is the most common pattern: BigQueryDate { value: '2025-11-27' }
+    if ('value' in value && typeof value.value === 'string') {
+      const valueStr = value.value;
+      // Verify it looks like a date/time string
+      if (/^\d{4}-\d{2}-\d{2}/.test(valueStr) || /^\d{2}:\d{2}:\d{2}/.test(valueStr) || 
+          /^\d{4}-\d{2}-\d{2}T/.test(valueStr)) {
+        return valueStr;
+      }
+    }
+  }
+
+  // Handle Date objects - convert to ISO string
+  // This MUST happen before any object handling to prevent Date objects from being serialized as {}
+  if (value instanceof Date) {
+    // Check if it's a valid date
+    if (isNaN(value.getTime())) {
+      return null; // Invalid dates become null
+    }
+    // Format based on column type if available
+    if (normalizedColumnType === 'DATE') {
+      return value.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
+    if (normalizedColumnType === 'TIME') {
+      const hours = String(value.getUTCHours()).padStart(2, '0');
+      const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+      const ms = value.getUTCMilliseconds();
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    if (normalizedColumnType === 'DATETIME') {
+      return value.toISOString().replace('T', ' ').slice(0, 19); // YYYY-MM-DD HH:mm:ss
+    }
+    // Default: ISO string for TIMESTAMP or unknown
+    return value.toISOString();
+  }
+  
+  // CRITICAL: Check for Date-like objects BEFORE general object handling
+  // BigQuery might return Date objects that aren't instanceof Date
+  // Check for objects with Date-like methods or properties
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // Check if it has Date-like methods (might be a serialized Date or BigQuery Date object)
+    if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+      try {
+        // Try to convert to Date
+        let date: Date | null = null;
+        if (typeof value.getTime === 'function') {
+          const time = value.getTime();
+          if (typeof time === 'number' && !isNaN(time)) {
+            date = new Date(time);
+          }
+        } else if (typeof value.toISOString === 'function') {
+          const isoStr = value.toISOString();
+          date = new Date(isoStr);
+        }
+        
+        if (date && !isNaN(date.getTime())) {
+          // Format based on column type
+          if (normalizedColumnType === 'DATE') {
+            return date.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+            const ms = date.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return date.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return date.toISOString();
+        }
+      } catch {
+        // If conversion fails, continue with normal handling
+      }
+    }
+  }
+
+  // Handle Buffer objects - convert to base64 string
+  if (Buffer.isBuffer(value)) {
+    return value.toString('base64');
+  }
+
+  // Handle BigNumber-like objects (from @google-cloud/bigquery)
+  // Check for common BigNumber properties
+  if (value && typeof value === 'object' && 'toString' in value && typeof value.toString === 'function') {
+    // Check if it's a BigNumber by looking for valueOf or toNumber methods
+    if ('valueOf' in value || 'toNumber' in value) {
+      try {
+        // Try to convert to number first, fallback to string
+        const numValue = typeof value.valueOf === 'function' ? value.valueOf() : value;
+        if (typeof numValue === 'number' && !isNaN(numValue) && isFinite(numValue)) {
+          return numValue;
+        }
+        return String(value);
+      } catch {
+        return String(value);
+      }
+    }
+  }
+
+  // Handle arrays - recursively serialize each element
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeValue(item, visited, columnType));
+  }
+
+  // Handle BigQuery DATE/DATETIME/TIME/TIMESTAMP objects
+  // BigQuery may return these as objects with special properties or methods
+  // This must come after array check but before general object handling
+  if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    // CRITICAL: For DATE/TIME columns, ANY object that isn't a Date instance should be handled specially
+    // BigQuery might return DATE as objects in various formats
+    if (isDateType) {
+      // CRITICAL: Check for BigQuery date/time objects with a 'value' property FIRST
+      // BigQueryDate/BigQueryTime objects have a 'value' property containing the string representation
+      // This check should be very lenient - just check if 'value' exists and is a string
+      if ('value' in value) {
+        const innerValue = value.value;
+        // If inner value is a string, return it directly (this is the most common case)
+        if (typeof innerValue === 'string') {
+          return innerValue;
+        }
+        // If inner value is a Date, convert to ISO string
+        if (innerValue instanceof Date) {
+          if (normalizedColumnType === 'DATE') {
+            return innerValue.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(innerValue.getUTCHours()).padStart(2, '0');
+            const minutes = String(innerValue.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(innerValue.getUTCSeconds()).padStart(2, '0');
+            const ms = innerValue.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return innerValue.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return innerValue.toISOString();
+        }
+        // Recursively serialize the inner value
+        return serializeValue(innerValue, visited, columnType);
+      }
+      
+      // Check for BigQuery Date object structure - might have year, month, day properties
+      if ('year' in value || 'month' in value || 'day' in value) {
+        const year = value.year ?? new Date().getFullYear();
+        const monthVal = value.month ?? 1;
+        const month = String(monthVal).padStart(2, '0');
+        const day = String(value.day ?? 1).padStart(2, '0');
+        if (normalizedColumnType === 'DATE') {
+          return `${year}-${month}-${day}`;
+        }
+        // For DATETIME/TIMESTAMP, check for time components
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        if (normalizedColumnType === 'DATETIME') {
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      
+      // Check for TIME object structure
+      if (normalizedColumnType === 'TIME' && ('hours' in value || 'minutes' in value || 'seconds' in value)) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${hours}:${minutes}:${seconds}.${msStr}`;
+        }
+        return `${hours}:${minutes}:${seconds}`;
+      }
+      
+      // For any other object structure for DATE/TIME, try to extract a string value
+      // Check all properties for date-like strings
+      const objKeys = Object.keys(value);
+      for (const key of objKeys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+      
+      // If we can't extract a date string, return a placeholder instead of serializing to {}
+      return '[Invalid Date Object]';
+    }
+    
+    // For non-date types, check if it's a BigQuery date object with a value property
+    if ('value' in value && Object.keys(value).length === 1) {
+      const innerValue = value.value;
+      // If inner value is a string that looks like a date, return it
+      if (typeof innerValue === 'string') {
+        return innerValue;
+      }
+      // If inner value is a Date, convert to ISO string
+      if (innerValue instanceof Date) {
+        return innerValue.toISOString();
+      }
+      // Recursively serialize the inner value
+      return serializeValue(innerValue, visited, columnType);
+    }
+    
+    // For DATE/TIME columns, try toString() first before checking properties
+    if (isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Continue with property checking if toString fails
+      }
+      
+      // Also check if any property value is a date-like string
+      const keys = Object.keys(value);
+      for (const key of keys) {
+        const propValue = value[key];
+        if (typeof propValue === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+              /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+            return propValue;
+          }
+        }
+      }
+    }
+    
+    // Check for date-like objects with year/month/day properties
+    if ('year' in value && 'month' in value && 'day' in value) {
+      const year = value.year;
+      const month = String(value.month ?? 1).padStart(2, '0');
+      const day = String(value.day ?? 1).padStart(2, '0');
+      // Check if it also has time components (DATETIME/TIMESTAMP)
+      if ('hours' in value || 'minutes' in value || 'seconds' in value) {
+        const hours = String(value.hours ?? 0).padStart(2, '0');
+        const minutes = String(value.minutes ?? 0).padStart(2, '0');
+        const seconds = String(value.seconds ?? 0).padStart(2, '0');
+        const ms = value.milliseconds ?? 0;
+        if (ms > 0) {
+          const msStr = String(ms).padStart(3, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msStr}Z`;
+        }
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}Z`;
+      }
+      // Just date components (DATE)
+      return `${year}-${month}-${day}`;
+    }
+    
+    // Check for time-only objects (TIME)
+    if (('hours' in value || 'minutes' in value || 'seconds' in value) && 
+        !('year' in value || 'month' in value || 'day' in value)) {
+      const hours = String(value.hours ?? 0).padStart(2, '0');
+      const minutes = String(value.minutes ?? 0).padStart(2, '0');
+      const seconds = String(value.seconds ?? 0).padStart(2, '0');
+      const ms = value.milliseconds ?? 0;
+      if (ms > 0) {
+        const msStr = String(ms).padStart(3, '0');
+        return `${hours}:${minutes}:${seconds}.${msStr}`;
+      }
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    
+    // Try to call toString() if it exists and might give us a useful string
+    // (Only if we haven't already tried it above for date types)
+    if (!isDateType && 'toString' in value && typeof value.toString === 'function') {
+      try {
+        const str = value.toString();
+        // If toString gives us something useful (not [object Object]), use it
+        if (str && str !== '[object Object]' && typeof str === 'string') {
+          // Check if it looks like a date/time string
+          if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+            return str;
+          }
+        }
+      } catch {
+        // Ignore toString errors
+      }
+    }
+  }
+
+  // Handle objects - recursively serialize each property
+  if (typeof value === 'object') {
+    // Check for circular references
+    if (visited.has(value)) {
+      return '[Circular]';
+    }
+    visited.add(value);
+
+    try {
+      // Check if it's a plain object (not a class instance)
+      const proto = Object.getPrototypeOf(value);
+      if (proto === null || proto === Object.prototype) {
+        // For DATE/TIME columns, be very aggressive about converting objects to strings
+        if (isDateType) {
+          // Try toString() first
+          if ('toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str) || 
+                    /^\d{4}-\d{2}-\d{2}T/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with property checking if toString fails
+            }
+          }
+          
+          // Check all properties for date-like strings
+          const keys = Object.keys(value);
+          for (const key of keys) {
+            const propValue = value[key];
+            if (typeof propValue === 'string') {
+              // Check if it looks like a date/time string
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                return propValue;
+              }
+            }
+            // If property is a Date, convert it
+            if (propValue instanceof Date) {
+              if (normalizedColumnType === 'DATE') {
+                return propValue.toISOString().split('T')[0];
+              }
+              return propValue.toISOString();
+            }
+          }
+          
+          // If we still haven't found a date string, try JSON.stringify to extract it
+          try {
+            const jsonStr = JSON.stringify(value);
+            const dateMatch = jsonStr.match(/"(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)"/);
+            if (dateMatch) {
+              const dateStr = dateMatch[1];
+              if (normalizedColumnType === 'DATE') {
+                return dateStr.split('T')[0]; // Just the date part
+              }
+              return dateStr.replace('T', ' ').replace(/Z$/, '');
+            }
+            // Also try to find any date-like string in the JSON
+            const allDateMatches = jsonStr.matchAll(/"(\d{4}-\d{2}-\d{2}[^"]*)"/g);
+            for (const match of allDateMatches) {
+              const dateStr = match[1];
+              if (normalizedColumnType === 'DATE' && !dateStr.includes('T') && !dateStr.includes(':')) {
+                return dateStr;
+              }
+              if (normalizedColumnType !== 'DATE' && (dateStr.includes('T') || dateStr.includes(':'))) {
+                return dateStr.replace('T', ' ').replace(/Z$/, '');
+              }
+            }
+          } catch {
+            // JSON.stringify failed, continue with normal serialization
+          }
+          
+          // Last resort for DATE columns: convert object to string representation
+          // This prevents [object Object] from being sent through IPC
+          if (normalizedColumnType === 'DATE' || normalizedColumnType === 'DATETIME' || 
+              normalizedColumnType === 'TIMESTAMP') {
+            // Try to create a meaningful string from the object
+            const keys = Object.keys(value);
+            if (keys.length === 0) {
+              return '[Empty Date Object]';
+            }
+            // Return first property value if it's a string or number
+            const firstKey = keys[0];
+            const firstValue = value[firstKey];
+            if (typeof firstValue === 'string') {
+              return firstValue;
+            }
+            if (typeof firstValue === 'number') {
+              // Try to interpret as date
+              const date = new Date(firstValue > 1e12 ? firstValue / 1000 : firstValue);
+              if (!isNaN(date.getTime())) {
+                if (normalizedColumnType === 'DATE') {
+                  return date.toISOString().split('T')[0];
+                }
+                return date.toISOString();
+              }
+            }
+            // Return object structure as string
+            return `{${keys.slice(0, 2).join(', ')}}`;
+          }
+        } else {
+          // For non-date types, check if this might be a date-like object
+          // that we missed in the earlier check (e.g., has a custom toString that returns a date)
+          const keys = Object.keys(value);
+          // If object has very few keys and one looks date-like, try toString first
+          if (keys.length <= 3 && 'toString' in value && typeof value.toString === 'function') {
+            try {
+              const str = value.toString();
+              if (str && str !== '[object Object]' && typeof str === 'string') {
+                // Check if it looks like a date/time string
+                if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{2}:\d{2}:\d{2}/.test(str)) {
+                  return str;
+                }
+              }
+            } catch {
+              // Continue with normal serialization if toString fails
+            }
+          }
+        }
+        
+        const serialized: any = {};
+        for (const key in value) {
+          if (Object.prototype.hasOwnProperty.call(value, key)) {
+            serialized[key] = serializeValue(value[key], visited, columnType);
+          }
+        }
+        // CRITICAL: If serialized object is empty {} and this is a date type, return placeholder
+        // This prevents empty objects from being stored and later displayed as "[object Object]"
+        if (Object.keys(serialized).length === 0 && isDateType) {
+          return '[Invalid Date]';
+        }
+        return serialized;
+      } else {
+        // For non-plain objects (class instances), try to serialize
+        // CRITICAL: Check for Date objects BEFORE JSON.stringify/parse
+        // JSON.stringify converts Date objects to {}, which then becomes [object Object]
+        if (value instanceof Date) {
+          if (isNaN(value.getTime())) {
+            return null;
+          }
+          if (normalizedColumnType === 'DATE') {
+            return value.toISOString().split('T')[0];
+          }
+          if (normalizedColumnType === 'TIME') {
+            const hours = String(value.getUTCHours()).padStart(2, '0');
+            const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+            const ms = value.getUTCMilliseconds();
+            if (ms > 0) {
+              const msStr = String(ms).padStart(3, '0');
+              return `${hours}:${minutes}:${seconds}.${msStr}`;
+            }
+            return `${hours}:${minutes}:${seconds}`;
+          }
+          if (normalizedColumnType === 'DATETIME') {
+            return value.toISOString().replace('T', ' ').slice(0, 19);
+          }
+          return value.toISOString();
+        }
+        
+        // Check for Date-like objects (objects with Date methods)
+        if (typeof value.getTime === 'function' || typeof value.toISOString === 'function') {
+          try {
+            let date: Date | null = null;
+            if (typeof value.getTime === 'function') {
+              const time = value.getTime();
+              if (typeof time === 'number' && !isNaN(time)) {
+                date = new Date(time);
+              }
+            } else if (typeof value.toISOString === 'function') {
+              const isoStr = value.toISOString();
+              date = new Date(isoStr);
+            }
+            
+            if (date && !isNaN(date.getTime())) {
+              if (normalizedColumnType === 'DATE') {
+                return date.toISOString().split('T')[0];
+              }
+              if (normalizedColumnType === 'TIME') {
+                const hours = String(date.getUTCHours()).padStart(2, '0');
+                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+                const ms = date.getUTCMilliseconds();
+                if (ms > 0) {
+                  const msStr = String(ms).padStart(3, '0');
+                  return `${hours}:${minutes}:${seconds}.${msStr}`;
+                }
+                return `${hours}:${minutes}:${seconds}`;
+              }
+              if (normalizedColumnType === 'DATETIME') {
+                return date.toISOString().replace('T', ' ').slice(0, 19);
+              }
+              return date.toISOString();
+            }
+          } catch {
+            // If conversion fails, continue with normal serialization
+          }
+        }
+        
+        // First try JSON.stringify/parse which handles most cases
+        // BUT: This will convert Date objects to {}, so we check for Dates above
+        try {
+          const jsonStr = JSON.stringify(value);
+          // Check if JSON.stringify produced an empty object for a date type
+          // This happens when Date objects are stringified
+          if (jsonStr === '{}' && isDateType) {
+            // This is likely a Date object that was stringified to {}
+            return '[Invalid Date]';
+          }
+          return JSON.parse(jsonStr);
+        } catch {
+          // If JSON serialization fails (e.g., circular refs, functions),
+          // try to extract enumerable properties
+          const serialized: any = {};
+          for (const key in value) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+              serialized[key] = serializeValue(value[key], visited, columnType);
+            }
+          }
+          // If we got nothing, check if it's a date type before converting to string
+          if (Object.keys(serialized).length === 0 && isDateType) {
+            return '[Invalid Date]';
+          }
+          // If we got nothing, convert to string as last resort
+          return Object.keys(serialized).length > 0 ? serialized : String(value);
+        }
+      }
+    } catch (error) {
+      // If anything goes wrong, check if it's a Date object before converting to string
+      // This prevents [object Object] from being returned for Date objects
+      if (value instanceof Date) {
+        if (isNaN(value.getTime())) {
+          return null;
+        }
+        if (normalizedColumnType === 'DATE') {
+          return value.toISOString().split('T')[0];
+        }
+        if (normalizedColumnType === 'TIME') {
+          const hours = String(value.getUTCHours()).padStart(2, '0');
+          const minutes = String(value.getUTCMinutes()).padStart(2, '0');
+          const seconds = String(value.getUTCSeconds()).padStart(2, '0');
+          const ms = value.getUTCMilliseconds();
+          if (ms > 0) {
+            const msStr = String(ms).padStart(3, '0');
+            return `${hours}:${minutes}:${seconds}.${msStr}`;
+          }
+          return `${hours}:${minutes}:${seconds}`;
+        }
+        if (normalizedColumnType === 'DATETIME') {
+          return value.toISOString().replace('T', ' ').slice(0, 19);
+        }
+        return value.toISOString();
+      }
+      // For date types, return a placeholder instead of [object Object]
+      if (isDateType && typeof value === 'object' && value !== null) {
+        return '[Invalid Date]';
+      }
+      // Last resort: convert to string
+      return String(value);
+    }
+  }
+
+  // For primitives (string, number, boolean), return as-is
+  return value;
+}
+
+// Helper function to transform raw BigQuery rows to our Row format
+function transformRows(rows: any[], columns: ColumnMetadata[]): Row[] {
+  return rows.map((row: any) => ({
+    values: columns.map((col) => {
+      const value = row[col.name];
+      
+      // Pass column type to serializeValue to help with date/time serialization
+      let serialized = serializeValue(value, new WeakSet(), col.type);
+      
+      // CRITICAL: For DATE/TIME columns, ensure we NEVER store an object - always convert to string
+      const colTypeUpper = (col.type || '').toUpperCase();
+      if (colTypeUpper === 'DATE' || colTypeUpper === 'TIME' || 
+          colTypeUpper === 'DATETIME' || colTypeUpper === 'TIMESTAMP') {
+        if (typeof serialized === 'object' && serialized !== null) {
+          const keys = Object.keys(serialized);
+          for (const key of keys) {
+            const propValue = serialized[key];
+            if (typeof propValue === 'string') {
+              if (/^\d{4}-\d{2}-\d{2}/.test(propValue) || /^\d{2}:\d{2}:\d{2}/.test(propValue) || 
+                  /^\d{4}-\d{2}-\d{2}T/.test(propValue)) {
+                serialized = propValue;
+                break;
+              }
+            }
+          }
+          if (typeof serialized === 'object' && serialized !== null) {
+            serialized = '[Invalid Date]';
+          }
+        }
+        if (typeof serialized === 'string' && serialized === '[object Object]') {
+          serialized = '[Invalid Date]';
+        }
+        if (typeof serialized !== 'string') {
+          if (serialized === null || serialized === undefined) {
+            serialized = '[Invalid Date]';
+          } else {
+            serialized = String(serialized);
+            if (serialized === '[object Object]') {
+              serialized = '[Invalid Date]';
+            }
+          }
+        }
+      }
+      
+      return serialized;
+    }),
+  }));
+}
+
+export function registerBigQueryHandlers(): void {
+  ipcMain.handle('bigquery:execute', async (_event, queryText: string, projectId: string, tabId?: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    // Get the sender's webContents for streaming updates
+    const sender = _event.sender;
+
+    try {
+      const startTime = Date.now();
+
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create query job
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+      });
+
+      // Wait for the job to complete first
+      const [jobResult] = await job.getMetadata();
+      
+      // Poll until job is done (getQueryResults should do this, but let's be explicit)
+      if (jobResult.status?.state !== 'DONE') {
+        await job.promise(); // This waits for the job to complete
+      }
+
+      // Get job metadata early to get schema and total row count
+      const [jobMetadata] = await job.getMetadata();
+      
+      // Get schema from job metadata
+      let schema = jobMetadata.configuration?.query?.schema || 
+                   jobMetadata.statistics?.query?.schema ||
+                   jobMetadata.schema;
+
+      // Build columns from schema
+      let columns: ColumnMetadata[] = [];
+      if (schema?.fields && schema.fields.length > 0) {
+        columns = schema.fields.map((field: any) => ({
+          name: field.name,
+          type: field.type,
+          mode: field.mode,
+        }));
+      }
+
+      // Fetch first page of results
+      const [firstPageRows, firstNextQuery] = await job.getQueryResults({ maxResults: 10000 });
+      const hasMorePages = !!firstNextQuery?.pageToken;
+      
+      // Get total row count from multiple possible sources:
+      // 1. Query results metadata (firstNextQuery.totalRows) - most reliable for SELECT queries
+      // 2. Job statistics (query.numDmlAffectedRows) - for DML queries
+      // 3. Fall back to first page length if neither available (will be updated after fetching all pages)
+      const queryMetadata = firstNextQuery as any;
+      const jobStats = jobMetadata.statistics as any;
+      
+      const totalRowCount = queryMetadata?.totalRows 
+        ? parseInt(String(queryMetadata.totalRows), 10) 
+        : (jobStats?.query?.numDmlAffectedRows 
+          ? parseInt(String(jobStats.query.numDmlAffectedRows), 10)
+          : undefined);
+
+      // If no schema from metadata, extract from first row
+      if (columns.length === 0 && firstPageRows.length > 0) {
+        const firstRow = firstPageRows[0];
+        columns = Object.keys(firstRow).map((key) => {
+          const value = firstRow[key];
+          let type = 'STRING';
+          if (typeof value === 'number') {
+            type = Number.isInteger(value) ? 'INTEGER' : 'FLOAT';
+          } else if (typeof value === 'boolean') {
+            type = 'BOOLEAN';
+          } else if (value instanceof Date) {
+            type = 'TIMESTAMP';
+          } else if (Array.isArray(value)) {
+            type = 'ARRAY';
+          } else if (value && typeof value === 'object') {
+            type = 'RECORD';
+          }
+          return { name: key, type, mode: 'NULLABLE' };
+        });
+      }
+
+      const executionTimeMs = Date.now() - startTime;
+      const bytesProcessed = parseInt(jobMetadata.statistics?.totalBytesProcessed || '0', 10);
+
+      // Transform first page rows
+      const transformedFirstPage = transformRows(firstPageRows, columns);
+
+      // Build initial result with first page
+      // Use totalRowCount from BigQuery metadata if available (gives accurate count immediately)
+      // Otherwise fall back to first page length (will be updated after fetching all pages)
+      const initialResult: QueryResult = {
+        columns,
+        rows: transformedFirstPage,
+        totalRows: totalRowCount ?? transformedFirstPage.length,
+        rowsReturned: transformedFirstPage.length,
+        executionTimeMs,
+        bytesProcessed,
+        jobId: job.id || '',
+        hasMore: hasMorePages,
+      };
+
+      // If there are more pages, fetch them in background and send updates
+      // With SQLite-backed cache, we can handle much larger datasets
+      // 500,000 rows is a good balance between usefulness and fetch time (~1-2 min)
+      const MAX_ROWS = 500000;
+      
+      // Save first page to SQLite immediately if we have a tabId
+      if (tabId) {
+        saveResults(tabId, initialResult);
+      }
+      
+      if (hasMorePages) {
+        // Start background fetch - don't await, let it run async
+        (async () => {
+          try {
+            let pageToken = firstNextQuery?.pageToken;
+            let allRows = [...firstPageRows];
+            let pageCount = 1;
+            
+            // Fetch additional pages up to the max limit
+            while (pageToken && allRows.length < MAX_ROWS) {
+              const [rows, nextQuery] = await job.getQueryResults({ 
+                maxResults: 10000, 
+                pageToken 
+              });
+              allRows.push(...rows);
+              pageToken = nextQuery?.pageToken;
+              pageCount++;
+              
+              // Only send lightweight progress updates during fetching (no row data)
+              sender.send('bigquery:progress', {
+                jobId: job.id,
+                rowsFetched: allRows.length,
+                isComplete: false,
+                message: totalRowCount 
+                  ? `Loading... ${allRows.length.toLocaleString()} of ${Math.min(totalRowCount, MAX_ROWS).toLocaleString()} rows`
+                  : `Loading... ${allRows.length.toLocaleString()} rows`,
+              });
+              
+              // Stop if we've reached the max
+              if (allRows.length >= MAX_ROWS) {
+                break;
+              }
+            }
+            
+            // Transform all rows only once at the end
+            const transformedRows = transformRows(allRows, columns);
+            
+            // Determine if there are more rows than we fetched
+            const hitLimit = allRows.length >= MAX_ROWS && !!pageToken;
+            const actualTotalRows = totalRowCount ?? transformedRows.length;
+            
+            // Save complete results to SQLite cache (this is fast!)
+            if (tabId) {
+              const completeResult: QueryResult = {
+                columns,
+                rows: transformedRows,
+                totalRows: actualTotalRows,
+                rowsReturned: transformedRows.length,
+                executionTimeMs,
+                bytesProcessed,
+                jobId: job.id || '',
+                hasMore: hitLimit,
+              };
+              saveResults(tabId, completeResult);
+            }
+            
+            // Send lightweight notification that more rows are available
+            // No row data over IPC - renderer will read from SQLite cache
+            sender.send('bigquery:rows-update', {
+              jobId: job.id,
+              columns,
+              rows: [], // Don't send rows over IPC - they're in SQLite
+              totalRows: actualTotalRows,
+              rowsReturned: transformedRows.length,
+              executionTimeMs,
+              bytesProcessed,
+              hasMore: hitLimit, // True if we hit the limit
+              message: hitLimit 
+                ? `Showing ${transformedRows.length.toLocaleString()} of ${actualTotalRows.toLocaleString()} rows (limited to ${MAX_ROWS.toLocaleString()})`
+                : `Complete: ${transformedRows.length.toLocaleString()} rows`,
+            });
+          } catch (err) {
+            console.error('[BigQuery] Background fetch error:', err);
+            sender.send('bigquery:rows-error', {
+              jobId: job.id,
+              error: (err as Error).message || 'Failed to fetch additional rows',
+            });
+          }
+        })();
+      }
+
+      return initialResult;
+    } catch (error: any) {
+      console.error(`[BigQuery] Query execution error:`, error);
+      
+      if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        const err = new Error('Network error: Unable to connect to BigQuery');
+        (err as any).code = BigQueryErrorCode.NETWORK_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      if (error.code === 403 || error.code === 401) {
+        const err = new Error('Authentication error');
+        (err as any).code = BigQueryErrorCode.AUTH_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      
+      // Extract error message from BigQuery error
+      let errorMessage = error.message || 'Query execution failed';
+      
+      // If error has details array, try to extract message from first detail
+      if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        if (firstError.message) {
+          errorMessage = firstError.message;
+        } else if (typeof firstError === 'string') {
+          errorMessage = firstError;
+        }
+      }
+      
+      const err = new Error(errorMessage);
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors || error;
+      throw err;
+    }
+  });
+
+  ipcMain.handle('bigquery:cancel', async (_event, jobId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const job = client.job(jobId);
+      await job.cancel();
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.JOB_NOT_FOUND,
+          message: 'Job not found or already completed',
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.CANCEL_FAILED,
+        message: 'Failed to cancel job',
+        details: error.message,
+      };
+    }
+  });
+
+  ipcMain.handle('bigquery:listDatasets', async () => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const [datasets] = await client.getDatasets();
+      return datasets.map((dataset) => ({
+        id: dataset.id,
+        name: dataset.id,
+        location: dataset.metadata?.location || 'US',
+      }));
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to list datasets',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  ipcMain.handle('bigquery:listTables', async (_event, datasetId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const dataset = client.dataset(datasetId);
+      const [tables] = await dataset.getTables();
+      return tables.map((table) => ({
+        id: table.id,
+        name: table.id,
+        type: table.metadata?.type || 'TABLE',
+      }));
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to list tables',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  // Wrap handler to suppress error logging for table not found errors
+  ipcMain.handle('bigquery:getTableSchema', async (_event, datasetId: string, tableId: string) => {
+    try {
+      return await (async () => {
+        const client = getBigQueryClient();
+        if (!client) {
+          throw {
+            code: BigQueryErrorCode.CONNECTION_FAILED,
+            message: 'No active BigQuery connection',
+          };
+        }
+
+        try {
+          const table = client.dataset(datasetId).table(tableId);
+          const [metadata] = await table.getMetadata();
+          
+          // Extract schema fields
+          const schema = metadata.schema;
+          if (!schema || !schema.fields) {
+            return {
+              fields: [],
+            };
+          }
+
+          // Recursively transform fields to include nested structures
+          const transformField = (field: any): ColumnMetadata & { fields?: any[] } => {
+            const result: ColumnMetadata & { fields?: any[] } = {
+              name: field.name,
+              type: field.type,
+              mode: field.mode || 'NULLABLE',
+            };
+            
+            if (field.fields && field.fields.length > 0) {
+              result.fields = field.fields.map(transformField);
+            }
+            
+            return result;
+          };
+
+          // Extract table metadata
+          // BigQuery timestamps are in milliseconds, can be string or number
+          const creationTime = metadata.creationTime 
+            ? (typeof metadata.creationTime === 'string' 
+                ? parseInt(metadata.creationTime, 10) 
+                : metadata.creationTime)
+            : undefined;
+          const lastModifiedTime = metadata.lastModifiedTime
+            ? (typeof metadata.lastModifiedTime === 'string'
+                ? parseInt(metadata.lastModifiedTime, 10)
+                : metadata.lastModifiedTime)
+            : undefined;
+          const numRows = metadata.numRows
+            ? (typeof metadata.numRows === 'string'
+                ? parseInt(metadata.numRows, 10)
+                : metadata.numRows)
+            : undefined;
+          const numBytes = metadata.numBytes
+            ? (typeof metadata.numBytes === 'string'
+                ? parseInt(metadata.numBytes, 10)
+                : metadata.numBytes)
+            : undefined;
+
+          return {
+            fields: schema.fields.map(transformField),
+            metadata: {
+              creationTime,
+              lastModifiedTime,
+              numRows,
+              numBytes,
+            },
+          };
+        } catch (error: any) {
+          if (error.code === 404) {
+            // Create error but suppress Electron's automatic logging for table not found errors
+            // These errors are handled in the UI and don't need to be logged
+            const err = new Error('Table not found');
+            (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+            (err as any).details = error.message;
+            // Mark error to suppress logging
+            (err as any).suppressLogging = true;
+            throw err;
+          }
+          const err = new Error(error.message || 'Failed to get table schema');
+          (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+          (err as any).details = error.errors || error;
+          throw err;
+        }
+      })();
+    } catch (error: any) {
+      // Suppress Electron's automatic error logging for table not found errors
+      if (error?.code === BigQueryErrorCode.BIGQUERY_ERROR && 
+          error?.message === 'Table not found') {
+        // Re-throw without Electron logging by using a custom error handler
+        // Electron will still pass the error to the renderer, but won't log it
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.details || error.message;
+        // Use a custom property to signal this shouldn't be logged
+        Object.defineProperty(err, 'suppressLogging', { value: true, enumerable: false });
+        throw err;
+      }
+      // Re-throw other errors normally
+      throw error;
+    }
+  });
+
+  ipcMain.handle('bigquery:getViewDefinition', async (_event, datasetId: string, tableId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const table = client.dataset(datasetId).table(tableId);
+      const [metadata] = await table.getMetadata();
+      
+      // Check if this is actually a view
+      if (metadata.type !== 'VIEW' && metadata.type !== 'MATERIALIZED_VIEW') {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'Table is not a view',
+        };
+      }
+
+      // Get view definition from metadata
+      // For regular views: metadata.view.query
+      // For materialized views: metadata.materializedView.query
+      let viewDefinition = '';
+      if (metadata.type === 'VIEW' && metadata.view) {
+        viewDefinition = metadata.view.query || '';
+      } else if (metadata.type === 'MATERIALIZED_VIEW' && metadata.materializedView) {
+        viewDefinition = metadata.materializedView.query || '';
+      }
+      
+      if (!viewDefinition) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'View definition not found',
+        };
+      }
+
+      return {
+        definition: viewDefinition,
+      };
+    } catch (error: any) {
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'View not found',
+          details: error.message,
+        };
+      }
+      if (error.code) {
+        throw error;
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to get view definition',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  /**
+   * Perform a dry run of a query to estimate bytes processed without executing.
+   * This uses BigQuery's native dry run feature which accounts for:
+   * - Column selection (only selected columns count)
+   * - Partitioning (only scanned partitions count)
+   * - Clustering benefits
+   * - Query optimization
+   */
+  ipcMain.handle('bigquery:dryRun', async (_event, queryText: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      // Get location from active connection, default to EU
+      const connection = getActiveConnection();
+      const location = connection?.location || 'EU';
+
+      // Create a dry run query job - this validates and estimates without executing
+      // For dry runs, the job is not actually created in BigQuery, so we can't call getMetadata()
+      // The statistics are returned directly in job.metadata
+      const [job] = await client.createQueryJob({
+        query: queryText,
+        location,
+        dryRun: true,
+      });
+
+      // For dry runs, metadata is available directly on the job object
+      // Don't call getMetadata() as dry run jobs don't actually exist in BigQuery
+      const metadata = job.metadata;
+      
+      // totalBytesProcessed is in statistics
+      const totalBytesProcessed = parseInt(
+        metadata?.statistics?.totalBytesProcessed || '0', 
+        10
+      );
+
+      return {
+        totalBytesProcessed,
+        // Include additional useful statistics if available
+        cacheHit: metadata?.statistics?.query?.cacheHit || false,
+        statementType: metadata?.statistics?.query?.statementType || null,
+      };
+    } catch (error: any) {
+      // Electron IPC requires Error objects with message property to serialize properly
+      // Plain objects thrown will appear as [object Object]
+      
+      // Handle specific BigQuery errors
+      if (error.code === 404) {
+        const err = new Error('Table not found');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        (err as any).details = error.message;
+        throw err;
+      }
+      
+      // Handle syntax errors and other query errors
+      // BigQuery errors include location info (line, column) which we pass through
+      if (error.errors && error.errors.length > 0) {
+        const firstError = error.errors[0];
+        const err = new Error(firstError.message || 'Query validation failed');
+        (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+        // Include location info if available
+        if (firstError.location) {
+          (err as any).location = {
+            line: firstError.location.line,
+            column: firstError.location.column,
+          };
+        }
+        (err as any).details = JSON.stringify(error.errors);
+        throw err;
+      }
+      
+      const err = new Error(error.message || 'Dry run failed');
+      (err as any).code = BigQueryErrorCode.BIGQUERY_ERROR;
+      (err as any).details = error.errors ? JSON.stringify(error.errors) : String(error);
+      throw err;
+    }
+  });
+}
+````
+
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerExportHandlers();
+registerQueryHistoryHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+  closeHistoryDatabase();
+});
+````
+
+## File: src/main/preload.ts
+````typescript
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
 
 /**
  * Electron API exposed to renderer process
@@ -25931,7 +26985,7 @@ export interface ElectronAPI {
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
     onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
 
   // Connection management
@@ -25972,7 +27026,7 @@ export interface ElectronAPI {
     onBeforeClose(callback: () => void): () => void;
   };
 
-  // Results cache (SQLite-backed for performance with large datasets)
+  // Results cache
   resultsCache: {
     save(tabId: string, results: QueryResult): Promise<void>;
     get(tabId: string): Promise<QueryResult | null>;
@@ -25986,12 +27040,8 @@ export interface ElectronAPI {
       hasMore: boolean;
     } | null>;
     getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    /** Get a range of rows for virtual scrolling */
-    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
     delete(tabId: string): Promise<void>;
     clear(): Promise<void>;
-    /** Get cache statistics */
-    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
   };
 
   // Menu events
@@ -25999,705 +27049,160 @@ export interface ElectronAPI {
     onShowHelp(callback: () => void): () => void;
     onNewTab(callback: () => void): () => void;
     onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
   };
 
   // Export operations
   export: {
     saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
   };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
+  };
 }
 
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string, tabId?: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:progress', handler);
+      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+    },
+    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:rows-update', handler);
+      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
+    },
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    getRange: (tabId: string, startIndex: number, count: number) =>
+      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+    stats: () => ipcRenderer.invoke('results-cache:stats'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
+    },
+    onSaveQuery: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:save-query', handler);
+      return () => ipcRenderer.removeListener('menu:save-query', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+  export: {
+    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
+      ipcRenderer.invoke('export:saveFile', content, options),
+  },
+  queryHistory: {
+    add: (entry: QueryHistoryEntry) => ipcRenderer.invoke('query-history:add', entry),
+    list: (limit?: number, offset?: number) => ipcRenderer.invoke('query-history:list', limit, offset),
+    search: (searchTerm: string, limit?: number) => ipcRenderer.invoke('query-history:search', searchTerm, limit),
+    get: (id: string) => ipcRenderer.invoke('query-history:get', id),
+    delete: (id: string) => ipcRenderer.invoke('query-history:delete', id),
+    updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
+    clear: () => ipcRenderer.invoke('query-history:clear'),
+    count: () => ipcRenderer.invoke('query-history:count'),
+  },
+} as ElectronAPI);
+
+// Extend Window interface for TypeScript
 declare global {
   interface Window {
     electronAPI: ElectronAPI;
   }
 }
-````
-
-## File: tests/unit/renderer/utils/sql-validation.test.ts
-````typescript
-import { parse } from 'sql-parser-cst';
-import {
-  collectColumnRefsFromExpression,
-  collectColumnRefsForSelect,
-  buildTableAliasMapFromSelect,
-  collectSubqueries,
-  validateColumnReferences,
-  validateBigQuerySyntaxRules,
-  validateGroupByColumns,
-  containsAggregateFunction,
-  containsWindowFunction,
-  ColumnRefInfo,
-  ColumnValidationIssue,
-} from '../../../../src/renderer/utils/sql-validation';
-
-describe('SQL Validation Utilities', () => {
-  const parseSQL = (sql: string): any => {
-    try {
-      // Parse SQL and return CST directly - validation functions now work with CST!
-      const cst = parse(sql, { dialect: 'bigquery', includeRange: true });
-      
-      // CST structure: statements are in cst.statements or cst is the statement itself
-      const statements = cst.statements || (Array.isArray(cst) ? cst : [cst]);
-      return statements.length > 0 ? statements[0] : cst;
-    } catch (error) {
-      // If parsing fails, return null (tests should handle this)
-      return null;
-    }
-  };
-
-  describe('collectColumnRefsFromExpression', () => {
-    it('should collect simple column references', () => {
-      const stmt = parseSQL('SELECT col1, col2 FROM table1');
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const refs: ColumnRefInfo[] = [];
-      
-      // Use collectColumnRefsForSelect which handles CST structure
-      const allRefs = collectColumnRefsForSelect(stmt);
-      
-      expect(allRefs.length).toBeGreaterThanOrEqual(2);
-      const col1Ref = allRefs.find(r => r.column === 'col1');
-      const col2Ref = allRefs.find(r => r.column === 'col2');
-      expect(col1Ref).toBeDefined();
-      expect(col2Ref).toBeDefined();
-      if (col1Ref) expect(col1Ref.alias).toBeNull();
-    });
-
-    it('should collect aliased column references', () => {
-      const stmt = parseSQL('SELECT t.col1, t.col2 FROM table1 AS t');
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const allRefs = collectColumnRefsForSelect(stmt);
-      
-      expect(allRefs.length).toBeGreaterThanOrEqual(2);
-      const col1Ref = allRefs.find(r => r.column === 'col1' && r.alias === 't');
-      const col2Ref = allRefs.find(r => r.column === 'col2' && r.alias === 't');
-      expect(col1Ref).toBeDefined();
-      expect(col2Ref).toBeDefined();
-    });
-
-    it('should NOT collect column refs from subqueries', () => {
-      // This is the key test for the fix - subquery columns should not be collected
-      const stmt = parseSQL(`
-        SELECT col1 FROM table1
-        WHERE col2 IN (SELECT sub_col FROM subtable)
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const refs = collectColumnRefsForSelect(stmt);
-      
-      // Should only have col1 and col2 from the outer query, NOT sub_col from the subquery
-      const colNames = refs.map(r => r.column);
-      expect(colNames).toContain('col1');
-      expect(colNames).toContain('col2');
-      expect(colNames).not.toContain('sub_col');
-    });
-
-    it('should NOT collect column refs from NOT EXISTS subqueries', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM outer_table o
-        WHERE NOT EXISTS (
-          SELECT 1 FROM inner_table i
-          WHERE i.id = o.id
-        )
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const refs = collectColumnRefsForSelect(stmt);
-      
-      // Should NOT collect i.id from the subquery - it has its own scope
-      // o.id might be collected as it's a correlated reference, but i.id should not be
-      const colNames = refs.map(r => r.column);
-      expect(colNames).not.toContain('i.id');
-    });
-  });
-
-  describe('collectColumnRefsForSelect', () => {
-    it('should collect refs from SELECT, WHERE, and JOIN ON clauses', () => {
-      const ast = parseSQL(`
-        SELECT a.col1, b.col2
-        FROM table1 a
-        JOIN table2 b ON a.id = b.id
-        WHERE a.col3 > 10
-      `);
-      
-      const refs = collectColumnRefsForSelect(ast);
-      
-      // col1, col2 from SELECT, id (x2) from ON, col3 from WHERE
-      const columns = refs.map(r => r.column);
-      expect(columns).toContain('col1');
-      expect(columns).toContain('col2');
-      expect(columns).toContain('id');
-      expect(columns).toContain('col3');
-    });
-
-    it('should NOT include subquery column refs in the main scope', () => {
-      const ast = parseSQL(`
-        SELECT dp.ProdKey
-        FROM dataset.dim_product dp
-        WHERE NOT EXISTS (
-          SELECT NULL FROM dataset.dim_agreement da
-          WHERE da.ProdKey = dp.ProdKey
-        )
-      `);
-      
-      const refs = collectColumnRefsForSelect(ast);
-      
-      // Should only have dp.ProdKey from the outer SELECT
-      // The subquery refs (da.ProdKey, dp.ProdKey in WHERE) should NOT be collected
-      expect(refs).toHaveLength(1);
-      expect(refs[0].alias).toBe('dp');
-      expect(refs[0].column).toBe('ProdKey');
-    });
-  });
-
-  describe('buildTableAliasMapFromSelect', () => {
-    it('should build alias map for simple query', () => {
-      const ast = parseSQL('SELECT * FROM dataset.table1 AS t1');
-      
-      const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
-      
-      expect(aliasMap.has('t1')).toBe(true);
-      expect(aliasMap.get('t1')?.tableId).toBe('table1');
-      expect(uniqueTables.size).toBe(1);
-    });
-
-    it('should build alias map for JOIN query', () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        JOIN dataset.table2 t2 ON t1.id = t2.id
-      `);
-      
-      const { aliasMap } = buildTableAliasMapFromSelect(ast);
-      
-      expect(aliasMap.has('t1')).toBe(true);
-      expect(aliasMap.has('t2')).toBe(true);
-    });
-
-    it('should register CTE names as valid aliases', () => {
-      const ast = parseSQL(`
-        WITH cte_data AS (
-          SELECT id, value FROM dataset.source_table
-        )
-        SELECT * FROM cte_data
-      `);
-      
-      const { aliasMap } = buildTableAliasMapFromSelect(ast);
-      
-      expect(aliasMap.has('cte_data')).toBe(true);
-      // CTE alias should not have datasetId/tableId since it's a virtual table
-      expect(aliasMap.get('cte_data')?.datasetId).toBeUndefined();
-    });
-  });
-
-  describe('collectSubqueries', () => {
-    it('should collect subqueries from WHERE clause', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1
-        WHERE id IN (SELECT id FROM table2)
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      // Get WHERE condition from CST - use helper from validation utils
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      expect(subqueries.length).toBeGreaterThanOrEqual(1);
-      const nodeType = subqueries[0]?.type || subqueries[0]?.kind;
-      expect(nodeType === 'select' || nodeType === 'select_stmt' || nodeType === 'SelectStatement').toBe(true);
-    });
-
-    it('should collect NOT EXISTS subqueries', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1 t1
-        WHERE NOT EXISTS (
-          SELECT 1 FROM table2 t2
-          WHERE t2.id = t1.id
-        )
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      // Get WHERE condition from CST
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      expect(subqueries.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it('should collect multiple subqueries', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1
-        WHERE id IN (SELECT id FROM table2)
-          AND name IN (SELECT name FROM table3)
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      expect(subqueries.length).toBeGreaterThanOrEqual(2);
-    });
-
-    it('should collect nested subqueries at top level only', () => {
-      const stmt = parseSQL(`
-        SELECT * FROM table1
-        WHERE id IN (
-          SELECT id FROM table2
-          WHERE value IN (SELECT value FROM table3)
-        )
-      `);
-      if (!stmt) {
-        expect(stmt).not.toBeNull();
-        return;
-      }
-      
-      const subqueries: any[] = [];
-      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
-      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
-      collectSubqueries(whereCondition, subqueries);
-      
-      // Should collect at least the first level subquery
-      // (nested ones might also be collected, but that's okay - they'll be processed separately)
-      expect(subqueries.length).toBeGreaterThanOrEqual(1);
-    });
-  });
-
-  describe('validateColumnReferences', () => {
-    // Mock getTableFields function
-    const mockGetTableFields = jest.fn();
-
-    beforeEach(() => {
-      mockGetTableFields.mockReset();
-    });
-
-    it('should not report error for valid alias in subquery', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.dim_product dp
-        WHERE NOT EXISTS (
-          SELECT NULL FROM dataset.dim_agreement da
-          WHERE da.ProdKey = dp.ProdKey
-        )
-      `);
-      
-      // Mock schema lookups
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'Name']);
-        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // Should have no issues - both dp and da are valid in their respective scopes
-      // and dp is valid in the subquery due to correlated subquery support
-      const aliasErrors = issues.filter(i => i.message.includes('Unknown table or alias'));
-      expect(aliasErrors).toHaveLength(0);
-    });
-
-    it('should report error for unknown alias in outer query', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        WHERE unknown_alias.col = 1
-      `);
-      
-      mockGetTableFields.mockResolvedValue(['col', 'id']);
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown_alias"'))).toBe(true);
-    });
-
-    it('should report error for unknown alias in subquery', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        WHERE EXISTS (
-          SELECT 1 FROM dataset.table2 t2
-          WHERE unknown.col = t2.col
-        )
-      `);
-      
-      mockGetTableFields.mockResolvedValue(['col', 'id']);
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown"'))).toBe(true);
-    });
-
-    it('should allow outer table alias in correlated subquery', async () => {
-      // This is the key test case from the bug report
-      const ast = parseSQL(`
-        SELECT * FROM dataset.dim_product dp
-        WHERE NOT EXISTS (
-          SELECT NULL FROM dataset.dim_agreement da
-          WHERE da.ProdKey = dp.ProdKey
-        )
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'ProductName']);
-        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // dp.ProdKey should be valid in the subquery (correlated reference)
-      const dpError = issues.find(i => i.message.includes('"dp"'));
-      expect(dpError).toBeUndefined();
-    });
-
-    it('should validate columns in deeply nested subqueries', async () => {
-      const ast = parseSQL(`
-        SELECT * FROM dataset.table1 t1
-        WHERE id IN (
-          SELECT id FROM dataset.table2 t2
-          WHERE value IN (
-            SELECT value FROM dataset.table3 t3
-            WHERE t3.ref = t1.id
-          )
-        )
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'table1') return Promise.resolve(['id', 'name']);
-        if (tableId === 'table2') return Promise.resolve(['id', 'value']);
-        if (tableId === 'table3') return Promise.resolve(['value', 'ref']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // t1.id should be valid even in the deeply nested subquery (correlated reference)
-      const t1Error = issues.find(i => i.message.includes('"t1"'));
-      expect(t1Error).toBeUndefined();
-    });
-
-    it('should validate CTE body columns separately', async () => {
-      const ast = parseSQL(`
-        WITH stage AS (
-          SELECT id, name FROM dataset.source s
-          WHERE s.active = true
-        )
-        SELECT * FROM stage
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'source') return Promise.resolve(['id', 'name', 'active']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      
-      // s should be valid within the CTE body
-      const sError = issues.find(i => i.message.includes('"s"'));
-      expect(sError).toBeUndefined();
-    });
-
-    it('should handle complex query with CTE and correlated subquery', async () => {
-      // This simulates the original bug report query pattern
-      const ast = parseSQL(`
-        WITH Stage AS (
-          SELECT actr.AcNo, actr.VoNo
-          FROM dataset.AcTr actr
-          WHERE NOT EXISTS (
-            SELECT *
-            FROM dataset.fact_table fir
-            WHERE fir.InvoiceNo = actr.VoNo
-          )
-        )
-        SELECT * FROM Stage s
-        JOIN dataset.dim_table d ON s.AcNo = d.AcNo
-      `);
-      
-      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
-        if (tableId === 'AcTr') return Promise.resolve(['AcNo', 'VoNo', 'Amount']);
-        if (tableId === 'fact_table') return Promise.resolve(['InvoiceNo', 'Amount']);
-        if (tableId === 'dim_table') return Promise.resolve(['AcNo', 'Name']);
-        return Promise.resolve(null);
-      });
-      
-      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
-      
-      // fir should be valid within the subquery
-      const firError = issues.find(i => i.message.includes('"fir"'));
-      expect(firError).toBeUndefined();
-      
-      // actr should be valid in the correlated subquery (parent scope)
-      const actrError = issues.find(i => i.message.includes('"actr"'));
-      expect(actrError).toBeUndefined();
-    });
-  });
-
-  describe('validateBigQuerySyntaxRules', () => {
-      describe('containsAggregateFunction', () => {
-      it('should detect COUNT aggregate function', () => {
-        const stmt = parseSQL('SELECT COUNT(*) FROM table1');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        // Get first column expression from CST - columns are directly in items array
-        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
-        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
-        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
-        const result = containsAggregateFunction(selectExpr);
-        expect(result.found).toBe(true);
-        expect(result.functionName).toBe('COUNT');
-      });
-
-      it('should detect SUM aggregate function', () => {
-        const stmt = parseSQL('SELECT SUM(amount) FROM table1');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
-        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
-        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
-        const result = containsAggregateFunction(selectExpr);
-        expect(result.found).toBe(true);
-        expect(result.functionName).toBe('SUM');
-      });
-
-      it('should not detect non-aggregate functions', () => {
-        const stmt = parseSQL('SELECT UPPER(name) FROM table1');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        const columns = stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
-        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
-        const result = containsAggregateFunction(selectExpr);
-        expect(result.found).toBe(false);
-      });
-
-      it('should not detect aggregate in subquery', () => {
-        const stmt = parseSQL('SELECT * FROM table1 WHERE id IN (SELECT MAX(id) FROM table2)');
-        if (!stmt) {
-          expect(stmt).not.toBeNull();
-          return;
-        }
-        
-        // The WHERE clause contains the subquery
-        const whereCondition = stmt.whereClause?.condition || stmt.where;
-        const result = containsAggregateFunction(whereCondition);
-        expect(result.found).toBe(false); // Subqueries are skipped
-      });
-    });
-
-    describe('aggregate in WHERE validation', () => {
-      it('should report error when COUNT is used in WHERE', () => {
-        // Note: This query won't parse correctly since it's invalid SQL,
-        // but we test the validation logic with a mock AST
-        const mockAst = {
-          type: 'select',
-          columns: [{ expr: { type: 'column_ref', column: 'id' } }],
-          from: [{ table: 'orders' }],
-          where: {
-            type: 'binary_expr',
-            operator: '>',
-            left: {
-              type: 'aggr_func',
-              name: 'count',
-              args: { expr: '*' },
-            },
-            right: { type: 'number', value: 5 },
-          },
-        };
-        
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
-        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
-        expect(issues.some((i: ColumnValidationIssue) => i.message.includes('COUNT'))).toBe(true);
-      });
-
-      it('should not report error for valid WHERE without aggregates', () => {
-        const ast = parseSQL('SELECT * FROM orders WHERE amount > 100');
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toHaveLength(0);
-      });
-    });
-
-    describe('window function validation', () => {
-      it('should allow window functions in SELECT', () => {
-        const ast = parseSQL('SELECT ROW_NUMBER() OVER (ORDER BY id) as rn FROM table1');
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        // No errors about window functions in SELECT
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'window-in-where')).toHaveLength(0);
-      });
-    });
-
-    describe('CTE validation', () => {
-      it('should validate syntax rules within CTEs', () => {
-        // Create a mock CTE with an aggregate in WHERE
-        const mockAst = {
-          type: 'select',
-          with: [{
-            name: { value: 'cte_data' },
-            stmt: {
-              ast: {
-                type: 'select',
-                columns: [{ expr: { type: 'column_ref', column: 'id' } }],
-                from: [{ table: 'source' }],
-                where: {
-                  type: 'aggr_func',
-                  name: 'sum',
-                  args: { expr: { type: 'column_ref', column: 'amount' } },
-                },
-              }
-            }
-          }],
-          columns: [{ expr: { type: 'star' } }],
-          from: [{ table: 'cte_data' }],
-        };
-        
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
-        // Should detect aggregate in WHERE within the CTE
-        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
-      });
-    });
-
-    describe('GROUP BY positional references', () => {
-      it('should accept GROUP BY with positional references (number_literal type)', () => {
-        // This tests that sql-parser-cst's number_literal type is properly recognized
-        const ast = parseSQL(`
-          SELECT
-            o.OrderNumber,
-            o.CustomerId,
-            o.OrderStatus,
-            o.BillingCurrency,
-            o.PlacedPrice,
-            o.Discount,
-            SAFE_DIVIDE(SUM(o.Discount), SUM(o.PlacedPrice)) * 100 AS DiscountPercent,
-            o.OrderDateCet,
-            IFNULL(o.CouponCode, 'NONE') AS CouponCode
-          FROM
-            orders AS o
-          GROUP BY
-            1, 2, 3, 4, 5, 6, 8, 9
-        `);
-        // Should not produce errors for valid GROUP BY positional references
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        // This validates GROUP BY semantics, not positional references
-        // The validateGroupByColumns function handles positional reference validation
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
-      });
-
-      it('should accept GROUP BY with positional references in CTE queries', () => {
-        const ast = parseSQL(`
-          WITH
-            data AS (
-              SELECT 1 AS col1, 'a' AS col2, 100 AS col3
-            )
-          SELECT
-            col1,
-            col2,
-            SUM(col3) AS total
-          FROM
-            data
-          GROUP BY
-            1, 2
-        `);
-        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
-      });
-
-      it('should report error when SELECT column is missing from GROUP BY positional references', async () => {
-        // Query with position 1 missing from GROUP BY
-        const ast = parseSQL(`
-          SELECT
-            o.OrderNumber,
-            o.CustomerId,
-            o.OrderStatus,
-            SUM(o.Amount) AS TotalAmount
-          FROM
-            orders AS o
-          GROUP BY
-            2, 3
-        `);
-        // Position 1 (o.OrderNumber) is not in GROUP BY and not an aggregate
-        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
-        const mockGetTableFields = async () => null;
-        const issues = await validateGroupByColumns(
-          ast,
-          aliasMap,
-          uniqueTables,
-          mockGetTableFields,
-          '',
-          false
-        );
-        // Should have an error about o.OrderNumber not being grouped
-        expect(issues.some((i: ColumnValidationIssue) => 
-          i.rule === 'select-not-in-group-by' && 
-          i.message.includes('OrderNumber')
-        )).toBe(true);
-      });
-
-      it('should not report error when all non-aggregate SELECT columns are in GROUP BY', async () => {
-        const ast = parseSQL(`
-          SELECT
-            o.OrderNumber,
-            o.CustomerId,
-            SUM(o.Amount) AS TotalAmount
-          FROM
-            orders AS o
-          GROUP BY
-            1, 2
-        `);
-        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
-        const mockGetTableFields = async () => null;
-        const issues = await validateGroupByColumns(
-          ast,
-          aliasMap,
-          uniqueTables,
-          mockGetTableFields,
-          '',
-          false
-        );
-        // Should have no errors - all non-aggregate columns are grouped
-        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'select-not-in-group-by')).toHaveLength(0);
-      });
-    });
-  });
-});
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -29354,6 +29859,815 @@ export function registerBigQueryLanguage(
   if (sqlLanguage) {
     monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
     completionProviderRegistered = true;
+  }
+}
+````
+
+## File: tests/unit/renderer/utils/sql-validation.test.ts
+````typescript
+import { parse } from 'sql-parser-cst';
+import {
+  collectColumnRefsFromExpression,
+  collectColumnRefsForSelect,
+  buildTableAliasMapFromSelect,
+  collectSubqueries,
+  validateColumnReferences,
+  validateBigQuerySyntaxRules,
+  validateGroupByColumns,
+  containsAggregateFunction,
+  containsWindowFunction,
+  ColumnRefInfo,
+  ColumnValidationIssue,
+} from '../../../../src/renderer/utils/sql-validation';
+
+describe('SQL Validation Utilities', () => {
+  const parseSQL = (sql: string): any => {
+    try {
+      // Parse SQL and return CST directly - validation functions now work with CST!
+      const cst = parse(sql, { dialect: 'bigquery', includeRange: true });
+      
+      // CST structure: statements are in cst.statements or cst is the statement itself
+      const statements = cst.statements || (Array.isArray(cst) ? cst : [cst]);
+      return statements.length > 0 ? statements[0] : cst;
+    } catch (error) {
+      // If parsing fails, return null (tests should handle this)
+      return null;
+    }
+  };
+
+  describe('collectColumnRefsFromExpression', () => {
+    it('should collect simple column references', () => {
+      const stmt = parseSQL('SELECT col1, col2 FROM table1');
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const refs: ColumnRefInfo[] = [];
+      
+      // Use collectColumnRefsForSelect which handles CST structure
+      const allRefs = collectColumnRefsForSelect(stmt);
+      
+      expect(allRefs.length).toBeGreaterThanOrEqual(2);
+      const col1Ref = allRefs.find(r => r.column === 'col1');
+      const col2Ref = allRefs.find(r => r.column === 'col2');
+      expect(col1Ref).toBeDefined();
+      expect(col2Ref).toBeDefined();
+      if (col1Ref) expect(col1Ref.alias).toBeNull();
+    });
+
+    it('should collect aliased column references', () => {
+      const stmt = parseSQL('SELECT t.col1, t.col2 FROM table1 AS t');
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const allRefs = collectColumnRefsForSelect(stmt);
+      
+      expect(allRefs.length).toBeGreaterThanOrEqual(2);
+      const col1Ref = allRefs.find(r => r.column === 'col1' && r.alias === 't');
+      const col2Ref = allRefs.find(r => r.column === 'col2' && r.alias === 't');
+      expect(col1Ref).toBeDefined();
+      expect(col2Ref).toBeDefined();
+    });
+
+    it('should NOT collect column refs from subqueries', () => {
+      // This is the key test for the fix - subquery columns should not be collected
+      const stmt = parseSQL(`
+        SELECT col1 FROM table1
+        WHERE col2 IN (SELECT sub_col FROM subtable)
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const refs = collectColumnRefsForSelect(stmt);
+      
+      // Should only have col1 and col2 from the outer query, NOT sub_col from the subquery
+      const colNames = refs.map(r => r.column);
+      expect(colNames).toContain('col1');
+      expect(colNames).toContain('col2');
+      expect(colNames).not.toContain('sub_col');
+    });
+
+    it('should NOT collect column refs from NOT EXISTS subqueries', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM outer_table o
+        WHERE NOT EXISTS (
+          SELECT 1 FROM inner_table i
+          WHERE i.id = o.id
+        )
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const refs = collectColumnRefsForSelect(stmt);
+      
+      // Should NOT collect i.id from the subquery - it has its own scope
+      // o.id might be collected as it's a correlated reference, but i.id should not be
+      const colNames = refs.map(r => r.column);
+      expect(colNames).not.toContain('i.id');
+    });
+  });
+
+  describe('collectColumnRefsForSelect', () => {
+    it('should collect refs from SELECT, WHERE, and JOIN ON clauses', () => {
+      const ast = parseSQL(`
+        SELECT a.col1, b.col2
+        FROM table1 a
+        JOIN table2 b ON a.id = b.id
+        WHERE a.col3 > 10
+      `);
+      
+      const refs = collectColumnRefsForSelect(ast);
+      
+      // col1, col2 from SELECT, id (x2) from ON, col3 from WHERE
+      const columns = refs.map(r => r.column);
+      expect(columns).toContain('col1');
+      expect(columns).toContain('col2');
+      expect(columns).toContain('id');
+      expect(columns).toContain('col3');
+    });
+
+    it('should NOT include subquery column refs in the main scope', () => {
+      const ast = parseSQL(`
+        SELECT dp.ProdKey
+        FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      const refs = collectColumnRefsForSelect(ast);
+      
+      // Should only have dp.ProdKey from the outer SELECT
+      // The subquery refs (da.ProdKey, dp.ProdKey in WHERE) should NOT be collected
+      expect(refs).toHaveLength(1);
+      expect(refs[0].alias).toBe('dp');
+      expect(refs[0].column).toBe('ProdKey');
+    });
+  });
+
+  describe('buildTableAliasMapFromSelect', () => {
+    it('should build alias map for simple query', () => {
+      const ast = parseSQL('SELECT * FROM dataset.table1 AS t1');
+      
+      const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('t1')).toBe(true);
+      expect(aliasMap.get('t1')?.tableId).toBe('table1');
+      expect(uniqueTables.size).toBe(1);
+    });
+
+    it('should build alias map for JOIN query', () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        JOIN dataset.table2 t2 ON t1.id = t2.id
+      `);
+      
+      const { aliasMap } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('t1')).toBe(true);
+      expect(aliasMap.has('t2')).toBe(true);
+    });
+
+    it('should register CTE names as valid aliases', () => {
+      const ast = parseSQL(`
+        WITH cte_data AS (
+          SELECT id, value FROM dataset.source_table
+        )
+        SELECT * FROM cte_data
+      `);
+      
+      const { aliasMap } = buildTableAliasMapFromSelect(ast);
+      
+      expect(aliasMap.has('cte_data')).toBe(true);
+      // CTE alias should not have datasetId/tableId since it's a virtual table
+      expect(aliasMap.get('cte_data')?.datasetId).toBeUndefined();
+    });
+  });
+
+  describe('collectSubqueries', () => {
+    it('should collect subqueries from WHERE clause', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (SELECT id FROM table2)
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      // Get WHERE condition from CST - use helper from validation utils
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      expect(subqueries.length).toBeGreaterThanOrEqual(1);
+      const nodeType = subqueries[0]?.type || subqueries[0]?.kind;
+      expect(nodeType === 'select' || nodeType === 'select_stmt' || nodeType === 'SelectStatement').toBe(true);
+    });
+
+    it('should collect NOT EXISTS subqueries', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1 t1
+        WHERE NOT EXISTS (
+          SELECT 1 FROM table2 t2
+          WHERE t2.id = t1.id
+        )
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      // Get WHERE condition from CST
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      expect(subqueries.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should collect multiple subqueries', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (SELECT id FROM table2)
+          AND name IN (SELECT name FROM table3)
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      expect(subqueries.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should collect nested subqueries at top level only', () => {
+      const stmt = parseSQL(`
+        SELECT * FROM table1
+        WHERE id IN (
+          SELECT id FROM table2
+          WHERE value IN (SELECT value FROM table3)
+        )
+      `);
+      if (!stmt) {
+        expect(stmt).not.toBeNull();
+        return;
+      }
+      
+      const subqueries: any[] = [];
+      const whereClause = stmt.clauses?.find((c: any) => c.type === 'where_clause');
+      const whereCondition = whereClause?.expr || whereClause?.condition || stmt.whereClause?.condition || stmt.where;
+      collectSubqueries(whereCondition, subqueries);
+      
+      // Should collect at least the first level subquery
+      // (nested ones might also be collected, but that's okay - they'll be processed separately)
+      expect(subqueries.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('validateColumnReferences', () => {
+    // Mock getTableFields function
+    const mockGetTableFields = jest.fn();
+
+    beforeEach(() => {
+      mockGetTableFields.mockReset();
+    });
+
+    it('should not report error for valid alias in subquery', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      // Mock schema lookups
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'Name']);
+        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // Should have no issues - both dp and da are valid in their respective scopes
+      // and dp is valid in the subquery due to correlated subquery support
+      const aliasErrors = issues.filter(i => i.message.includes('Unknown table or alias'));
+      expect(aliasErrors).toHaveLength(0);
+    });
+
+    it('should report error for unknown alias in outer query', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE unknown_alias.col = 1
+      `);
+      
+      mockGetTableFields.mockResolvedValue(['col', 'id']);
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown_alias"'))).toBe(true);
+    });
+
+    it('should report error for unknown alias in subquery', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE EXISTS (
+          SELECT 1 FROM dataset.table2 t2
+          WHERE unknown.col = t2.col
+        )
+      `);
+      
+      mockGetTableFields.mockResolvedValue(['col', 'id']);
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      expect(issues.some(i => i.message.includes('Unknown table or alias "unknown"'))).toBe(true);
+    });
+
+    it('should allow outer table alias in correlated subquery', async () => {
+      // This is the key test case from the bug report
+      const ast = parseSQL(`
+        SELECT * FROM dataset.dim_product dp
+        WHERE NOT EXISTS (
+          SELECT NULL FROM dataset.dim_agreement da
+          WHERE da.ProdKey = dp.ProdKey
+        )
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'dim_product') return Promise.resolve(['ProdKey', 'ProductName']);
+        if (tableId === 'dim_agreement') return Promise.resolve(['ProdKey', 'AgreementId']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // dp.ProdKey should be valid in the subquery (correlated reference)
+      const dpError = issues.find(i => i.message.includes('"dp"'));
+      expect(dpError).toBeUndefined();
+    });
+
+    it('should validate columns in deeply nested subqueries', async () => {
+      const ast = parseSQL(`
+        SELECT * FROM dataset.table1 t1
+        WHERE id IN (
+          SELECT id FROM dataset.table2 t2
+          WHERE value IN (
+            SELECT value FROM dataset.table3 t3
+            WHERE t3.ref = t1.id
+          )
+        )
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'table1') return Promise.resolve(['id', 'name']);
+        if (tableId === 'table2') return Promise.resolve(['id', 'value']);
+        if (tableId === 'table3') return Promise.resolve(['value', 'ref']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // t1.id should be valid even in the deeply nested subquery (correlated reference)
+      const t1Error = issues.find(i => i.message.includes('"t1"'));
+      expect(t1Error).toBeUndefined();
+    });
+
+    it('should validate CTE body columns separately', async () => {
+      const ast = parseSQL(`
+        WITH stage AS (
+          SELECT id, name FROM dataset.source s
+          WHERE s.active = true
+        )
+        SELECT * FROM stage
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'source') return Promise.resolve(['id', 'name', 'active']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      
+      // s should be valid within the CTE body
+      const sError = issues.find(i => i.message.includes('"s"'));
+      expect(sError).toBeUndefined();
+    });
+
+    it('should handle complex query with CTE and correlated subquery', async () => {
+      // This simulates the original bug report query pattern
+      const ast = parseSQL(`
+        WITH Stage AS (
+          SELECT actr.AcNo, actr.VoNo
+          FROM dataset.AcTr actr
+          WHERE NOT EXISTS (
+            SELECT *
+            FROM dataset.fact_table fir
+            WHERE fir.InvoiceNo = actr.VoNo
+          )
+        )
+        SELECT * FROM Stage s
+        JOIN dataset.dim_table d ON s.AcNo = d.AcNo
+      `);
+      
+      mockGetTableFields.mockImplementation((datasetId: string, tableId: string) => {
+        if (tableId === 'AcTr') return Promise.resolve(['AcNo', 'VoNo', 'Amount']);
+        if (tableId === 'fact_table') return Promise.resolve(['InvoiceNo', 'Amount']);
+        if (tableId === 'dim_table') return Promise.resolve(['AcNo', 'Name']);
+        return Promise.resolve(null);
+      });
+      
+      const issues = await validateColumnReferences(ast, mockGetTableFields, '', true);
+      
+      // fir should be valid within the subquery
+      const firError = issues.find(i => i.message.includes('"fir"'));
+      expect(firError).toBeUndefined();
+      
+      // actr should be valid in the correlated subquery (parent scope)
+      const actrError = issues.find(i => i.message.includes('"actr"'));
+      expect(actrError).toBeUndefined();
+    });
+  });
+
+  describe('validateBigQuerySyntaxRules', () => {
+      describe('containsAggregateFunction', () => {
+      it('should detect COUNT aggregate function', () => {
+        const stmt = parseSQL('SELECT COUNT(*) FROM table1');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        // Get first column expression from CST - columns are directly in items array
+        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
+        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
+        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(true);
+        expect(result.functionName).toBe('COUNT');
+      });
+
+      it('should detect SUM aggregate function', () => {
+        const stmt = parseSQL('SELECT SUM(amount) FROM table1');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        const selectClause = stmt.clauses?.find((c: any) => c.type === 'select_clause');
+        const columns = selectClause?.columns?.items || selectClause?.columns || stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
+        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(true);
+        expect(result.functionName).toBe('SUM');
+      });
+
+      it('should not detect non-aggregate functions', () => {
+        const stmt = parseSQL('SELECT UPPER(name) FROM table1');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        const columns = stmt.selectClause?.columns || stmt.columns?.items || stmt.columns || [];
+        const selectExpr = columns[0]?.expr ?? columns[0]?.expression ?? columns[0];
+        const result = containsAggregateFunction(selectExpr);
+        expect(result.found).toBe(false);
+      });
+
+      it('should not detect aggregate in subquery', () => {
+        const stmt = parseSQL('SELECT * FROM table1 WHERE id IN (SELECT MAX(id) FROM table2)');
+        if (!stmt) {
+          expect(stmt).not.toBeNull();
+          return;
+        }
+        
+        // The WHERE clause contains the subquery
+        const whereCondition = stmt.whereClause?.condition || stmt.where;
+        const result = containsAggregateFunction(whereCondition);
+        expect(result.found).toBe(false); // Subqueries are skipped
+      });
+    });
+
+    describe('aggregate in WHERE validation', () => {
+      it('should report error when COUNT is used in WHERE', () => {
+        // Note: This query won't parse correctly since it's invalid SQL,
+        // but we test the validation logic with a mock AST
+        const mockAst = {
+          type: 'select',
+          columns: [{ expr: { type: 'column_ref', column: 'id' } }],
+          from: [{ table: 'orders' }],
+          where: {
+            type: 'binary_expr',
+            operator: '>',
+            left: {
+              type: 'aggr_func',
+              name: 'count',
+              args: { expr: '*' },
+            },
+            right: { type: 'number', value: 5 },
+          },
+        };
+        
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
+        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
+        expect(issues.some((i: ColumnValidationIssue) => i.message.includes('COUNT'))).toBe(true);
+      });
+
+      it('should not report error for valid WHERE without aggregates', () => {
+        const ast = parseSQL('SELECT * FROM orders WHERE amount > 100');
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toHaveLength(0);
+      });
+    });
+
+    describe('window function validation', () => {
+      it('should allow window functions in SELECT', () => {
+        const ast = parseSQL('SELECT ROW_NUMBER() OVER (ORDER BY id) as rn FROM table1');
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        // No errors about window functions in SELECT
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'window-in-where')).toHaveLength(0);
+      });
+    });
+
+    describe('CTE validation', () => {
+      it('should validate syntax rules within CTEs', () => {
+        // Create a mock CTE with an aggregate in WHERE
+        const mockAst = {
+          type: 'select',
+          with: [{
+            name: { value: 'cte_data' },
+            stmt: {
+              ast: {
+                type: 'select',
+                columns: [{ expr: { type: 'column_ref', column: 'id' } }],
+                from: [{ table: 'source' }],
+                where: {
+                  type: 'aggr_func',
+                  name: 'sum',
+                  args: { expr: { type: 'column_ref', column: 'amount' } },
+                },
+              }
+            }
+          }],
+          columns: [{ expr: { type: 'star' } }],
+          from: [{ table: 'cte_data' }],
+        };
+        
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(mockAst);
+        // Should detect aggregate in WHERE within the CTE
+        expect(issues.some((i: ColumnValidationIssue) => i.rule === 'aggregate-in-where')).toBe(true);
+      });
+    });
+
+    describe('GROUP BY positional references', () => {
+      it('should accept GROUP BY with positional references (number_literal type)', () => {
+        // This tests that sql-parser-cst's number_literal type is properly recognized
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            o.OrderStatus,
+            o.BillingCurrency,
+            o.PlacedPrice,
+            o.Discount,
+            SAFE_DIVIDE(SUM(o.Discount), SUM(o.PlacedPrice)) * 100 AS DiscountPercent,
+            o.OrderDateCet,
+            IFNULL(o.CouponCode, 'NONE') AS CouponCode
+          FROM
+            orders AS o
+          GROUP BY
+            1, 2, 3, 4, 5, 6, 8, 9
+        `);
+        // Should not produce errors for valid GROUP BY positional references
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        // This validates GROUP BY semantics, not positional references
+        // The validateGroupByColumns function handles positional reference validation
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+
+      it('should accept GROUP BY with positional references in CTE queries', () => {
+        const ast = parseSQL(`
+          WITH
+            data AS (
+              SELECT 1 AS col1, 'a' AS col2, 100 AS col3
+            )
+          SELECT
+            col1,
+            col2,
+            SUM(col3) AS total
+          FROM
+            data
+          GROUP BY
+            1, 2
+        `);
+        const issues: ColumnValidationIssue[] = validateBigQuerySyntaxRules(ast);
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'group-by-positional-out-of-range')).toHaveLength(0);
+      });
+
+      it('should report error when SELECT column is missing from GROUP BY positional references', async () => {
+        // Query with position 1 missing from GROUP BY
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            o.OrderStatus,
+            SUM(o.Amount) AS TotalAmount
+          FROM
+            orders AS o
+          GROUP BY
+            2, 3
+        `);
+        // Position 1 (o.OrderNumber) is not in GROUP BY and not an aggregate
+        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+        const mockGetTableFields = async () => null;
+        const issues = await validateGroupByColumns(
+          ast,
+          aliasMap,
+          uniqueTables,
+          mockGetTableFields,
+          '',
+          false
+        );
+        // Should have an error about o.OrderNumber not being grouped
+        expect(issues.some((i: ColumnValidationIssue) => 
+          i.rule === 'select-not-in-group-by' && 
+          i.message.includes('OrderNumber')
+        )).toBe(true);
+      });
+
+      it('should not report error when all non-aggregate SELECT columns are in GROUP BY', async () => {
+        const ast = parseSQL(`
+          SELECT
+            o.OrderNumber,
+            o.CustomerId,
+            SUM(o.Amount) AS TotalAmount
+          FROM
+            orders AS o
+          GROUP BY
+            1, 2
+        `);
+        const { aliasMap, uniqueTables } = buildTableAliasMapFromSelect(ast);
+        const mockGetTableFields = async () => null;
+        const issues = await validateGroupByColumns(
+          ast,
+          aliasMap,
+          uniqueTables,
+          mockGetTableFields,
+          '',
+          false
+        );
+        // Should have no errors - all non-aggregate columns are grouped
+        expect(issues.filter((i: ColumnValidationIssue) => i.rule === 'select-not-in-group-by')).toHaveLength(0);
+      });
+    });
+  });
+});
+````
+
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache (SQLite-backed for performance with large datasets)
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    /** Get a range of rows for virtual scrolling */
+    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+    /** Get cache statistics */
+    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+  };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
   }
 }
 ````
@@ -32143,6 +33457,7 @@ import { parse } from 'sql-parser-cst';
 import { useBigQuery } from '../../hooks/useBigQuery';
 import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
+import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
@@ -32712,6 +34027,19 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+
+  // Handle ESC key to close save dialog
+  useEffect(() => {
+    if (!showSaveDialog) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowSaveDialog(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [showSaveDialog]);
+
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [sqlValidationStatus, setSqlValidationStatus] = useState<{
     isValid: boolean | null;
@@ -32778,11 +34106,40 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   useEffect(() => {
     setIsToolsMenuOpen(false);
   }, [activeTab?.id]);
-  
+
   const queryText = activeTab?.queryText || '';
+
+  // Listen for save query menu shortcut (Cmd+S)
+  useEffect(() => {
+    if (window.electronAPI?.menu?.onSaveQuery) {
+      const removeListener = window.electronAPI.menu.onSaveQuery(() => {
+        if (activeTab && queryText.trim()) {
+          setSaveName(activeTab.savedQueryId ? activeTab.title : '');
+          setSaveDescription('');
+          setShowSaveDialog(true);
+        }
+      });
+      return () => removeListener();
+    }
+  }, [activeTab, queryText]);
+  
   const isExecuting = activeTab?.executionStatus === 'running';
   const error = activeTab?.error || null;
   const jobId = activeTab?.jobId || null;
+
+  // Listen for rows-update events to update query history with final row count
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate((data) => {
+      // Update the history entry with the final row count
+      if (data.jobId && data.rowsReturned > 0) {
+        useQueryHistoryStore.getState().updateEntryByJobId(data.jobId, data.rowsReturned);
+      }
+    });
+    
+    return unsubscribe;
+  }, []);
   
   const { setTabQuery, setTabResults, setTabError, setTabStatus, updateTab } = useTabsStore();
   const { saveQuery, updateQuery } = useQueriesStore();
@@ -34140,7 +35497,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const currentTab = useTabsStore.getState().tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
     if (!currentTab) return;
 
-    const currentIsConnected = useConnectionStore.getState().connection !== null;
+    const currentConnection = useConnectionStore.getState().connection;
+    const currentIsConnected = currentConnection !== null;
 
     if (!currentIsConnected) {
       setTabError(currentTab.id, 'Not connected to BigQuery. Please configure a connection first.');
@@ -34189,6 +35547,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       });
     }
 
+    // Track execution start time for history
+    const executionStartTime = Date.now();
+
     try {
       const result = await executeQuery(queryTextToExecute, currentTab.id);
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
@@ -34202,6 +35563,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       // Mark query as completed successfully - store the executed query text and execution time
       setCompletedQueryText(queryTextToExecute);
       setCompletedQueryExecutionTime(result.executionTimeMs);
+
+      // Add to query history
+      useQueryHistoryStore.getState().addEntry({
+        queryText: queryTextToExecute,
+        executedAt: new Date().toISOString(),
+        executionTimeMs: result.executionTimeMs,
+        bytesProcessed: result.bytesProcessed,
+        totalRows: result.totalRows,
+        status: 'completed',
+        projectId: currentConnection?.projectId || '',
+        jobId: result.jobId,
+      });
     } catch (err: any) {
       // Extract error message from various possible error formats
       let errorMessage = 'Query execution failed';
@@ -34262,6 +35635,16 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       errorMessage = errorMessage.replace(electronPrefix, '');
       
       setTabError(currentTab.id, errorMessage);
+
+      // Add to query history (error case)
+      useQueryHistoryStore.getState().addEntry({
+        queryText: queryTextToExecute,
+        executedAt: new Date().toISOString(),
+        executionTimeMs: Date.now() - executionStartTime,
+        status: 'error',
+        errorMessage: errorMessage,
+        projectId: currentConnection?.projectId || '',
+      });
     }
   };
 
