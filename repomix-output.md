@@ -90,6 +90,7 @@ src/
       queries.ts
       query-history.ts
       results-cache.ts
+      schema-cache.ts
       tabs.ts
       ui-settings.ts
     storage/
@@ -98,6 +99,7 @@ src/
       query-store.ts
       results-cache-sqlite.ts
       results-cache-store.ts
+      schema-cache-sqlite.ts
       tabs-store.ts
       ui-settings-store.ts
     main.ts
@@ -151,6 +153,9 @@ src/
       SavedQueriesTree/
         SavedQueriesTree.css
         SavedQueriesTree.tsx
+      SchemaSearchModal/
+        SchemaSearchModal.css
+        SchemaSearchModal.tsx
       SchemaSidebar/
         SchemaSidebar.css
         SchemaSidebar.tsx
@@ -173,6 +178,7 @@ src/
       connection-store.ts
       queries-store.ts
       query-history-store.ts
+      schema-cache-store.ts
       tabs-store.ts
     types/
       electron-api.d.ts
@@ -211,6 +217,7 @@ tests/
         ConnectionDialog.test.tsx
         ErrorBoundary.test.tsx
         JobInfoModal.test.tsx
+        SchemaSearchModal.test.tsx
         SidebarHeader.test.tsx
         SidebarSwitcher.test.tsx
         TabBar.test.tsx
@@ -9079,6 +9086,209 @@ export function closeCacheDatabase(): void {
 }
 ````
 
+## File: src/main/ipc/schema-cache.ts
+````typescript
+import { ipcMain } from 'electron';
+import {
+  saveSchema,
+  saveSchemas,
+  getSchema,
+  hasValidSchema,
+  getSchemasForProject,
+  needsRefresh,
+  deleteSchema,
+  deleteSchemasForProject,
+  deleteExpiredSchemas,
+  clearAllSchemas,
+  getCacheStats,
+  closeDatabase,
+} from '../storage/schema-cache-sqlite';
+import type { SchemaField } from '../../shared/types/query';
+import { BigQueryErrorCode } from '../../shared/types/bigquery';
+
+export function registerSchemaCacheHandlers(): void {
+  // Save a single schema
+  ipcMain.handle(
+    'schema-cache:save',
+    async (
+      _event,
+      projectId: string,
+      datasetId: string,
+      tableId: string,
+      fields: SchemaField[]
+    ): Promise<void> => {
+      try {
+        saveSchema(projectId, datasetId, tableId, fields);
+      } catch (error: any) {
+        throw {
+          code: BigQueryErrorCode.STORAGE_ERROR,
+          message: 'Failed to save schema to cache',
+          details: error.message,
+        };
+      }
+    }
+  );
+
+  // Save multiple schemas in batch
+  ipcMain.handle(
+    'schema-cache:saveBatch',
+    async (
+      _event,
+      schemas: Array<{
+        projectId: string;
+        datasetId: string;
+        tableId: string;
+        fields: SchemaField[];
+      }>
+    ): Promise<void> => {
+      try {
+        saveSchemas(schemas);
+      } catch (error: any) {
+        throw {
+          code: BigQueryErrorCode.STORAGE_ERROR,
+          message: 'Failed to save schemas to cache',
+          details: error.message,
+        };
+      }
+    }
+  );
+
+  // Get a single schema
+  ipcMain.handle(
+    'schema-cache:get',
+    async (_event, projectId: string, datasetId: string, tableId: string) => {
+      try {
+        return getSchema(projectId, datasetId, tableId);
+      } catch (error: any) {
+        throw {
+          code: BigQueryErrorCode.STORAGE_ERROR,
+          message: 'Failed to get schema from cache',
+          details: error.message,
+        };
+      }
+    }
+  );
+
+  // Check if schema exists and is valid (not expired)
+  ipcMain.handle(
+    'schema-cache:hasValid',
+    async (_event, projectId: string, datasetId: string, tableId: string): Promise<boolean> => {
+      try {
+        return hasValidSchema(projectId, datasetId, tableId);
+      } catch (error: any) {
+        throw {
+          code: BigQueryErrorCode.STORAGE_ERROR,
+          message: 'Failed to check schema validity',
+          details: error.message,
+        };
+      }
+    }
+  );
+
+  // Get all schemas for a project
+  ipcMain.handle('schema-cache:getForProject', async (_event, projectId: string) => {
+    try {
+      return getSchemasForProject(projectId);
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get schemas for project',
+        details: error.message,
+      };
+    }
+  });
+
+  // Check if schemas need refresh
+  ipcMain.handle('schema-cache:needsRefresh', async (_event, projectId: string): Promise<boolean> => {
+    try {
+      return needsRefresh(projectId);
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to check if refresh is needed',
+        details: error.message,
+      };
+    }
+  });
+
+  // Delete a single schema
+  ipcMain.handle(
+    'schema-cache:delete',
+    async (_event, projectId: string, datasetId: string, tableId: string): Promise<void> => {
+      try {
+        deleteSchema(projectId, datasetId, tableId);
+      } catch (error: any) {
+        throw {
+          code: BigQueryErrorCode.STORAGE_ERROR,
+          message: 'Failed to delete schema from cache',
+          details: error.message,
+        };
+      }
+    }
+  );
+
+  // Delete all schemas for a project
+  ipcMain.handle('schema-cache:deleteForProject', async (_event, projectId: string): Promise<void> => {
+    try {
+      deleteSchemasForProject(projectId);
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to delete project schemas from cache',
+        details: error.message,
+      };
+    }
+  });
+
+  // Delete all expired schemas
+  ipcMain.handle('schema-cache:deleteExpired', async (): Promise<number> => {
+    try {
+      return deleteExpiredSchemas();
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to delete expired schemas',
+        details: error.message,
+      };
+    }
+  });
+
+  // Clear all schemas
+  ipcMain.handle('schema-cache:clear', async (): Promise<void> => {
+    try {
+      clearAllSchemas();
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to clear schema cache',
+        details: error.message,
+      };
+    }
+  });
+
+  // Get cache statistics
+  ipcMain.handle('schema-cache:stats', async () => {
+    try {
+      return getCacheStats();
+    } catch (error: any) {
+      throw {
+        code: BigQueryErrorCode.STORAGE_ERROR,
+        message: 'Failed to get cache statistics',
+        details: error.message,
+      };
+    }
+  });
+}
+
+/**
+ * Close the schema cache database
+ * Should be called when the app is closing
+ */
+export function closeSchemaCacheDatabase(): void {
+  closeDatabase();
+}
+````
+
 ## File: src/main/ipc/ui-settings.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -9806,6 +10016,352 @@ export function getCacheStats(): { tabCount: number; totalRows: number; dbSizeBy
   }
   
   return { tabCount, totalRows, dbSizeBytes };
+}
+````
+
+## File: src/main/storage/schema-cache-sqlite.ts
+````typescript
+/**
+ * SQLite-based schema cache for table schemas.
+ * Persists schemas across sessions with a configurable TTL.
+ */
+
+import Database from 'better-sqlite3';
+import path from 'path';
+import { app } from 'electron';
+import type { SchemaField, StoredSchema } from '../../shared/types/query';
+
+// Re-export for convenience
+export type { SchemaField, StoredSchema };
+
+// 12 hour TTL in milliseconds
+const SCHEMA_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
+// Database file location
+const DB_NAME = 'schema-cache.db';
+
+let db: Database.Database | null = null;
+
+/**
+ * Initialize the database connection
+ */
+function getDatabase(): Database.Database {
+  if (db) return db;
+  
+  const userDataPath = app.getPath('userData');
+  const dbPath = path.join(userDataPath, DB_NAME);
+  
+  db = new Database(dbPath);
+  
+  // Enable WAL mode for better concurrent read/write performance
+  db.pragma('journal_mode = WAL');
+  
+  // Set cache size to 50MB
+  db.pragma('cache_size = -50000');
+  
+  // Enable memory-mapped I/O for better read performance
+  db.pragma('mmap_size = 268435456'); // 256MB
+  
+  // Create tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schemas (
+      key TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      dataset_id TEXT NOT NULL,
+      table_id TEXT NOT NULL,
+      fields_json TEXT NOT NULL,
+      last_updated INTEGER NOT NULL
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_schemas_project ON schemas(project_id);
+    CREATE INDEX IF NOT EXISTS idx_schemas_dataset ON schemas(project_id, dataset_id);
+    CREATE INDEX IF NOT EXISTS idx_schemas_updated ON schemas(last_updated);
+  `);
+  
+  return db;
+}
+
+/**
+ * Create a cache key from identifiers
+ */
+function createCacheKey(projectId: string, datasetId: string, tableId: string): string {
+  return `${projectId}.${datasetId}.${tableId}`;
+}
+
+/**
+ * Save a schema to the cache
+ */
+export function saveSchema(
+  projectId: string,
+  datasetId: string,
+  tableId: string,
+  fields: SchemaField[]
+): void {
+  const database = getDatabase();
+  const key = createCacheKey(projectId, datasetId, tableId);
+  const now = Date.now();
+  
+  const stmt = database.prepare(`
+    INSERT OR REPLACE INTO schemas (key, project_id, dataset_id, table_id, fields_json, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  
+  stmt.run(key, projectId, datasetId, tableId, JSON.stringify(fields), now);
+}
+
+/**
+ * Save multiple schemas in a single transaction (batch insert)
+ */
+export function saveSchemas(
+  schemas: Array<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+    fields: SchemaField[];
+  }>
+): void {
+  const database = getDatabase();
+  const now = Date.now();
+  
+  const stmt = database.prepare(`
+    INSERT OR REPLACE INTO schemas (key, project_id, dataset_id, table_id, fields_json, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  
+  const insertMany = database.transaction((items: typeof schemas) => {
+    for (const item of items) {
+      const key = createCacheKey(item.projectId, item.datasetId, item.tableId);
+      stmt.run(key, item.projectId, item.datasetId, item.tableId, JSON.stringify(item.fields), now);
+    }
+  });
+  
+  insertMany(schemas);
+}
+
+/**
+ * Get a schema from the cache
+ * Returns null if not found or expired
+ */
+export function getSchema(
+  projectId: string,
+  datasetId: string,
+  tableId: string
+): StoredSchema | null {
+  const database = getDatabase();
+  const key = createCacheKey(projectId, datasetId, tableId);
+  
+  const stmt = database.prepare(`
+    SELECT project_id, dataset_id, table_id, fields_json, last_updated
+    FROM schemas
+    WHERE key = ?
+  `);
+  
+  const row = stmt.get(key) as {
+    project_id: string;
+    dataset_id: string;
+    table_id: string;
+    fields_json: string;
+    last_updated: number;
+  } | undefined;
+  
+  if (!row) return null;
+  
+  return {
+    projectId: row.project_id,
+    datasetId: row.dataset_id,
+    tableId: row.table_id,
+    fields: JSON.parse(row.fields_json),
+    lastUpdated: row.last_updated,
+  };
+}
+
+/**
+ * Check if a schema exists and is not expired
+ */
+export function hasValidSchema(
+  projectId: string,
+  datasetId: string,
+  tableId: string
+): boolean {
+  const database = getDatabase();
+  const key = createCacheKey(projectId, datasetId, tableId);
+  const expiryTime = Date.now() - SCHEMA_CACHE_TTL_MS;
+  
+  const stmt = database.prepare(`
+    SELECT 1 FROM schemas WHERE key = ? AND last_updated > ?
+  `);
+  
+  const row = stmt.get(key, expiryTime);
+  return !!row;
+}
+
+/**
+ * Get all schemas for a project that are not expired
+ */
+export function getSchemasForProject(projectId: string): StoredSchema[] {
+  const database = getDatabase();
+  const expiryTime = Date.now() - SCHEMA_CACHE_TTL_MS;
+  
+  const stmt = database.prepare(`
+    SELECT project_id, dataset_id, table_id, fields_json, last_updated
+    FROM schemas
+    WHERE project_id = ? AND last_updated > ?
+  `);
+  
+  const rows = stmt.all(projectId, expiryTime) as Array<{
+    project_id: string;
+    dataset_id: string;
+    table_id: string;
+    fields_json: string;
+    last_updated: number;
+  }>;
+  
+  return rows.map((row) => ({
+    projectId: row.project_id,
+    datasetId: row.dataset_id,
+    tableId: row.table_id,
+    fields: JSON.parse(row.fields_json),
+    lastUpdated: row.last_updated,
+  }));
+}
+
+/**
+ * Get the last updated timestamp for schemas in a project
+ * Used to check if we need to refresh
+ */
+export function getOldestSchemaTimestamp(projectId: string): number | null {
+  const database = getDatabase();
+  
+  const stmt = database.prepare(`
+    SELECT MIN(last_updated) as oldest
+    FROM schemas
+    WHERE project_id = ?
+  `);
+  
+  const row = stmt.get(projectId) as { oldest: number | null } | undefined;
+  return row?.oldest ?? null;
+}
+
+/**
+ * Check if schemas for a project need to be refreshed (older than TTL)
+ */
+export function needsRefresh(projectId: string): boolean {
+  const oldest = getOldestSchemaTimestamp(projectId);
+  if (oldest === null) return true; // No schemas cached
+  
+  return Date.now() - oldest > SCHEMA_CACHE_TTL_MS;
+}
+
+/**
+ * Delete a schema from the cache
+ */
+export function deleteSchema(
+  projectId: string,
+  datasetId: string,
+  tableId: string
+): void {
+  const database = getDatabase();
+  const key = createCacheKey(projectId, datasetId, tableId);
+  
+  const stmt = database.prepare('DELETE FROM schemas WHERE key = ?');
+  stmt.run(key);
+}
+
+/**
+ * Delete all schemas for a project
+ */
+export function deleteSchemasForProject(projectId: string): void {
+  const database = getDatabase();
+  
+  const stmt = database.prepare('DELETE FROM schemas WHERE project_id = ?');
+  stmt.run(projectId);
+}
+
+/**
+ * Delete all expired schemas
+ */
+export function deleteExpiredSchemas(): number {
+  const database = getDatabase();
+  const expiryTime = Date.now() - SCHEMA_CACHE_TTL_MS;
+  
+  const stmt = database.prepare('DELETE FROM schemas WHERE last_updated < ?');
+  const result = stmt.run(expiryTime);
+  return result.changes;
+}
+
+/**
+ * Clear all cached schemas
+ */
+export function clearAllSchemas(): void {
+  const database = getDatabase();
+  database.exec('DELETE FROM schemas');
+}
+
+/**
+ * Get cache statistics
+ */
+export function getCacheStats(): {
+  totalSchemas: number;
+  validSchemas: number;
+  expiredSchemas: number;
+  oldestTimestamp: number | null;
+  newestTimestamp: number | null;
+  databaseSizeBytes: number;
+} {
+  const database = getDatabase();
+  const expiryTime = Date.now() - SCHEMA_CACHE_TTL_MS;
+  
+  const total = database.prepare('SELECT COUNT(*) as count FROM schemas').get() as { count: number };
+  const valid = database.prepare('SELECT COUNT(*) as count FROM schemas WHERE last_updated > ?').get(expiryTime) as { count: number };
+  const timestamps = database.prepare('SELECT MIN(last_updated) as oldest, MAX(last_updated) as newest FROM schemas').get() as { oldest: number | null; newest: number | null };
+  const pageCount = database.pragma('page_count', { simple: true }) as number;
+  const pageSize = database.pragma('page_size', { simple: true }) as number;
+  
+  return {
+    totalSchemas: total.count,
+    validSchemas: valid.count,
+    expiredSchemas: total.count - valid.count,
+    oldestTimestamp: timestamps.oldest,
+    newestTimestamp: timestamps.newest,
+    databaseSizeBytes: pageCount * pageSize,
+  };
+}
+
+/**
+ * Close the database connection
+ */
+export function closeDatabase(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
+
+/**
+ * Delete the database file
+ */
+export function deleteDatabase(): void {
+  closeDatabase();
+  
+  const fs = require('fs');
+  const userDataPath = app.getPath('userData');
+  const dbPath = path.join(userDataPath, DB_NAME);
+  
+  // Delete main database file
+  if (fs.existsSync(dbPath)) {
+    fs.unlinkSync(dbPath);
+  }
+  
+  // Delete WAL and SHM files if they exist
+  const walPath = `${dbPath}-wal`;
+  const shmPath = `${dbPath}-shm`;
+  
+  if (fs.existsSync(walPath)) {
+    fs.unlinkSync(walPath);
+  }
+  if (fs.existsSync(shmPath)) {
+    fs.unlinkSync(shmPath);
+  }
 }
 ````
 
@@ -13242,6 +13798,674 @@ export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, next
 });
 ````
 
+## File: src/renderer/components/SchemaSearchModal/SchemaSearchModal.css
+````css
+.schema-search-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  justify-content: center;
+  padding-top: 15vh;
+  z-index: 1000;
+}
+
+.schema-search-modal {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+
+.schema-search-input-wrapper {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-primary);
+  gap: 0.75rem;
+}
+
+.schema-search-icon {
+  font-size: 1.125rem;
+  opacity: 0.6;
+}
+
+.schema-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 1rem;
+  color: var(--text-primary);
+  font-family: inherit;
+}
+
+.schema-search-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.schema-search-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.schema-search-loading-text {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.schema-search-results {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 100px;
+}
+
+.schema-search-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.schema-search-result-item {
+  display: flex;
+  align-items: center;
+  padding: 0.625rem 1rem;
+  gap: 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-primary);
+  transition: background-color 0.1s ease;
+}
+
+.schema-search-result-item:last-child {
+  border-bottom: none;
+}
+
+.schema-search-result-item:hover,
+.schema-search-result-item.selected {
+  background-color: var(--bg-secondary);
+}
+
+.schema-search-result-item.selected {
+  background-color: var(--bg-hover);
+}
+
+.schema-search-result-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.schema-search-result-icon.table-icon {
+  background-color: rgba(33, 150, 243, 0.15);
+  color: var(--accent-primary);
+}
+
+.schema-search-result-icon.column-icon {
+  background-color: rgba(156, 39, 176, 0.15);
+  color: #ba68c8;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.schema-search-result-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.schema-search-result-name {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.schema-search-result-type {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  text-transform: uppercase;
+}
+
+.schema-search-result-path {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 0.125rem;
+}
+
+.schema-search-result-badge {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.schema-search-highlight {
+  background-color: rgba(255, 213, 79, 0.3);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.schema-search-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.schema-search-shortcut {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+.schema-search-shortcut::before {
+  content: '';
+  display: inline-block;
+  margin-right: 0.25rem;
+}
+
+/* Scrollbar styling */
+.schema-search-results::-webkit-scrollbar {
+  width: 8px;
+}
+
+.schema-search-results::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.schema-search-results::-webkit-scrollbar-thumb {
+  background-color: var(--border-primary);
+  border-radius: 4px;
+}
+
+.schema-search-results::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-secondary);
+}
+
+/* Context Menu */
+.schema-search-context-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1001;
+}
+
+.schema-search-context-menu {
+  position: fixed;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  box-shadow: var(--shadow-modal);
+  padding: 0.25rem 0;
+  min-width: 160px;
+  z-index: 1002;
+}
+
+.schema-search-context-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.1s ease;
+}
+
+.schema-search-context-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.schema-search-context-icon {
+  font-size: 0.875rem;
+  width: 1.25rem;
+  text-align: center;
+}
+````
+
+## File: src/renderer/components/SchemaSearchModal/SchemaSearchModal.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useSchemaCacheStore, type SchemaSearchResult, type SchemaField } from '../../stores/schema-cache-store';
+import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import './SchemaSearchModal.css';
+
+// Datasets to exclude from schema search
+const FILTERED_DATASETS = ['airbyte_internal', 'Auditlogs'];
+
+interface SchemaSearchModalProps {
+  onClose: () => void;
+  onShowSchema?: (projectId: string, datasetId: string, tableId: string) => void;
+}
+
+export const SchemaSearchModal: React.FC<SchemaSearchModalProps> = ({ onClose, onShowSchema }) => {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [results, setResults] = useState<SchemaSearchResult[]>([]);
+  const [cacheLoaded, setCacheLoaded] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SchemaSearchResult } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  
+  const connection = useConnectionStore((state) => state.connection);
+  const { datasets } = useBigQueryMetadataStore();
+  const { search, setSchema, hasSchema, isLoading, loadingProgress, setIsLoading, setLoadingProgress } = useSchemaCacheStore();
+  const { createTab, setTabQuery, updateTab } = useTabsStore();
+
+  // Focus input on mount
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Load cached schemas from SQLite on mount
+  useEffect(() => {
+    const loadCachedSchemas = async () => {
+      if (!window.electronAPI?.schemaCache || !connection || cacheLoaded) return;
+
+      try {
+        // Load all cached schemas for this project
+        const cachedSchemas = await window.electronAPI.schemaCache.getForProject(connection.projectId);
+        
+        // Populate in-memory store with cached schemas
+        for (const schema of cachedSchemas) {
+          // Skip filtered datasets
+          if (FILTERED_DATASETS.includes(schema.datasetId)) continue;
+          setSchema(schema.datasetId, schema.tableId, schema.fields);
+        }
+        
+        console.log(`Loaded ${cachedSchemas.length} schemas from SQLite cache`);
+      } catch (err) {
+        console.warn('Failed to load cached schemas:', err);
+      }
+      
+      setCacheLoaded(true);
+    };
+
+    loadCachedSchemas();
+  }, [connection, cacheLoaded, setSchema]);
+
+  // Load schemas for all tables - either missing from cache or needs refresh
+  useEffect(() => {
+    const loadAllSchemas = async () => {
+      if (!window.electronAPI || !connection || !cacheLoaded) return;
+
+      // Check if cache needs refresh (older than 12 hours)
+      let needsRefresh = false;
+      try {
+        needsRefresh = await window.electronAPI.schemaCache?.needsRefresh(connection.projectId) ?? true;
+      } catch (err) {
+        console.warn('Failed to check cache refresh status:', err);
+        needsRefresh = true;
+      }
+
+      // Get all tables from metadata store
+      const allTables: Array<{ datasetId: string; tableId: string }> = [];
+      for (const dataset of datasets) {
+        // Skip internal datasets that shouldn't be searched
+        if (FILTERED_DATASETS.includes(dataset.id)) continue;
+        
+        const tables = await window.electronAPI.bigquery.listTables(dataset.id).catch(() => []);
+        for (const table of tables) {
+          // If cache needs refresh, load all tables
+          // Otherwise, only load tables not in memory cache
+          if (needsRefresh || !hasSchema(dataset.id, table.id)) {
+            allTables.push({ datasetId: dataset.id, tableId: table.id });
+          }
+        }
+      }
+
+      if (allTables.length === 0) return;
+
+      setIsLoading(true);
+      setLoadingProgress(0, allTables.length);
+
+      // Load schemas in batches to avoid overwhelming the API
+      const batchSize = 5;
+      const schemasToSave: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }> = [];
+
+      for (let i = 0; i < allTables.length; i += batchSize) {
+        const batch = allTables.slice(i, i + batchSize);
+        
+        await Promise.all(
+          batch.map(async ({ datasetId, tableId }) => {
+            try {
+              const result = await window.electronAPI!.bigquery.getTableSchema(datasetId, tableId);
+              setSchema(datasetId, tableId, result.fields);
+              
+              // Queue for batch save to SQLite
+              schemasToSave.push({
+                projectId: connection.projectId,
+                datasetId,
+                tableId,
+                fields: result.fields as SchemaField[],
+              });
+            } catch (err) {
+              // Silently skip tables that fail to load (e.g., deleted tables)
+              console.warn(`Failed to load schema for ${datasetId}.${tableId}:`, err);
+            }
+          })
+        );
+        
+        // Update progress after each batch completes (not per-item)
+        setLoadingProgress(Math.min(i + batchSize, allTables.length), allTables.length);
+      }
+
+      // Save all loaded schemas to SQLite cache in a single batch
+      if (schemasToSave.length > 0 && window.electronAPI.schemaCache) {
+        try {
+          await window.electronAPI.schemaCache.saveBatch(schemasToSave);
+          console.log(`Saved ${schemasToSave.length} schemas to SQLite cache`);
+        } catch (err) {
+          console.warn('Failed to save schemas to cache:', err);
+        }
+      }
+
+      setIsLoading(false);
+    };
+
+    loadAllSchemas();
+  }, [connection, datasets, hasSchema, setSchema, setIsLoading, setLoadingProgress, cacheLoaded]);
+
+  // Search when query changes
+  useEffect(() => {
+    const searchResults = search(searchQuery);
+    setResults(searchResults);
+    setSelectedIndex(0);
+  }, [searchQuery, search]);
+
+  // Scroll selected item into view
+  useEffect(() => {
+    if (resultsRef.current && results.length > 0) {
+      const selectedElement = resultsRef.current.querySelector('.schema-search-result-item.selected');
+      selectedElement?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedIndex, results.length]);
+
+  // Close on escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedIndex((prev) => Math.min(prev + 1, results.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedIndex((prev) => Math.max(prev - 1, 0));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (results[selectedIndex]) {
+          handleSelectResult(results[selectedIndex]);
+        }
+        break;
+      case 'Tab':
+        e.preventDefault();
+        if (e.shiftKey) {
+          setSelectedIndex((prev) => Math.max(prev - 1, 0));
+        } else {
+          setSelectedIndex((prev) => Math.min(prev + 1, results.length - 1));
+        }
+        break;
+    }
+  }, [results, selectedIndex]);
+
+  const handleSelectResult = useCallback((result: SchemaSearchResult) => {
+    if (!connection) return;
+
+    if (result.type === 'table') {
+      // Open schema sidebar for the table
+      if (onShowSchema) {
+        onShowSchema(connection.projectId, result.datasetId, result.tableId);
+      }
+    } else {
+      // Insert column reference into editor
+      const tableRef = `\`${connection.projectId}.${result.datasetId}.${result.tableId}\``;
+      const columnRef = result.columnPath || result.columnName;
+      
+      // Create a SELECT query with this column
+      const selectStatement = `SELECT ${columnRef}\nFROM ${tableRef}`;
+      
+      // Create new tab with the query
+      const newTabId = createTab();
+      setTabQuery(newTabId, selectStatement);
+      updateTab(newTabId, {
+        title: `${result.tableId}.${result.columnName}`,
+      });
+    }
+
+    onClose();
+  }, [connection, onShowSchema, createTab, setTabQuery, updateTab, onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, result: SchemaSearchResult) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, result });
+  }, []);
+
+  const handleViewSchema = useCallback(() => {
+    if (!connection || !contextMenu) return;
+    
+    if (onShowSchema) {
+      onShowSchema(connection.projectId, contextMenu.result.datasetId, contextMenu.result.tableId);
+    }
+    setContextMenu(null);
+    onClose();
+  }, [connection, contextMenu, onShowSchema, onClose]);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const getResultIcon = (result: SchemaSearchResult): string => {
+    if (result.type === 'table') {
+      return '🗄';
+    }
+    // Column type icons
+    switch (result.columnType?.toUpperCase()) {
+      case 'STRING':
+        return 'Aa';
+      case 'INTEGER':
+      case 'INT64':
+      case 'NUMERIC':
+      case 'BIGNUMERIC':
+      case 'FLOAT':
+      case 'FLOAT64':
+        return '#';
+      case 'BOOLEAN':
+      case 'BOOL':
+        return '☐';
+      case 'DATE':
+      case 'DATETIME':
+      case 'TIMESTAMP':
+      case 'TIME':
+        return '📅';
+      case 'BYTES':
+        return '⬡';
+      case 'RECORD':
+      case 'STRUCT':
+        return '{}';
+      case 'ARRAY':
+        return '[]';
+      case 'GEOGRAPHY':
+        return '🌍';
+      case 'JSON':
+        return '{ }';
+      default:
+        return '○';
+    }
+  };
+
+  const highlightMatch = (text: string, query: string): React.ReactNode => {
+    if (!query.trim()) return text;
+    
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const index = lowerText.indexOf(lowerQuery);
+    
+    if (index === -1) return text;
+    
+    return (
+      <>
+        {text.slice(0, index)}
+        <mark className="schema-search-highlight">{text.slice(index, index + query.length)}</mark>
+        {text.slice(index + query.length)}
+      </>
+    );
+  };
+
+  return (
+    <div className="schema-search-modal-overlay" onClick={handleOverlayClick}>
+      <div className="schema-search-modal">
+        <div className="schema-search-input-wrapper">
+          <span className="schema-search-icon">🔍</span>
+          <input
+            ref={inputRef}
+            type="text"
+            className="schema-search-input"
+            placeholder="Search tables and columns..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+          {isLoading && (
+            <div className="schema-search-loading">
+              <span className="schema-search-loading-text">
+                Loading schemas ({loadingProgress.loaded}/{loadingProgress.total})
+              </span>
+            </div>
+          )}
+        </div>
+        <div className="schema-search-results" ref={resultsRef}>
+          {!searchQuery && !isLoading && (
+            <div className="schema-search-empty">
+              Type to search across all tables and columns
+            </div>
+          )}
+          {searchQuery && results.length === 0 && !isLoading && (
+            <div className="schema-search-empty">
+              No results found for "{searchQuery}"
+            </div>
+          )}
+          {results.map((result, index) => (
+            <div
+              key={`${result.datasetId}.${result.tableId}.${result.columnPath || ''}`}
+              className={`schema-search-result-item ${index === selectedIndex ? 'selected' : ''}`}
+              onClick={() => handleSelectResult(result)}
+              onMouseEnter={() => setSelectedIndex(index)}
+              onContextMenu={(e) => handleContextMenu(e, result)}
+            >
+              <span className={`schema-search-result-icon ${result.type === 'table' ? 'table-icon' : 'column-icon'}`}>
+                {getResultIcon(result)}
+              </span>
+              <div className="schema-search-result-content">
+                <div className="schema-search-result-name">
+                  {result.type === 'table' ? (
+                    highlightMatch(result.tableId, searchQuery)
+                  ) : (
+                    <>
+                      {highlightMatch(result.columnPath || result.columnName || '', searchQuery)}
+                      <span className="schema-search-result-type">{result.columnType}</span>
+                    </>
+                  )}
+                </div>
+                <div className="schema-search-result-path">
+                  {result.datasetId}.{result.tableId}
+                </div>
+              </div>
+              <span className="schema-search-result-badge">
+                {result.type === 'table' ? 'Table' : 'Column'}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="schema-search-footer">
+          <span className="schema-search-shortcut">↑↓ Navigate</span>
+          <span className="schema-search-shortcut">↵ Select</span>
+          <span className="schema-search-shortcut">Esc Close</span>
+        </div>
+      </div>
+      
+      {/* Context Menu */}
+      {contextMenu && (
+        <>
+          <div className="schema-search-context-overlay" onClick={closeContextMenu} />
+          <div 
+            className="schema-search-context-menu"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+          >
+            <button className="schema-search-context-item" onClick={handleViewSchema}>
+              <span className="schema-search-context-icon">📋</span>
+              View Table Schema
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
 ````css
 .schema-sidebar {
@@ -13743,6 +14967,291 @@ export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
 }
 ````
 
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
+````css
+.view-definition-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.view-definition-modal-dialog {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.view-definition-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.view-definition-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.view-definition-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+
+.view-definition-modal-close:hover {
+  color: var(--text-white);
+}
+
+.view-definition-modal-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.view-definition-actions {
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.view-definition-copy-button {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.view-definition-copy-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.view-definition-editor {
+  flex: 1;
+  min-height: 400px;
+  height: 100%;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-definition-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.view-definition-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-primary);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: view-definition-spinner-rotation 0.8s linear infinite;
+}
+
+@keyframes view-definition-spinner-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.view-definition-error {
+  padding: 1rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+````
+
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+import './ViewDefinitionModal.css';
+
+interface ViewDefinitionModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [definition, setDefinition] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
+
+  // Listen for theme changes
+  useEffect(() => {
+    const updateTheme = () => {
+      const currentTheme = document.documentElement.getAttribute('data-theme');
+      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
+    };
+    
+    // Initial theme
+    updateTheme();
+    
+    // Watch for attribute changes
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const loadViewDefinition = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+        setDefinition(result.definition);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load view definition');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadViewDefinition();
+  }, [datasetId, tableId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(definition);
+  };
+
+  return (
+    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
+      <div className="view-definition-modal-dialog">
+        <div className="view-definition-modal-header">
+          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
+          <button className="view-definition-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="view-definition-modal-content">
+          {isLoading && (
+            <div className="view-definition-loading">
+              <div className="view-definition-spinner"></div>
+              <div>Loading view definition...</div>
+            </div>
+          )}
+          {error && (
+            <div className="view-definition-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && definition && (
+            <>
+              <div className="view-definition-actions">
+                <button onClick={handleCopy} className="view-definition-copy-button">
+                  Copy to Clipboard
+                </button>
+              </div>
+              <div className="view-definition-editor">
+                <Editor
+                  height="400px"
+                  language="sql"
+                  value={definition}
+                  theme={editorTheme}
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    folding: true,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    renderLineHighlight: 'none',
+                    scrollbar: {
+                      vertical: 'auto',
+                      horizontal: 'auto',
+                    },
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/hooks/useBigQuery.ts
 ````typescript
 import { useCallback } from 'react';
@@ -13907,6 +15416,207 @@ export const useQueryHistoryStore = create<QueryHistoryState>((set, get) => ({
         (e.errorMessage && e.errorMessage.toLowerCase().includes(lowerTerm))
     );
   },
+}));
+````
+
+## File: src/renderer/stores/schema-cache-store.ts
+````typescript
+import { create } from 'zustand';
+import type { SchemaField, StoredSchema } from '../../shared/types/query';
+
+// Re-export types for convenience
+export type { SchemaField, StoredSchema };
+
+/**
+ * Cached table schema with metadata (in-memory representation)
+ */
+export interface CachedTableSchema {
+  datasetId: string;
+  tableId: string;
+  fields: SchemaField[];
+  lastUpdated: number;
+}
+
+/**
+ * Search result item for schema search
+ */
+export interface SchemaSearchResult {
+  type: 'table' | 'column';
+  datasetId: string;
+  tableId: string;
+  columnName?: string;
+  columnType?: string;
+  columnPath?: string; // For nested columns: "parent.child.field"
+  matchScore: number;
+}
+
+interface SchemaCacheState {
+  // Map of "datasetId.tableId" -> schema
+  schemas: Map<string, CachedTableSchema>;
+  isLoading: boolean;
+  loadingProgress: { loaded: number; total: number };
+  
+  // Actions
+  setSchema: (datasetId: string, tableId: string, fields: SchemaField[]) => void;
+  getSchema: (datasetId: string, tableId: string) => CachedTableSchema | undefined;
+  hasSchema: (datasetId: string, tableId: string) => boolean;
+  
+  // Bulk loading
+  setIsLoading: (loading: boolean) => void;
+  setLoadingProgress: (loaded: number, total: number) => void;
+  
+  // Search function
+  search: (query: string, maxResults?: number) => SchemaSearchResult[];
+  
+  // Clear cache
+  clear: () => void;
+}
+
+/**
+ * Flatten nested fields into searchable paths
+ */
+function flattenFields(
+  fields: SchemaField[],
+  parentPath: string = ''
+): Array<{ name: string; type: string; path: string }> {
+  const result: Array<{ name: string; type: string; path: string }> = [];
+  
+  for (const field of fields) {
+    const currentPath = parentPath ? `${parentPath}.${field.name}` : field.name;
+    result.push({ name: field.name, type: field.type, path: currentPath });
+    
+    if (field.fields && field.fields.length > 0) {
+      result.push(...flattenFields(field.fields, currentPath));
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Calculate match score for fuzzy search
+ * Higher score = better match
+ */
+function calculateMatchScore(query: string, text: string): number {
+  const queryLower = query.toLowerCase();
+  const textLower = text.toLowerCase();
+  
+  // Exact match
+  if (textLower === queryLower) return 1000;
+  
+  // Starts with query
+  if (textLower.startsWith(queryLower)) return 500 + (queryLower.length / textLower.length) * 100;
+  
+  // Contains query as whole word
+  const wordBoundaryRegex = new RegExp(`\\b${escapeRegex(queryLower)}\\b`);
+  if (wordBoundaryRegex.test(textLower)) return 300 + (queryLower.length / textLower.length) * 100;
+  
+  // Contains query
+  const index = textLower.indexOf(queryLower);
+  if (index !== -1) return 100 + (queryLower.length / textLower.length) * 100;
+  
+  // Fuzzy match - check if all characters appear in order
+  let queryIndex = 0;
+  let matchedChars = 0;
+  for (let i = 0; i < textLower.length && queryIndex < queryLower.length; i++) {
+    if (textLower[i] === queryLower[queryIndex]) {
+      matchedChars++;
+      queryIndex++;
+    }
+  }
+  
+  if (queryIndex === queryLower.length) {
+    return matchedChars / textLower.length * 50;
+  }
+  
+  return 0;
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export const useSchemaCacheStore = create<SchemaCacheState>((set, get) => ({
+  schemas: new Map(),
+  isLoading: false,
+  loadingProgress: { loaded: 0, total: 0 },
+  
+  setSchema: (datasetId, tableId, fields) => {
+    set((state) => {
+      const key = `${datasetId}.${tableId}`;
+      const newSchemas = new Map(state.schemas);
+      newSchemas.set(key, {
+        datasetId,
+        tableId,
+        fields,
+        lastUpdated: Date.now(),
+      });
+      return { schemas: newSchemas };
+    });
+  },
+  
+  getSchema: (datasetId, tableId) => {
+    const key = `${datasetId}.${tableId}`;
+    return get().schemas.get(key);
+  },
+  
+  hasSchema: (datasetId, tableId) => {
+    const key = `${datasetId}.${tableId}`;
+    return get().schemas.has(key);
+  },
+  
+  setIsLoading: (loading) => set({ isLoading: loading }),
+  
+  setLoadingProgress: (loaded, total) => set({ loadingProgress: { loaded, total } }),
+  
+  search: (query, maxResults = 50) => {
+    if (!query.trim()) return [];
+    
+    const results: SchemaSearchResult[] = [];
+    const { schemas } = get();
+    
+    // Search through all cached schemas
+    for (const [, schema] of schemas) {
+      const { datasetId, tableId, fields } = schema;
+      
+      // Check table name match
+      const tableScore = calculateMatchScore(query, tableId);
+      if (tableScore > 0) {
+        results.push({
+          type: 'table',
+          datasetId,
+          tableId,
+          matchScore: tableScore,
+        });
+      }
+      
+      // Check column matches
+      const flatFields = flattenFields(fields);
+      for (const field of flatFields) {
+        const nameScore = calculateMatchScore(query, field.name);
+        const pathScore = field.path !== field.name ? calculateMatchScore(query, field.path) : 0;
+        const bestScore = Math.max(nameScore, pathScore);
+        
+        if (bestScore > 0) {
+          results.push({
+            type: 'column',
+            datasetId,
+            tableId,
+            columnName: field.name,
+            columnType: field.type,
+            columnPath: field.path,
+            matchScore: bestScore,
+          });
+        }
+      }
+    }
+    
+    // Sort by score (descending) and limit results
+    results.sort((a, b) => b.matchScore - a.matchScore);
+    return results.slice(0, maxResults);
+  },
+  
+  clear: () => set({ schemas: new Map(), isLoading: false, loadingProgress: { loaded: 0, total: 0 } }),
 }));
 ````
 
@@ -16124,279 +17834,6 @@ export const countSelectStatements = (sql: string): number => {
 };
 ````
 
-## File: src/renderer/utils/tree-sitter-validator.ts
-````typescript
-/**
- * Tree-sitter SQL Validator
- * 
- * This module provides syntax validation using tree-sitter-sql-bigquery.
- * It complements sql-parser-cst by providing:
- * - Fast incremental parsing
- * - Better error recovery (partial parse trees)
- * - Syntax error detection with precise locations
- * 
- * Used alongside sql-parser-cst for comprehensive validation:
- * - tree-sitter: Syntax errors (structural issues, typos, malformed expressions)
- * - sql-parser-cst: Detailed parsing and semantic validation
- */
-
-import type { ColumnValidationIssue } from './sql-validation';
-
-// Tree-sitter types (we'll dynamically import the module)
-interface TreeSitterNode {
-  type: string;
-  text: string;
-  startPosition: { row: number; column: number };
-  endPosition: { row: number; column: number };
-  childCount: number;
-  child(index: number): TreeSitterNode | null;
-  isMissing?: boolean;
-  hasError?: boolean;
-}
-
-interface TreeSitterTree {
-  rootNode: TreeSitterNode;
-}
-
-interface TreeSitterParser {
-  parse(input: string): TreeSitterTree;
-  setLanguage(language: any): void;
-}
-
-// Singleton parser instance
-let treeSitterParser: TreeSitterParser | null = null;
-let initializationPromise: Promise<boolean> | null = null;
-let initializationError: Error | null = null;
-
-/**
- * Initialize the tree-sitter parser with BigQuery language
- * Returns true if successful, false otherwise
- */
-export async function initTreeSitterParser(): Promise<boolean> {
-  // Return cached result if already initialized
-  if (treeSitterParser !== null) {
-    return true;
-  }
-  
-  if (initializationError !== null) {
-    return false;
-  }
-  
-  // Prevent multiple simultaneous initialization attempts
-  if (initializationPromise !== null) {
-    return initializationPromise;
-  }
-  
-  initializationPromise = (async () => {
-    try {
-      // Dynamic import to handle cases where native modules aren't available
-      const TreeSitter = await import('tree-sitter');
-      const BigQueryLang = await import('tree-sitter-sql-bigquery');
-      
-      const parser = new TreeSitter.default();
-      parser.setLanguage(BigQueryLang.default);
-      
-      treeSitterParser = parser;
-      console.log('[TreeSitterValidator] Successfully initialized tree-sitter-sql-bigquery');
-      return true;
-    } catch (error) {
-      initializationError = error as Error;
-      console.warn('[TreeSitterValidator] Failed to initialize tree-sitter:', error);
-      return false;
-    }
-  })();
-  
-  return initializationPromise;
-}
-
-/**
- * Check if tree-sitter parser is available
- */
-export function isTreeSitterAvailable(): boolean {
-  return treeSitterParser !== null;
-}
-
-/**
- * Collect all syntax errors from a tree-sitter parse tree
- */
-function collectTreeSitterErrors(node: TreeSitterNode, errors: ColumnValidationIssue[]): void {
-  if (!node) return;
-  
-  // ERROR node indicates a parse error
-  if (node.type === 'ERROR') {
-    const errorText = node.text.substring(0, 50);
-    const hasMore = node.text.length > 50;
-    
-    errors.push({
-      message: `Syntax error: unexpected "${errorText}${hasMore ? '...' : ''}"`,
-      line: node.startPosition.row + 1,
-      column: node.startPosition.column + 1,
-      length: Math.min(node.text.length, 20),
-      severity: 'error',
-      rule: 'tree-sitter-syntax',
-    });
-  }
-  
-  // Missing node indicates expected token is missing
-  if (node.isMissing) {
-    errors.push({
-      message: `Missing ${node.type}`,
-      line: node.startPosition.row + 1,
-      column: node.startPosition.column + 1,
-      length: 1,
-      severity: 'error',
-      rule: 'tree-sitter-missing',
-    });
-  }
-  
-  // Recursively check children
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child) {
-      collectTreeSitterErrors(child, errors);
-    }
-  }
-}
-
-/**
- * Parse SQL and return syntax errors using tree-sitter
- * Returns an array of validation issues (empty if no errors)
- */
-export function validateWithTreeSitter(sql: string): ColumnValidationIssue[] {
-  // Return empty if parser not available
-  if (!treeSitterParser) {
-    return [];
-  }
-  
-  // Handle empty/whitespace-only queries
-  const trimmed = sql.trim();
-  if (!trimmed) {
-    return [{
-      message: 'Empty query',
-      line: 1,
-      column: 1,
-      length: 1,
-      severity: 'error',
-      rule: 'tree-sitter-empty',
-    }];
-  }
-  
-  try {
-    const tree = treeSitterParser.parse(sql);
-    const errors: ColumnValidationIssue[] = [];
-    
-    collectTreeSitterErrors(tree.rootNode, errors);
-    
-    return errors;
-  } catch (error) {
-    // If parsing throws, return a generic error
-    console.error('[TreeSitterValidator] Parse error:', error);
-    return [{
-      message: `Parse error: ${(error as Error).message}`,
-      line: 1,
-      column: 1,
-      length: 10,
-      severity: 'error',
-      rule: 'tree-sitter-exception',
-    }];
-  }
-}
-
-/**
- * Get the parse tree for a SQL query (useful for debugging/inspection)
- */
-export function getTreeSitterParseTree(sql: string): TreeSitterTree | null {
-  if (!treeSitterParser) {
-    return null;
-  }
-  
-  try {
-    return treeSitterParser.parse(sql);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Print a simplified view of the parse tree (for debugging)
- */
-export function printTreeSitterTree(sql: string, maxDepth = 3): string {
-  const tree = getTreeSitterParseTree(sql);
-  if (!tree) {
-    return 'Parser not available';
-  }
-  
-  const lines: string[] = [];
-  
-  function printNode(node: TreeSitterNode, indent: number): void {
-    if (indent > maxDepth * 2) return;
-    
-    const prefix = '  '.repeat(indent);
-    let line = `${prefix}${node.type}`;
-    
-    if (node.type === 'ERROR') {
-      line += ` [ERROR: "${node.text.substring(0, 30)}..."]`;
-    } else if (node.isMissing) {
-      line += ' [MISSING]';
-    } else if (node.childCount === 0 && node.text) {
-      line += `: "${node.text.substring(0, 20)}"`;
-    }
-    
-    lines.push(line);
-    
-    if (indent < maxDepth * 2) {
-      for (let i = 0; i < node.childCount; i++) {
-        const child = node.child(i);
-        if (child) {
-          printNode(child, indent + 1);
-        }
-      }
-    }
-  }
-  
-  printNode(tree.rootNode, 0);
-  return lines.join('\n');
-}
-
-/**
- * Quick check if SQL has any syntax errors (faster than full validation)
- */
-export function hasSyntaxErrors(sql: string): boolean {
-  if (!treeSitterParser) {
-    return false; // Can't determine, assume no errors
-  }
-  
-  const trimmed = sql.trim();
-  if (!trimmed) {
-    return true;
-  }
-  
-  try {
-    const tree = treeSitterParser.parse(sql);
-    return hasErrorsInTree(tree.rootNode);
-  } catch {
-    return true;
-  }
-}
-
-/**
- * Recursively check if tree has any ERROR or MISSING nodes
- */
-function hasErrorsInTree(node: TreeSitterNode): boolean {
-  if (!node) return false;
-  if (node.type === 'ERROR' || node.isMissing) return true;
-  
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child && hasErrorsInTree(child)) {
-      return true;
-    }
-  }
-  
-  return false;
-}
-````
-
 ## File: src/renderer/index.html
 ````html
 <!DOCTYPE html>
@@ -16632,91 +18069,6 @@ export enum BigQueryErrorCode {
   INVALID_NAME = 'INVALID_NAME',
   DUPLICATE_NAME = 'DUPLICATE_NAME',
   STORAGE_ERROR = 'STORAGE_ERROR',
-}
-````
-
-## File: src/shared/types/query.ts
-````typescript
-/**
- * Query-related types
- */
-
-export type TabType = 'query' | 'explorer' | 'saved-queries';
-
-export interface QueryTab {
-  id: string;
-  title: string;
-  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
-  queryText: string;
-  isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string; // ISO timestamp
-  lastExecutedQueryText?: string; // The query text that was last executed
-  savedQueryId?: string;
-}
-
-export interface SavedQuery {
-  id: string;
-  name: string;
-  sqlText: string;
-  description?: string;
-  createdAt: string; // ISO timestamp
-  updatedAt: string; // ISO timestamp
-  tags?: string[];
-}
-
-export interface SaveQueryInput {
-  name: string;
-  sqlText: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface UpdateQueryInput {
-  name?: string;
-  sqlText?: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface QueryResult {
-  columns: ColumnMetadata[];
-  rows: Row[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-export interface ColumnMetadata {
-  name: string;
-  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
-  mode?: string; // NULLABLE, REQUIRED, REPEATED
-}
-
-export interface Row {
-  values: any[]; // Values matching column order
-}
-
-/**
- * Query history entry - tracks executed queries with metadata
- */
-export interface QueryHistoryEntry {
-  id: string;
-  queryText: string;
-  executedAt: string; // ISO timestamp
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  totalRows?: number;
-  status: 'completed' | 'error' | 'cancelled';
-  errorMessage?: string;
-  projectId: string;
-  jobId?: string;
 }
 ````
 
@@ -18433,6 +19785,403 @@ describe('JobInfoModal', () => {
     });
 
     expect(screen.queryByText('Referenced Tables')).not.toBeInTheDocument();
+  });
+});
+````
+
+## File: tests/unit/renderer/components/SchemaSearchModal.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { SchemaSearchModal } from '../../../../src/renderer/components/SchemaSearchModal/SchemaSearchModal';
+
+// Get the mocked electronAPI from the global window
+const mockElectronAPI = (window as any).electronAPI;
+
+// Mock data
+const mockConnectionData = {
+  projectId: 'test-project',
+  keyFilePath: '/path/to/key.json',
+  keyFileJson: '{}',
+  location: 'US',
+};
+
+const mockSearchResultsData = [
+  {
+    type: 'table' as const,
+    datasetId: 'test_dataset',
+    tableId: 'users',
+    matchScore: 500,
+  },
+  {
+    type: 'column' as const,
+    datasetId: 'test_dataset',
+    tableId: 'users',
+    columnName: 'user_id',
+    columnType: 'INT64',
+    columnPath: 'user_id',
+    matchScore: 300,
+  },
+  {
+    type: 'column' as const,
+    datasetId: 'test_dataset',
+    tableId: 'orders',
+    columnName: 'user_name',
+    columnType: 'STRING',
+    columnPath: 'user_name',
+    matchScore: 200,
+  },
+];
+
+// Mutable state for mocks - modified per test
+let currentSearchResults: typeof mockSearchResultsData = [];
+let currentLoadingState = { isLoading: false, loaded: 0, total: 0 };
+let currentConnectionData: typeof mockConnectionData | null = mockConnectionData;
+
+// Store mock functions
+const mockCreateTab = jest.fn().mockReturnValue('new-tab-id');
+const mockSetTabQuery = jest.fn();
+const mockUpdateTab = jest.fn();
+
+// Mock the stores with factory functions
+jest.mock('../../../../src/renderer/stores/schema-cache-store', () => ({
+  useSchemaCacheStore: () => ({
+    search: () => currentSearchResults,
+    setSchema: jest.fn(),
+    hasSchema: jest.fn().mockReturnValue(true),
+    get isLoading() { return currentLoadingState.isLoading; },
+    get loadingProgress() { return { loaded: currentLoadingState.loaded, total: currentLoadingState.total }; },
+    setIsLoading: jest.fn(),
+    setLoadingProgress: jest.fn(),
+  }),
+}));
+
+jest.mock('../../../../src/renderer/stores/connection-store', () => ({
+  useConnectionStore: (selector?: (state: any) => any) => {
+    const state = { connection: currentConnectionData };
+    return selector ? selector(state) : state;
+  },
+}));
+
+jest.mock('../../../../src/renderer/stores/bigquery-metadata-store', () => ({
+  useBigQueryMetadataStore: () => ({
+    datasets: [],
+  }),
+}));
+
+jest.mock('../../../../src/renderer/stores/tabs-store', () => ({
+  useTabsStore: () => ({
+    createTab: mockCreateTab,
+    setTabQuery: mockSetTabQuery,
+    updateTab: mockUpdateTab,
+  }),
+}));
+
+describe('SchemaSearchModal', () => {
+  const mockOnClose = jest.fn();
+  const mockOnShowSchema = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    currentSearchResults = [];
+    currentLoadingState = { isLoading: false, loaded: 0, total: 0 };
+    currentConnectionData = mockConnectionData;
+
+    // Setup electronAPI mock
+    mockElectronAPI.bigquery.listTables = jest.fn().mockResolvedValue([]);
+    mockElectronAPI.bigquery.getTableSchema = jest.fn().mockResolvedValue({ fields: [] });
+  });
+
+  it('should render search input and focus it on mount', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveFocus();
+  });
+
+  it('should show empty state when no query is entered', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    expect(screen.getByText('Type to search across all tables and columns')).toBeInTheDocument();
+  });
+
+  it('should show no results message when search returns empty', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'nonexistent' } });
+
+    expect(screen.getByText('No results found for "nonexistent"')).toBeInTheDocument();
+  });
+
+  it('should display search results', () => {
+    currentSearchResults = mockSearchResultsData;
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    // Verify results are rendered with badges
+    expect(screen.getByText('Table')).toBeInTheDocument();
+    expect(screen.getAllByText('Column').length).toBe(2);
+  });
+
+  it('should display table and column badges', () => {
+    currentSearchResults = mockSearchResultsData;
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    expect(screen.getByText('Table')).toBeInTheDocument();
+    expect(screen.getAllByText('Column').length).toBe(2);
+  });
+
+  it('should call onClose when escape key is pressed', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should call onClose when clicking overlay', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const overlay = document.querySelector('.schema-search-modal-overlay');
+    fireEvent.click(overlay!);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should not call onClose when clicking modal content', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const modal = document.querySelector('.schema-search-modal');
+    fireEvent.click(modal!);
+
+    expect(mockOnClose).not.toHaveBeenCalled();
+  });
+
+  it('should navigate results with arrow keys', () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    // First item should be selected by default
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    const getSelectedIndex = () => {
+      const items = getItems();
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].classList.contains('selected')) return i;
+      }
+      return -1;
+    };
+    
+    expect(getItems().length).toBe(3);
+    expect(getSelectedIndex()).toBe(0);
+  });
+
+  it('should select item on mouse enter', () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    
+    // First item should be selected initially
+    expect(getItems()[0]).toHaveClass('selected');
+  });
+
+  it('should call onShowSchema when selecting a table result', () => {
+    currentSearchResults = [mockSearchResultsData[0]]; // Only table result
+
+    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    // Press Enter to select
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(mockOnShowSchema).toHaveBeenCalledWith('test-project', 'test_dataset', 'users');
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should create a new tab with column query when selecting a column result', () => {
+    currentSearchResults = [mockSearchResultsData[1]]; // Column result
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    // Click to select
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.click(item!);
+
+    expect(mockCreateTab).toHaveBeenCalled();
+    expect(mockSetTabQuery).toHaveBeenCalledWith(
+      'new-tab-id',
+      expect.stringContaining('SELECT user_id')
+    );
+    expect(mockUpdateTab).toHaveBeenCalledWith('new-tab-id', {
+      title: 'users.user_id',
+    });
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should show loading state when fetching schemas', () => {
+    currentLoadingState = { isLoading: true, loaded: 5, total: 10 };
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    expect(screen.getByText('Loading schemas (5/10)')).toBeInTheDocument();
+  });
+
+  it('should display keyboard shortcuts in footer', () => {
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    expect(screen.getByText('↑↓ Navigate')).toBeInTheDocument();
+    expect(screen.getByText('↵ Select')).toBeInTheDocument();
+    expect(screen.getByText('Esc Close')).toBeInTheDocument();
+  });
+
+  it('should display column type for column results', () => {
+    currentSearchResults = [mockSearchResultsData[1]];
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    expect(screen.getByText('INT64')).toBeInTheDocument();
+  });
+
+  it('should display dataset.table path for results', () => {
+    currentSearchResults = [mockSearchResultsData[0]];
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    expect(screen.getByText('test_dataset.users')).toBeInTheDocument();
+  });
+
+  it('should navigate with Tab key', () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+    
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    
+    // Should have 3 results
+    expect(getItems().length).toBe(3);
+    // First item should be selected initially
+    expect(getItems()[0]).toHaveClass('selected');
+  });
+
+  it('should not go beyond first or last item with arrow keys', () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+    
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    
+    // Should have 3 results
+    expect(getItems().length).toBe(3);
+    // First item should be selected initially
+    expect(getItems()[0]).toHaveClass('selected');
+  });
+
+  it('should not perform any action when no connection', () => {
+    currentConnectionData = null;
+    currentSearchResults = [mockSearchResultsData[0]];
+
+    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // Should not call onShowSchema when there's no connection
+    expect(mockOnShowSchema).not.toHaveBeenCalled();
+  });
+
+  it('should show context menu on right-click and view schema option', () => {
+    currentSearchResults = [mockSearchResultsData[1]]; // Column result
+
+    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    // Right-click on the result item
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.contextMenu(item!);
+
+    // Context menu should appear with "View Table Schema" option
+    expect(screen.getByText('View Table Schema')).toBeInTheDocument();
+  });
+
+  it('should call onShowSchema when clicking View Table Schema in context menu', () => {
+    currentSearchResults = [mockSearchResultsData[1]]; // Column result
+
+    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    // Right-click on the result item
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.contextMenu(item!);
+
+    // Click on "View Table Schema"
+    const viewSchemaButton = screen.getByText('View Table Schema');
+    fireEvent.click(viewSchemaButton);
+
+    // Should call onShowSchema with the table's info
+    expect(mockOnShowSchema).toHaveBeenCalledWith('test-project', 'test_dataset', 'users');
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should close context menu when clicking overlay', () => {
+    currentSearchResults = [mockSearchResultsData[0]];
+
+    render(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    // Right-click to open context menu
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.contextMenu(item!);
+
+    expect(screen.getByText('View Table Schema')).toBeInTheDocument();
+
+    // Click the context overlay to close
+    const contextOverlay = document.querySelector('.schema-search-context-overlay');
+    fireEvent.click(contextOverlay!);
+
+    // Context menu should be closed
+    expect(screen.queryByText('View Table Schema')).not.toBeInTheDocument();
   });
 });
 ````
@@ -23541,289 +25290,275 @@ export const QueryResults: React.FC = () => {
 }
 ````
 
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
-````css
-.view-definition-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.view-definition-modal-dialog {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  width: 90%;
-  max-width: 900px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-modal);
-}
-
-.view-definition-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  background-color: var(--bg-secondary);
-}
-
-.view-definition-modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.view-definition-modal-close {
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 1.5rem;
-  cursor: pointer;
-  padding: 0;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  transition: color 0.15s ease;
-}
-
-.view-definition-modal-close:hover {
-  color: var(--text-white);
-}
-
-.view-definition-modal-content {
-  flex: 1;
-  overflow: hidden;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.view-definition-actions {
-  margin-bottom: 1rem;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.view-definition-copy-button {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.view-definition-copy-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.view-definition-editor {
-  flex: 1;
-  min-height: 400px;
-  height: 100%;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.view-definition-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 3rem;
-  color: var(--text-secondary);
-}
-
-.view-definition-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-primary);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: view-definition-spinner-rotation 0.8s linear infinite;
-}
-
-@keyframes view-definition-spinner-rotation {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.view-definition-error {
-  padding: 1rem;
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
+## File: src/renderer/utils/tree-sitter-validator.ts
 ````typescript
-import React, { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
-import './ViewDefinitionModal.css';
+/**
+ * Tree-sitter SQL Validator
+ * 
+ * This module provides syntax validation using tree-sitter-sql-bigquery.
+ * It complements sql-parser-cst by providing:
+ * - Fast incremental parsing
+ * - Better error recovery (partial parse trees)
+ * - Syntax error detection with precise locations
+ * 
+ * Used alongside sql-parser-cst for comprehensive validation:
+ * - tree-sitter: Syntax errors (structural issues, typos, malformed expressions)
+ * - sql-parser-cst: Detailed parsing and semantic validation
+ */
 
-interface ViewDefinitionModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
+import type { ColumnValidationIssue } from './sql-validation';
+
+// Tree-sitter types (we'll dynamically import the module)
+interface TreeSitterNode {
+  type: string;
+  text: string;
+  startPosition: { row: number; column: number };
+  endPosition: { row: number; column: number };
+  childCount: number;
+  child(index: number): TreeSitterNode | null;
+  isMissing?: boolean;
+  hasError?: boolean;
 }
 
-export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const [definition, setDefinition] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
+interface TreeSitterTree {
+  rootNode: TreeSitterNode;
+}
 
-  // Listen for theme changes
-  useEffect(() => {
-    const updateTheme = () => {
-      const currentTheme = document.documentElement.getAttribute('data-theme');
-      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
-    };
-    
-    // Initial theme
-    updateTheme();
-    
-    // Watch for attribute changes
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    
-    return () => observer.disconnect();
-  }, []);
+interface TreeSitterParser {
+  parse(input: string): TreeSitterTree;
+  setLanguage(language: any): void;
+}
 
-  useEffect(() => {
-    const loadViewDefinition = async () => {
-      if (!window.electronAPI) {
-        setError('Electron API not available');
-        setIsLoading(false);
-        return;
-      }
+// Singleton parser instance
+let treeSitterParser: TreeSitterParser | null = null;
+let initializationPromise: Promise<boolean> | null = null;
+let initializationError: Error | null = null;
 
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-        setDefinition(result.definition);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load view definition');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadViewDefinition();
-  }, [datasetId, tableId]);
-
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleEscape);
-    return () => window.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) {
-      onClose();
+/**
+ * Initialize the tree-sitter parser with BigQuery language
+ * Returns true if successful, false otherwise
+ */
+export async function initTreeSitterParser(): Promise<boolean> {
+  // Return cached result if already initialized
+  if (treeSitterParser !== null) {
+    return true;
+  }
+  
+  if (initializationError !== null) {
+    return false;
+  }
+  
+  // Prevent multiple simultaneous initialization attempts
+  if (initializationPromise !== null) {
+    return initializationPromise;
+  }
+  
+  initializationPromise = (async () => {
+    try {
+      // Dynamic import to handle cases where native modules aren't available
+      const TreeSitter = await import('tree-sitter');
+      const BigQueryLang = await import('tree-sitter-sql-bigquery');
+      
+      const parser = new TreeSitter.default();
+      parser.setLanguage(BigQueryLang.default);
+      
+      treeSitterParser = parser;
+      return true;
+    } catch (error) {
+      initializationError = error as Error;
+      return false;
     }
-  };
+  })();
+  
+  return initializationPromise;
+}
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(definition);
-  };
+/**
+ * Check if tree-sitter parser is available
+ */
+export function isTreeSitterAvailable(): boolean {
+  return treeSitterParser !== null;
+}
 
-  return (
-    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
-      <div className="view-definition-modal-dialog">
-        <div className="view-definition-modal-header">
-          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
-          <button className="view-definition-modal-close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="view-definition-modal-content">
-          {isLoading && (
-            <div className="view-definition-loading">
-              <div className="view-definition-spinner"></div>
-              <div>Loading view definition...</div>
-            </div>
-          )}
-          {error && (
-            <div className="view-definition-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          {!isLoading && !error && definition && (
-            <>
-              <div className="view-definition-actions">
-                <button onClick={handleCopy} className="view-definition-copy-button">
-                  Copy to Clipboard
-                </button>
-              </div>
-              <div className="view-definition-editor">
-                <Editor
-                  height="400px"
-                  language="sql"
-                  value={definition}
-                  theme={editorTheme}
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 13,
-                    lineNumbers: 'on',
-                    folding: true,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                    renderLineHighlight: 'none',
-                    scrollbar: {
-                      vertical: 'auto',
-                      horizontal: 'auto',
-                    },
-                  }}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
+/**
+ * Collect all syntax errors from a tree-sitter parse tree
+ */
+function collectTreeSitterErrors(node: TreeSitterNode, errors: ColumnValidationIssue[]): void {
+  if (!node) return;
+  
+  // ERROR node indicates a parse error
+  if (node.type === 'ERROR') {
+    const errorText = node.text.substring(0, 50);
+    const hasMore = node.text.length > 50;
+    
+    errors.push({
+      message: `Syntax error: unexpected "${errorText}${hasMore ? '...' : ''}"`,
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column + 1,
+      length: Math.min(node.text.length, 20),
+      severity: 'error',
+      rule: 'tree-sitter-syntax',
+    });
+  }
+  
+  // Missing node indicates expected token is missing
+  if (node.isMissing) {
+    errors.push({
+      message: `Missing ${node.type}`,
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column + 1,
+      length: 1,
+      severity: 'error',
+      rule: 'tree-sitter-missing',
+    });
+  }
+  
+  // Recursively check children
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child) {
+      collectTreeSitterErrors(child, errors);
+    }
+  }
+}
+
+/**
+ * Parse SQL and return syntax errors using tree-sitter
+ * Returns an array of validation issues (empty if no errors)
+ */
+export function validateWithTreeSitter(sql: string): ColumnValidationIssue[] {
+  // Return empty if parser not available
+  if (!treeSitterParser) {
+    return [];
+  }
+  
+  // Handle empty/whitespace-only queries
+  const trimmed = sql.trim();
+  if (!trimmed) {
+    return [{
+      message: 'Empty query',
+      line: 1,
+      column: 1,
+      length: 1,
+      severity: 'error',
+      rule: 'tree-sitter-empty',
+    }];
+  }
+  
+  try {
+    const tree = treeSitterParser.parse(sql);
+    const errors: ColumnValidationIssue[] = [];
+    
+    collectTreeSitterErrors(tree.rootNode, errors);
+    
+    return errors;
+  } catch (error) {
+    // If parsing throws, return a generic error
+    console.error('[TreeSitterValidator] Parse error:', error);
+    return [{
+      message: `Parse error: ${(error as Error).message}`,
+      line: 1,
+      column: 1,
+      length: 10,
+      severity: 'error',
+      rule: 'tree-sitter-exception',
+    }];
+  }
+}
+
+/**
+ * Get the parse tree for a SQL query (useful for debugging/inspection)
+ */
+export function getTreeSitterParseTree(sql: string): TreeSitterTree | null {
+  if (!treeSitterParser) {
+    return null;
+  }
+  
+  try {
+    return treeSitterParser.parse(sql);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Print a simplified view of the parse tree (for debugging)
+ */
+export function printTreeSitterTree(sql: string, maxDepth = 3): string {
+  const tree = getTreeSitterParseTree(sql);
+  if (!tree) {
+    return 'Parser not available';
+  }
+  
+  const lines: string[] = [];
+  
+  function printNode(node: TreeSitterNode, indent: number): void {
+    if (indent > maxDepth * 2) return;
+    
+    const prefix = '  '.repeat(indent);
+    let line = `${prefix}${node.type}`;
+    
+    if (node.type === 'ERROR') {
+      line += ` [ERROR: "${node.text.substring(0, 30)}..."]`;
+    } else if (node.isMissing) {
+      line += ' [MISSING]';
+    } else if (node.childCount === 0 && node.text) {
+      line += `: "${node.text.substring(0, 20)}"`;
+    }
+    
+    lines.push(line);
+    
+    if (indent < maxDepth * 2) {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child) {
+          printNode(child, indent + 1);
+        }
+      }
+    }
+  }
+  
+  printNode(tree.rootNode, 0);
+  return lines.join('\n');
+}
+
+/**
+ * Quick check if SQL has any syntax errors (faster than full validation)
+ */
+export function hasSyntaxErrors(sql: string): boolean {
+  if (!treeSitterParser) {
+    return false; // Can't determine, assume no errors
+  }
+  
+  const trimmed = sql.trim();
+  if (!trimmed) {
+    return true;
+  }
+  
+  try {
+    const tree = treeSitterParser.parse(sql);
+    return hasErrorsInTree(tree.rootNode);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Recursively check if tree has any ERROR or MISSING nodes
+ */
+function hasErrorsInTree(node: TreeSitterNode): boolean {
+  if (!node) return false;
+  if (node.type === 'ERROR' || node.isMissing) return true;
+  
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && hasErrorsInTree(child)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
 ````
 
 ## File: src/renderer/App.css
@@ -24022,6 +25757,109 @@ body {
   min-height: 0;
   overflow: hidden;
   background-color: var(--bg-primary);
+}
+````
+
+## File: src/shared/types/query.ts
+````typescript
+/**
+ * Query-related types
+ */
+
+export type TabType = 'query' | 'explorer' | 'saved-queries';
+
+export interface QueryTab {
+  id: string;
+  title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
+  queryText: string;
+  isModified: boolean;
+  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string; // ISO timestamp
+  lastExecutedQueryText?: string; // The query text that was last executed
+  savedQueryId?: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sqlText: string;
+  description?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  tags?: string[];
+}
+
+export interface SaveQueryInput {
+  name: string;
+  sqlText: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateQueryInput {
+  name?: string;
+  sqlText?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface QueryResult {
+  columns: ColumnMetadata[];
+  rows: Row[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
+  mode?: string; // NULLABLE, REQUIRED, REPEATED
+}
+
+export interface Row {
+  values: any[]; // Values matching column order
+}
+
+/**
+ * Schema field with nested field support for RECORD/STRUCT types
+ */
+export interface SchemaField extends ColumnMetadata {
+  fields?: SchemaField[];
+}
+
+/**
+ * Stored schema record from the cache
+ */
+export interface StoredSchema {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  fields: SchemaField[];
+  lastUpdated: number;
+}
+
+/**
+ * Query history entry - tracks executed queries with metadata
+ */
+export interface QueryHistoryEntry {
+  id: string;
+  queryText: string;
+  executedAt: string; // ISO timestamp
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  totalRows?: number;
+  status: 'completed' | 'error' | 'cancelled';
+  errorMessage?: string;
+  projectId: string;
+  jobId?: string;
 }
 ````
 
@@ -25431,484 +27269,6 @@ describe('bigquery-formatter', () => {
   min-width: 100px;
   text-align: center;
 }
-````
-
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { QueryHistory } from './components/QueryHistory/QueryHistory';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import './themes.css';
-import './App.css';
-
-type Theme = 'dark' | 'light';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-      };
-    }
-  }, [handleToggleTheme]);
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : sidebarView === 'history' ? (
-              <QueryHistory 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-    </div>
-  );
-};
-
-export default App;
 ````
 
 ## File: src/renderer/components/QueryResults/CanvasTable.tsx
@@ -29807,106 +31167,501 @@ export function registerBigQueryLanguage(
 }
 ````
 
-## File: tests/setup.ts
+## File: src/renderer/App.tsx
 ````typescript
-import '@testing-library/jest-dom';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { QueryEditor } from './components/QueryEditor/QueryEditor';
+import { QueryResults } from './components/QueryResults/QueryResults';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { QueryHistory } from './components/QueryHistory/QueryHistory';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
+import './themes.css';
+import './App.css';
 
-// Mock HTMLCanvasElement.getContext for jsdom
-HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
-  clearRect: jest.fn(),
-  fillRect: jest.fn(),
-  getImageData: jest.fn(),
-  putImageData: jest.fn(),
-  createImageData: jest.fn(),
-  setTransform: jest.fn(),
-  drawImage: jest.fn(),
-  save: jest.fn(),
-  restore: jest.fn(),
-  beginPath: jest.fn(),
-  moveTo: jest.fn(),
-  lineTo: jest.fn(),
-  closePath: jest.fn(),
-  stroke: jest.fn(),
-  fill: jest.fn(),
-  translate: jest.fn(),
-  scale: jest.fn(),
-  rotate: jest.fn(),
-  arc: jest.fn(),
-  measureText: jest.fn(() => ({ width: 0 })),
-  fillText: jest.fn(),
-  strokeText: jest.fn(),
-  clip: jest.fn(),
-})) as jest.Mock;
+type Theme = 'dark' | 'light';
 
-// Mock Electron API
-// Using (window as any) to avoid type conflicts with preload.ts
-global.window = global.window || {};
-(global.window as any).electronAPI = {
-  bigquery: {
-    execute: jest.fn().mockResolvedValue({}),
-    cancel: jest.fn().mockResolvedValue(undefined),
-    listDatasets: jest.fn().mockResolvedValue([]),
-    listTables: jest.fn().mockResolvedValue([]),
-    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
-    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
-    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
-    getJobInfo: jest.fn().mockResolvedValue({}),
-  },
-  connection: {
-    configure: jest.fn().mockResolvedValue(undefined),
-    getActive: jest.fn().mockResolvedValue(null),
-    getSaved: jest.fn().mockResolvedValue(null),
-    restore: jest.fn().mockResolvedValue(null),
-    test: jest.fn().mockResolvedValue(true),
-    disconnect: jest.fn().mockResolvedValue(undefined),
-  },
-  queries: {
-    list: jest.fn().mockResolvedValue([]),
-    get: jest.fn().mockResolvedValue({}),
-    save: jest.fn().mockResolvedValue({}),
-    update: jest.fn().mockResolvedValue({}),
-    delete: jest.fn().mockResolvedValue(undefined),
-    search: jest.fn().mockResolvedValue([]),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
-    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
-    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
-    getTheme: jest.fn().mockResolvedValue('dark'),
-    setTheme: jest.fn().mockResolvedValue(undefined),
-  },
-  tabs: {
-    getTabs: jest.fn().mockResolvedValue([]),
-    getActiveTabId: jest.fn().mockResolvedValue(null),
-    saveTabs: jest.fn().mockResolvedValue(undefined),
-    onBeforeClose: jest.fn(() => () => {}),
-  },
-  menu: {
-    onShowHelp: jest.fn(() => () => {}),
-    onNewTab: jest.fn(() => () => {}),
-    onShowAbout: jest.fn(() => () => {}),
-    onCloseTab: jest.fn(() => () => {}),
-    onSaveQuery: jest.fn(() => () => {}),
-    onFormatQuery: jest.fn(() => () => {}),
-    onExecuteQuery: jest.fn(() => () => {}),
-    onShowConnection: jest.fn(() => () => {}),
-    onDisconnect: jest.fn(() => () => {}),
-    onToggleTheme: jest.fn(() => () => {}),
-  },
-  resultsCache: {
-    get: jest.fn().mockResolvedValue(null),
-    set: jest.fn().mockResolvedValue(undefined),
-  },
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [showSchemaSearch, setShowSchemaSearch] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+      const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
+        setShowSchemaSearch(true);
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+        removeSearchSchemaListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Schema search: CMD/CTRL + P
+      if (isModifierPressed && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setShowSchemaSearch(true);
+        return;
+      }
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        <TabBar />
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : sidebarView === 'history' ? (
+              <QueryHistory 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <div className="query-section" style={{ height: `${editorHeight}px` }}>
+              <QueryEditor theme={theme} />
+            </div>
+            <div
+              className="resize-handle-horizontal"
+              onMouseDown={handleResizeStart}
+            />
+            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+              <QueryResults />
+            </div>
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+      {showSchemaSearch && (
+        <SchemaSearchModal
+          onClose={() => setShowSchemaSearch(false)}
+          onShowSchema={handleShowSchema}
+        />
+      )}
+    </div>
+  );
 };
 
-// Mock Monaco Editor
-jest.mock('@monaco-editor/react', () => ({
-  default: () => {
-    const React = require('react');
-    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
-  },
-}));
+export default App;
 ````
 
 ## File: README.md
@@ -30198,410 +31953,6 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { registerExportHandlers } from './ipc/export';
-import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-registerExportHandlers();
-registerQueryHistoryHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        {
-          label: 'Save Query',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => {
-            mainWindow?.webContents.send('menu:save-query');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-  closeHistoryDatabase();
-});
 ````
 
 ## File: tests/unit/renderer/utils/sql-validation.test.ts
@@ -31281,6 +32632,132 @@ describe('SQL Validation Utilities', () => {
     });
   });
 });
+````
+
+## File: tests/setup.ts
+````typescript
+import '@testing-library/jest-dom';
+
+// Mock Element.scrollIntoView for jsdom
+Element.prototype.scrollIntoView = jest.fn();
+
+// Mock HTMLCanvasElement.getContext for jsdom
+HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  clearRect: jest.fn(),
+  fillRect: jest.fn(),
+  getImageData: jest.fn(),
+  putImageData: jest.fn(),
+  createImageData: jest.fn(),
+  setTransform: jest.fn(),
+  drawImage: jest.fn(),
+  save: jest.fn(),
+  restore: jest.fn(),
+  beginPath: jest.fn(),
+  moveTo: jest.fn(),
+  lineTo: jest.fn(),
+  closePath: jest.fn(),
+  stroke: jest.fn(),
+  fill: jest.fn(),
+  translate: jest.fn(),
+  scale: jest.fn(),
+  rotate: jest.fn(),
+  arc: jest.fn(),
+  measureText: jest.fn(() => ({ width: 0 })),
+  fillText: jest.fn(),
+  strokeText: jest.fn(),
+  clip: jest.fn(),
+})) as jest.Mock;
+
+// Mock Electron API
+// Using (window as any) to avoid type conflicts with preload.ts
+global.window = global.window || {};
+(global.window as any).electronAPI = {
+  bigquery: {
+    execute: jest.fn().mockResolvedValue({}),
+    cancel: jest.fn().mockResolvedValue(undefined),
+    listDatasets: jest.fn().mockResolvedValue([]),
+    listTables: jest.fn().mockResolvedValue([]),
+    getTableSchema: jest.fn().mockResolvedValue({ fields: [] }),
+    getViewDefinition: jest.fn().mockResolvedValue({ definition: '' }),
+    getSampleData: jest.fn().mockResolvedValue({ rows: [], columns: [] }),
+    getJobInfo: jest.fn().mockResolvedValue({}),
+  },
+  connection: {
+    configure: jest.fn().mockResolvedValue(undefined),
+    getActive: jest.fn().mockResolvedValue(null),
+    getSaved: jest.fn().mockResolvedValue(null),
+    restore: jest.fn().mockResolvedValue(null),
+    test: jest.fn().mockResolvedValue(true),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  },
+  queries: {
+    list: jest.fn().mockResolvedValue([]),
+    get: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue(undefined),
+    search: jest.fn().mockResolvedValue([]),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: jest.fn().mockResolvedValue(250),
+    setLeftSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getRightSidebarWidth: jest.fn().mockResolvedValue(300),
+    setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
+    getTheme: jest.fn().mockResolvedValue('dark'),
+    setTheme: jest.fn().mockResolvedValue(undefined),
+  },
+  tabs: {
+    getTabs: jest.fn().mockResolvedValue([]),
+    getActiveTabId: jest.fn().mockResolvedValue(null),
+    saveTabs: jest.fn().mockResolvedValue(undefined),
+    onBeforeClose: jest.fn(() => () => {}),
+  },
+  menu: {
+    onShowHelp: jest.fn(() => () => {}),
+    onNewTab: jest.fn(() => () => {}),
+    onShowAbout: jest.fn(() => () => {}),
+    onCloseTab: jest.fn(() => () => {}),
+    onSaveQuery: jest.fn(() => () => {}),
+    onFormatQuery: jest.fn(() => () => {}),
+    onExecuteQuery: jest.fn(() => () => {}),
+    onShowConnection: jest.fn(() => () => {}),
+    onDisconnect: jest.fn(() => () => {}),
+    onToggleTheme: jest.fn(() => () => {}),
+    onSearchSchema: jest.fn(() => () => {}),
+  },
+  resultsCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+  },
+  schemaCache: {
+    save: jest.fn().mockResolvedValue(undefined),
+    saveBatch: jest.fn().mockResolvedValue(undefined),
+    get: jest.fn().mockResolvedValue(null),
+    hasValid: jest.fn().mockResolvedValue(false),
+    getForProject: jest.fn().mockResolvedValue([]),
+    needsRefresh: jest.fn().mockResolvedValue(true),
+    delete: jest.fn().mockResolvedValue(undefined),
+    deleteForProject: jest.fn().mockResolvedValue(undefined),
+    deleteExpired: jest.fn().mockResolvedValue(0),
+    clear: jest.fn().mockResolvedValue(undefined),
+    stats: jest.fn().mockResolvedValue({
+      totalSchemas: 0,
+      validSchemas: 0,
+      expiredSchemas: 0,
+      oldestTimestamp: null,
+      newestTimestamp: null,
+      databaseSizeBytes: 0,
+    }),
+  },
+};
+
+// Mock Monaco Editor
+jest.mock('@monaco-editor/react', () => ({
+  default: () => {
+    const React = require('react');
+    return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
+  },
+}));
 ````
 
 ## File: src/main/ipc/bigquery.ts
@@ -32599,11 +34076,426 @@ export function registerBigQueryHandlers(): void {
 }
 ````
 
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
+import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerSchemaCacheHandlers();
+registerExportHandlers();
+registerQueryHistoryHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+        { type: 'separator' },
+        {
+          label: 'Search Schema...',
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            mainWindow?.webContents.send('menu:search-schema');
+          },
+        },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+  closeSchemaCacheDatabase();
+  closeHistoryDatabase();
+});
+````
+
 ## File: src/main/preload.ts
 ````typescript
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 import type { JobDetails } from '../shared/types/bigquery';
 
@@ -32689,6 +34581,28 @@ export interface ElectronAPI {
     clear(): Promise<void>;
   };
 
+  // Schema cache
+  schemaCache: {
+    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
+    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
+    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
+    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
+    getForProject(projectId: string): Promise<StoredSchema[]>;
+    needsRefresh(projectId: string): Promise<boolean>;
+    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
+    deleteForProject(projectId: string): Promise<void>;
+    deleteExpired(): Promise<number>;
+    clear(): Promise<void>;
+    stats(): Promise<{
+      totalSchemas: number;
+      validSchemas: number;
+      expiredSchemas: number;
+      oldestTimestamp: number | null;
+      newestTimestamp: number | null;
+      databaseSizeBytes: number;
+    }>;
+  };
+
   // Menu events
   menu: {
     onShowHelp(callback: () => void): () => void;
@@ -32696,6 +34610,7 @@ export interface ElectronAPI {
     onShowAbout(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
     onSaveQuery(callback: () => void): () => void;
+    onSearchSchema(callback: () => void): () => void;
   };
 
   // App info
@@ -32797,6 +34712,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clear: () => ipcRenderer.invoke('results-cache:clear'),
     stats: () => ipcRenderer.invoke('results-cache:stats'),
   },
+  schemaCache: {
+    save: (projectId: string, datasetId: string, tableId: string, fields: SchemaField[]) =>
+      ipcRenderer.invoke('schema-cache:save', projectId, datasetId, tableId, fields),
+    saveBatch: (schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>) =>
+      ipcRenderer.invoke('schema-cache:saveBatch', schemas),
+    get: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:get', projectId, datasetId, tableId),
+    hasValid: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:hasValid', projectId, datasetId, tableId),
+    getForProject: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:getForProject', projectId),
+    needsRefresh: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:needsRefresh', projectId),
+    delete: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:delete', projectId, datasetId, tableId),
+    deleteForProject: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:deleteForProject', projectId),
+    deleteExpired: () => ipcRenderer.invoke('schema-cache:deleteExpired'),
+    clear: () => ipcRenderer.invoke('schema-cache:clear'),
+    stats: () => ipcRenderer.invoke('schema-cache:stats'),
+  },
   menu: {
     onShowHelp: (callback: () => void) => {
       const handler = () => callback();
@@ -32822,6 +34758,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = () => callback();
       ipcRenderer.on('menu:save-query', handler);
       return () => ipcRenderer.removeListener('menu:save-query', handler);
+    },
+    onSearchSchema: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:search-schema', handler);
+      return () => ipcRenderer.removeListener('menu:search-schema', handler);
     },
   },
   app: {
@@ -32854,7 +34795,7 @@ declare global {
 ## File: src/renderer/types/electron-api.d.ts
 ````typescript
 import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../../shared/types/query';
 import type { Dataset, Table } from '../../shared/types/dataset';
 import type { JobDetails } from '../../shared/types/bigquery';
 
@@ -32944,6 +34885,28 @@ export interface ElectronAPI {
     stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
   };
 
+  // Schema cache (SQLite-backed with 12-hour TTL)
+  schemaCache: {
+    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
+    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
+    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
+    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
+    getForProject(projectId: string): Promise<StoredSchema[]>;
+    needsRefresh(projectId: string): Promise<boolean>;
+    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
+    deleteForProject(projectId: string): Promise<void>;
+    deleteExpired(): Promise<number>;
+    clear(): Promise<void>;
+    stats(): Promise<{
+      totalSchemas: number;
+      validSchemas: number;
+      expiredSchemas: number;
+      oldestTimestamp: number | null;
+      newestTimestamp: number | null;
+      databaseSizeBytes: number;
+    }>;
+  };
+
   // Menu events
   menu: {
     onShowHelp(callback: () => void): () => void;
@@ -32956,6 +34919,7 @@ export interface ElectronAPI {
     onShowConnection(callback: () => void): () => void;
     onDisconnect(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
+    onSearchSchema(callback: () => void): () => void;
   };
 
   // Export operations
