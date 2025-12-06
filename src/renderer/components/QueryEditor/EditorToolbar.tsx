@@ -125,6 +125,15 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
                 {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
               </button>
             )}
+            {!isSplitMode && (
+              <button
+                onClick={() => handleToolAction(onToggleSplit)}
+                className="tools-menu-item"
+                title={isSplit ? 'Close split view (Cmd+\\)' : 'Split editor (Cmd+\\)'}
+              >
+                {isSplit ? 'Close Split' : 'Split Editor'}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -136,17 +145,6 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
       >
         {savedQueryId ? 'Update' : 'Save'}
       </button>
-      
-      {/* Only show split button if not in a split pane already */}
-      {!isSplitMode && (
-        <button
-          onClick={onToggleSplit}
-          className="split-button"
-          title={isSplit ? 'Close split view (Cmd+\\)' : 'Split editor (Cmd+\\)'}
-        >
-          {isSplit ? '⊟' : '⊞'}
-        </button>
-      )}
       
       {!isConnected && <span className="connection-warning">Not connected</span>}
     </div>

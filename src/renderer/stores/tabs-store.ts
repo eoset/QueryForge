@@ -1,10 +1,16 @@
 import { create } from 'zustand';
-import type { QueryTab, QueryResult, TabType, SplitPane, ExecutionStatus } from '../../shared/types/query';
+import type { QueryTab, QueryResult, SplitSide } from '../../shared/types/query';
 
 interface TabsState {
   tabs: QueryTab[];
   activeTabId: string | null;
-  createTab: () => string;
+  // Global split view state
+  isSplitView: boolean;
+  splitRatio: number;
+  activeLeftTabId: string | null;
+  activeRightTabId: string | null;
+  // Tab management
+  createTab: (side?: SplitSide) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   reorderTabs: (fromIndex: number, toIndex: number) => void;
@@ -15,16 +21,12 @@ interface TabsState {
   setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
   loadTabs: () => Promise<void>;
   saveTabs: () => Promise<void>;
-  // Split pane functions
-  toggleSplit: (tabId: string) => void;
-  closeSplit: (tabId: string) => void;
-  setActiveSplitPane: (tabId: string, paneId: string) => void;
-  setSplitRatio: (tabId: string, ratio: number) => void;
-  setSplitPaneQuery: (tabId: string, paneId: string, queryText: string) => void;
-  setSplitPaneResults: (tabId: string, paneId: string, results: QueryResult) => void;
-  setSplitPaneError: (tabId: string, paneId: string, error: string) => void;
-  setSplitPaneStatus: (tabId: string, paneId: string, status: ExecutionStatus) => void;
-  updateSplitPane: (tabId: string, paneId: string, updates: Partial<SplitPane>) => void;
+  // Split view functions
+  splitTabToRight: (tabId: string) => void;
+  moveTabToSide: (tabId: string, side: SplitSide) => void;
+  closeSplitView: () => void;
+  setSplitRatio: (ratio: number) => void;
+  setActiveSideTab: (side: SplitSide, tabId: string) => void;
 }
 
 function generateTabId(): string {
@@ -70,6 +72,11 @@ export const useTabsStore = create<TabsState>((set, get) => {
       },
     ],
     activeTabId: null,
+    // Global split view state
+    isSplitView: false,
+    splitRatio: 0.5,
+    activeLeftTabId: null,
+    activeRightTabId: null,
 
     loadTabs: async () => {
       if (!window.electronAPI?.tabs) {
@@ -120,52 +127,141 @@ export const useTabsStore = create<TabsState>((set, get) => {
       }
     },
 
-    createTab: () => {
-      const tabs = get().tabs;
+    createTab: (side?: SplitSide) => {
+      const { tabs, isSplitView } = get();
       const newTabId = generateTabId();
+      
+      // Count tabs to generate title
+      const queryTabCount = tabs.filter(t => t.type === 'query').length;
+      
       const newTab: QueryTab = {
         id: newTabId,
-        title: `Query ${tabs.length + 1}`,
+        title: `Query ${queryTabCount + 1}`,
         type: 'query',
         queryText: '',
         isModified: false,
         executionStatus: 'idle',
+        splitSide: isSplitView ? (side || 'left') : undefined,
       };
+      
       const updatedTabs = [...tabs, newTab];
-      set({
-        tabs: updatedTabs,
-        activeTabId: newTabId,
-      });
+      
+      // Update active tab for the appropriate side
+      if (isSplitView && side === 'right') {
+        set({
+          tabs: updatedTabs,
+          activeRightTabId: newTabId,
+          activeTabId: newTabId,
+        });
+      } else if (isSplitView) {
+        set({
+          tabs: updatedTabs,
+          activeLeftTabId: newTabId,
+          activeTabId: newTabId,
+        });
+      } else {
+        set({
+          tabs: updatedTabs,
+          activeTabId: newTabId,
+        });
+      }
+      
       return newTabId;
     },
 
     closeTab: (tabId: string) => {
-      const { tabs, activeTabId } = get();
-      const tabIndex = tabs.findIndex((t) => t.id === tabId);
-      if (tabIndex === -1) return;
+      const { tabs, activeTabId, isSplitView, activeLeftTabId, activeRightTabId } = get();
+      const tab = tabs.find((t) => t.id === tabId);
+      if (!tab) return;
 
+      const tabIndex = tabs.findIndex((t) => t.id === tabId);
       const newTabs = tabs.filter((t) => t.id !== tabId);
       
-      // If closing the active tab, switch to another tab
+      // Determine which tabs belong to which side
+      const leftTabs = newTabs.filter(t => !t.splitSide || t.splitSide === 'left');
+      const rightTabs = newTabs.filter(t => t.splitSide === 'right');
+      
       let newActiveTabId = activeTabId;
-      if (activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          // Switch to the tab that was before this one, or the first tab
-          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
+      let newActiveLeftTabId = activeLeftTabId;
+      let newActiveRightTabId = activeRightTabId;
+      let newIsSplitView = isSplitView;
+      
+      if (isSplitView) {
+        // In split view mode
+        if (tab.splitSide === 'right') {
+          // Closing a right-side tab
+          if (activeRightTabId === tabId) {
+            // Find another right tab, or close split view
+            const nextRightTab = rightTabs[0];
+            if (nextRightTab) {
+              newActiveRightTabId = nextRightTab.id;
+            } else {
+              // No more right tabs, close split view
+              newIsSplitView = false;
+              newActiveRightTabId = null;
+              // Move focus to left side
+              newActiveTabId = newActiveLeftTabId;
+            }
+          }
         } else {
-          // No tabs left
-          newActiveTabId = null;
+          // Closing a left-side tab
+          if (activeLeftTabId === tabId) {
+            const nextLeftTab = leftTabs.length > 0 ? leftTabs[Math.max(0, leftTabs.findIndex(t => t.id === tabId) - 1)] || leftTabs[0] : null;
+            if (nextLeftTab) {
+              newActiveLeftTabId = nextLeftTab.id;
+            } else if (rightTabs.length > 0) {
+              // No more left tabs, move all right tabs to left and close split
+              newIsSplitView = false;
+              newActiveLeftTabId = null;
+              newActiveRightTabId = null;
+              newActiveTabId = rightTabs[0].id;
+              // Clear splitSide from all remaining tabs
+              newTabs.forEach(t => { t.splitSide = undefined; });
+            } else {
+              newActiveLeftTabId = null;
+              newActiveTabId = null;
+            }
+          }
+        }
+        
+        // Update active tab to be the focused side's active tab
+        if (newIsSplitView) {
+          newActiveTabId = tab.splitSide === 'right' ? newActiveLeftTabId : (activeTabId === tabId ? newActiveLeftTabId : activeTabId);
+        }
+      } else {
+        // Single view mode
+        if (activeTabId === tabId) {
+          if (newTabs.length > 0) {
+            newActiveTabId = newTabs[Math.max(0, tabIndex - 1)]?.id || newTabs[0]?.id || null;
+          } else {
+            newActiveTabId = null;
+          }
         }
       }
 
       set({
         tabs: newTabs,
         activeTabId: newActiveTabId,
+        isSplitView: newIsSplitView,
+        activeLeftTabId: newActiveLeftTabId,
+        activeRightTabId: newActiveRightTabId,
       });
     },
 
     setActiveTab: (tabId: string) => {
-      set({ activeTabId: tabId });
+      const { tabs, isSplitView } = get();
+      const tab = tabs.find(t => t.id === tabId);
+      if (!tab) return;
+      
+      if (isSplitView) {
+        if (tab.splitSide === 'right') {
+          set({ activeTabId: tabId, activeRightTabId: tabId });
+        } else {
+          set({ activeTabId: tabId, activeLeftTabId: tabId });
+        }
+      } else {
+        set({ activeTabId: tabId });
+      }
     },
 
     reorderTabs: (fromIndex: number, toIndex: number) => {
@@ -228,135 +324,124 @@ export const useTabsStore = create<TabsState>((set, get) => {
       get().updateTab(tabId, { executionStatus: status });
     },
 
-    // Split pane functions
-    toggleSplit: (tabId: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
+    // Split view functions
+    splitTabToRight: (tabId: string) => {
+      const { tabs, activeLeftTabId } = get();
+      const tab = tabs.find(t => t.id === tabId);
       if (!tab) return;
-
-      if (tab.isSplit) {
-        // Close split - merge left pane content back to main tab
-        const leftPane = tab.splitPanes?.[0];
-        get().updateTab(tabId, {
-          isSplit: false,
-          splitPanes: undefined,
-          activeSplitPaneId: undefined,
-          splitRatio: undefined,
-          queryText: leftPane?.queryText || tab.queryText,
-          isModified: leftPane?.isModified || tab.isModified,
-          executionStatus: leftPane?.executionStatus || 'idle',
-          results: leftPane?.results,
-          error: leftPane?.error,
-          jobId: leftPane?.jobId,
-          lastExecuted: leftPane?.lastExecuted,
-          lastExecutedQueryText: leftPane?.lastExecutedQueryText,
-        });
-      } else {
-        // Open split - create two panes
-        const leftPaneId = `${tabId}-left`;
-        const rightPaneId = `${tabId}-right`;
+      
+      // Mark the tab as belonging to the right side
+      const updatedTabs = tabs.map(t => 
+        t.id === tabId 
+          ? { ...t, splitSide: 'right' as SplitSide }
+          : t
+      );
+      
+      // Find another tab for the left side if needed
+      const leftTabs = updatedTabs.filter(t => !t.splitSide || t.splitSide === 'left');
+      let newActiveLeftTabId = activeLeftTabId;
+      
+      if (activeLeftTabId === tabId || !leftTabs.find(t => t.id === activeLeftTabId)) {
+        // Need to find a new left tab
+        newActiveLeftTabId = leftTabs[0]?.id || null;
         
-        const leftPane: SplitPane = {
-          id: leftPaneId,
-          queryText: tab.queryText,
-          isModified: tab.isModified,
-          executionStatus: tab.executionStatus,
-          jobId: tab.jobId,
-          results: tab.results,
-          error: tab.error,
-          lastExecuted: tab.lastExecuted,
-          lastExecutedQueryText: tab.lastExecutedQueryText,
-        };
-        
-        const rightPane: SplitPane = {
-          id: rightPaneId,
-          queryText: '',
-          isModified: false,
-          executionStatus: 'idle',
-        };
-        
-        get().updateTab(tabId, {
-          isSplit: true,
-          splitPanes: [leftPane, rightPane],
-          activeSplitPaneId: leftPaneId,
-          splitRatio: 0.5,
-        });
+        // If no left tabs exist, create one
+        if (!newActiveLeftTabId) {
+          const newTabId = generateTabId();
+          const queryTabCount = updatedTabs.filter(t => t.type === 'query').length;
+          const newTab: QueryTab = {
+            id: newTabId,
+            title: `Query ${queryTabCount + 1}`,
+            type: 'query',
+            queryText: '',
+            isModified: false,
+            executionStatus: 'idle',
+            splitSide: 'left',
+          };
+          updatedTabs.push(newTab);
+          newActiveLeftTabId = newTabId;
+        }
       }
-    },
-
-    closeSplit: (tabId: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (!tab || !tab.isSplit) return;
       
-      // Merge active pane content back to main tab
-      const activePane = tab.splitPanes?.find(p => p.id === tab.activeSplitPaneId) || tab.splitPanes?.[0];
-      get().updateTab(tabId, {
-        isSplit: false,
-        splitPanes: undefined,
-        activeSplitPaneId: undefined,
-        splitRatio: undefined,
-        queryText: activePane?.queryText || tab.queryText,
-        isModified: activePane?.isModified || tab.isModified,
-        executionStatus: activePane?.executionStatus || 'idle',
-        results: activePane?.results,
-        error: activePane?.error,
-        jobId: activePane?.jobId,
-        lastExecuted: activePane?.lastExecuted,
-        lastExecutedQueryText: activePane?.lastExecutedQueryText,
+      set({
+        tabs: updatedTabs,
+        isSplitView: true,
+        splitRatio: 0.5,
+        activeLeftTabId: newActiveLeftTabId,
+        activeRightTabId: tabId,
+        activeTabId: tabId, // Focus on the newly split tab
       });
     },
 
-    setActiveSplitPane: (tabId: string, paneId: string) => {
-      get().updateTab(tabId, { activeSplitPaneId: paneId });
-    },
-
-    setSplitRatio: (tabId: string, ratio: number) => {
-      get().updateTab(tabId, { splitRatio: Math.max(0.2, Math.min(0.8, ratio)) });
-    },
-
-    updateSplitPane: (tabId: string, paneId: string, updates: Partial<SplitPane>) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (!tab || !tab.splitPanes) return;
+    moveTabToSide: (tabId: string, side: SplitSide) => {
+      const { tabs, activeLeftTabId, activeRightTabId, isSplitView } = get();
+      if (!isSplitView) return;
       
-      const updatedPanes = tab.splitPanes.map((pane) =>
-        pane.id === paneId ? { ...pane, ...updates } : pane
-      ) as [SplitPane, SplitPane];
+      const tab = tabs.find(t => t.id === tabId);
+      if (!tab) return;
       
-      get().updateTab(tabId, { splitPanes: updatedPanes });
-    },
-
-    setSplitPaneQuery: (tabId: string, paneId: string, queryText: string) => {
-      get().updateSplitPane(tabId, paneId, {
-        queryText,
-        isModified: queryText !== '',
+      // Update the tab's side
+      const updatedTabs = tabs.map(t =>
+        t.id === tabId ? { ...t, splitSide: side } : t
+      );
+      
+      // Update active tabs for each side
+      let newActiveLeftTabId = activeLeftTabId;
+      let newActiveRightTabId = activeRightTabId;
+      
+      if (side === 'right' && activeLeftTabId === tabId) {
+        // Moving from left to right, find new left active
+        const leftTabs = updatedTabs.filter(t => !t.splitSide || t.splitSide === 'left');
+        newActiveLeftTabId = leftTabs[0]?.id || null;
+      } else if (side === 'left' && activeRightTabId === tabId) {
+        // Moving from right to left, find new right active
+        const rightTabs = updatedTabs.filter(t => t.splitSide === 'right');
+        newActiveRightTabId = rightTabs[0]?.id || null;
+      }
+      
+      // Set the moved tab as active on its new side
+      if (side === 'right') {
+        newActiveRightTabId = tabId;
+      } else {
+        newActiveLeftTabId = tabId;
+      }
+      
+      set({
+        tabs: updatedTabs,
+        activeLeftTabId: newActiveLeftTabId,
+        activeRightTabId: newActiveRightTabId,
       });
     },
 
-    setSplitPaneResults: (tabId: string, paneId: string, results: QueryResult) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      const pane = tab?.splitPanes?.find(p => p.id === paneId);
-      get().updateSplitPane(tabId, paneId, {
-        results,
-        executionStatus: 'completed',
-        error: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: pane?.queryText || '',
+    closeSplitView: () => {
+      const { tabs, activeLeftTabId, activeRightTabId } = get();
+      
+      // Clear splitSide from all tabs
+      const updatedTabs = tabs.map(t => ({ ...t, splitSide: undefined }));
+      
+      // Use the active left tab, or fall back to right, or first tab
+      const newActiveTabId = activeLeftTabId || activeRightTabId || updatedTabs[0]?.id || null;
+      
+      set({
+        tabs: updatedTabs,
+        isSplitView: false,
+        splitRatio: 0.5,
+        activeLeftTabId: null,
+        activeRightTabId: null,
+        activeTabId: newActiveTabId,
       });
     },
 
-    setSplitPaneError: (tabId: string, paneId: string, error: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      const pane = tab?.splitPanes?.find(p => p.id === paneId);
-      get().updateSplitPane(tabId, paneId, {
-        error,
-        executionStatus: 'error',
-        results: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: pane?.queryText || '',
-      });
+    setSplitRatio: (ratio: number) => {
+      set({ splitRatio: Math.max(0.2, Math.min(0.8, ratio)) });
     },
 
-    setSplitPaneStatus: (tabId: string, paneId: string, status: ExecutionStatus) => {
-      get().updateSplitPane(tabId, paneId, { executionStatus: status });
+    setActiveSideTab: (side: SplitSide, tabId: string) => {
+      if (side === 'left') {
+        set({ activeLeftTabId: tabId, activeTabId: tabId });
+      } else {
+        set({ activeRightTabId: tabId, activeTabId: tabId });
+      }
     },
   };
 });

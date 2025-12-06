@@ -7,19 +7,9 @@ export type TabType = 'query' | 'explorer' | 'saved-queries';
 export type ExecutionStatus = 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
 
 /**
- * Split pane - represents one side of a split editor view
+ * Which side of the split view a tab belongs to
  */
-export interface SplitPane {
-  id: string;
-  queryText: string;
-  isModified: boolean;
-  executionStatus: ExecutionStatus;
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string;
-  lastExecutedQueryText?: string;
-}
+export type SplitSide = 'left' | 'right';
 
 export interface QueryTab {
   id: string;
@@ -34,11 +24,8 @@ export interface QueryTab {
   lastExecuted?: string; // ISO timestamp
   lastExecutedQueryText?: string; // The query text that was last executed
   savedQueryId?: string;
-  // Split view support
-  isSplit?: boolean;
-  splitPanes?: [SplitPane, SplitPane]; // Left and right panes
-  activeSplitPaneId?: string; // Which pane is currently focused
-  splitRatio?: number; // 0-1, position of the divider (0.5 = 50/50)
+  // Split view - which side this tab belongs to (undefined = left/main by default)
+  splitSide?: SplitSide;
 }
 
 export interface SavedQuery {

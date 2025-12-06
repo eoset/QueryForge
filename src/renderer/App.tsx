@@ -39,7 +39,7 @@ const App: React.FC = () => {
   const resizeStartWidthRightRef = useRef(300);
   const editorResultsRef = useRef<HTMLDivElement>(null);
   const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
+  const { tabs, setActiveTab, activeTabId, isSplitView } = useTabsStore();
   const activeTab = tabs.find(t => t.id === activeTabId);
   const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
   const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
@@ -351,7 +351,7 @@ const App: React.FC = () => {
         </div>
       </header>
       <main className="app-main">
-        <TabBar />
+        {!isSplitView && <TabBar />}
         <div className="app-content">
           <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
             <SidebarHeader

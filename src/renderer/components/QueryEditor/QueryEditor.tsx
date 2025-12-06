@@ -20,14 +20,11 @@ import './QueryEditor.css';
 
 interface QueryEditorProps {
   theme?: 'dark' | 'light';
-  paneId?: string; // If provided, this editor is in split mode
   tabId?: string; // If provided, override the active tab
   onFocus?: () => void; // Called when editor gains focus (for split mode)
 }
 
-export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId, tabId: propTabId, onFocus }) => {
-  // Determine if we're in split mode
-  const isSplitMode = !!paneId;
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId: propTabId, onFocus }) => {
   // ============================================================================
   // State
   // ============================================================================
@@ -72,73 +69,40 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
     return tab || null;
   });
 
-  // Get the split pane functions from the store
+  // Get store functions
   const { 
     setTabQuery, 
     setTabResults, 
     setTabError, 
     setTabStatus, 
     updateTab,
-    setSplitPaneQuery,
-    setSplitPaneResults,
-    setSplitPaneError,
-    setSplitPaneStatus,
-    updateSplitPane,
   } = useTabsStore();
 
-  // Get query text and execution state - either from split pane or main tab
-  const splitPane = isSplitMode && activeTab?.splitPanes 
-    ? activeTab.splitPanes.find(p => p.id === paneId) 
-    : null;
-  
-  const queryText = isSplitMode && splitPane 
-    ? splitPane.queryText 
-    : (activeTab?.queryText || '');
-  
-  const isExecuting = isSplitMode && splitPane 
-    ? splitPane.executionStatus === 'running'
-    : activeTab?.executionStatus === 'running';
-  
-  const jobId = isSplitMode && splitPane 
-    ? splitPane.jobId || null
-    : activeTab?.jobId || null;
+  // Get query text and execution state from the tab
+  const queryText = activeTab?.queryText || '';
+  const isExecuting = activeTab?.executionStatus === 'running';
+  const jobId = activeTab?.jobId || null;
 
-  // Create wrapper functions that work with either split panes or regular tabs
+  // Create wrapper functions that work with the current tab
   const setQuery = useCallback((text: string) => {
     if (!activeTab) return;
-    if (isSplitMode && paneId) {
-      setSplitPaneQuery(activeTab.id, paneId, text);
-    } else {
-      setTabQuery(activeTab.id, text);
-    }
-  }, [activeTab, isSplitMode, paneId, setTabQuery, setSplitPaneQuery]);
+    setTabQuery(activeTab.id, text);
+  }, [activeTab, setTabQuery]);
 
   const setResults = useCallback((results: any) => {
     if (!activeTab) return;
-    if (isSplitMode && paneId) {
-      setSplitPaneResults(activeTab.id, paneId, results);
-    } else {
-      setTabResults(activeTab.id, results);
-    }
-  }, [activeTab, isSplitMode, paneId, setTabResults, setSplitPaneResults]);
+    setTabResults(activeTab.id, results);
+  }, [activeTab, setTabResults]);
 
   const setError = useCallback((error: string) => {
     if (!activeTab) return;
-    if (isSplitMode && paneId) {
-      setSplitPaneError(activeTab.id, paneId, error);
-    } else {
-      setTabError(activeTab.id, error);
-    }
-  }, [activeTab, isSplitMode, paneId, setTabError, setSplitPaneError]);
+    setTabError(activeTab.id, error);
+  }, [activeTab, setTabError]);
 
   const setStatus = useCallback((status: any) => {
     if (!activeTab) return;
-    if (isSplitMode && paneId) {
-      setSplitPaneStatus(activeTab.id, paneId, status);
-    } else {
-      setTabStatus(activeTab.id, status);
-    }
-  }, [activeTab, isSplitMode, paneId, setTabStatus, setSplitPaneStatus]);
+    setTabStatus(activeTab.id, status);
+  }, [activeTab, setTabStatus]);
 
   const { saveQuery, updateQuery } = useQueriesStore();
   const { executeQuery, cancelQuery, isConnected } = useBigQuery();
@@ -382,13 +346,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
   }, [queryText, selectedText, isConnected, connection?.projectId]);
 
   // Listen for table reference insertion from DatasetTree
-  // Only handle this in non-split mode (or active pane in split mode)
   useEffect(() => {
-    // In split mode, only listen if this is the active pane
-    if (isSplitMode && activeTab?.activeSplitPaneId !== paneId) {
-      return;
-    }
-    
     const handleInsertTableReference = (event: CustomEvent) => {
       if (activeTab) {
         const tableRef = event.detail as string;
@@ -413,14 +371,14 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
     return () => {
       window.removeEventListener('insertTableReference', handleInsertTableReference as EventListener);
     };
-  }, [activeTab, isSplitMode, paneId, queryText, setQuery]);
+  }, [activeTab, queryText, setQuery]);
 
   // ============================================================================
   // Handlers
   // ============================================================================
 
   const handleExecute = async () => {
-    // For split mode, use the current pane's tab and query text
+    // Get the current tab's state
     const targetTabId = propTabId || useTabsStore.getState().activeTabId;
     const currentTab = useTabsStore.getState().tabs.find((t) => t.id === targetTabId);
     if (!currentTab) return;
@@ -454,25 +412,17 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
     }
 
     // Update status to running
-    if (isSplitMode && paneId) {
-      useTabsStore.getState().updateSplitPane(currentTab.id, paneId, {
-        executionStatus: 'running',
-        error: undefined,
-        results: undefined,
-      });
-    } else {
-      useTabsStore.getState().updateTab(currentTab.id, {
-        executionStatus: 'running',
-        error: '',
-        results: undefined,
-      });
-    }
+    useTabsStore.getState().updateTab(currentTab.id, {
+      executionStatus: 'running',
+      error: '',
+      results: undefined,
+    });
 
     setCompletedQueryText(null);
     setCompletedQueryExecutionTime(null);
 
-    // Use pane-specific cache key for split mode
-    const cacheKey = isSplitMode && paneId ? `${currentTab.id}-${paneId}` : currentTab.id;
+    // Use tab ID as cache key
+    const cacheKey = currentTab.id;
     if (window.electronAPI?.resultsCache) {
       await window.electronAPI.resultsCache.delete(cacheKey).catch((err: unknown) => {
         console.error('Failed to clear cache:', err);
@@ -485,11 +435,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
       const result = await executeQuery(queryTextToExecute, cacheKey);
       
       // Update job ID
-      if (isSplitMode && paneId) {
-        useTabsStore.getState().updateSplitPane(currentTab.id, paneId, { jobId: result.jobId });
-      } else {
-        useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
-      }
+      useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
 
       setResults(result);
 
@@ -775,16 +721,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
     expandSelectStarHandlerRef.current = handleExpandSelectStar;
   }, [handleExpandSelectStar]);
 
-  // Handle split toggle
-  const { toggleSplit } = useTabsStore();
+  // Handle split toggle - now using global split state
+  const { isSplitView, splitTabToRight, closeSplitView } = useTabsStore();
   
   const handleToggleSplit = useCallback(() => {
-    // Don't toggle split from within a split pane
-    if (isSplitMode) return;
     if (activeTab) {
-      toggleSplit(activeTab.id);
+      if (isSplitView) {
+        closeSplitView();
+      } else {
+        splitTabToRight(activeTab.id);
+      }
     }
-  }, [activeTab, toggleSplit, isSplitMode]);
+  }, [activeTab, isSplitView, splitTabToRight, closeSplitView]);
 
   // Update handler ref for split toggle
   useEffect(() => {
@@ -815,8 +763,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
         isQueryValid={sqlValidationStatus.isValid}
         enableDbtSupport={connection?.enableDbtSupport ?? false}
         savedQueryId={activeTab?.savedQueryId || null}
-        isSplit={activeTab?.isSplit || false}
-        isSplitMode={isSplitMode}
+        isSplit={isSplitView}
+        isSplitMode={false}
       />
 
       <SaveQueryDialog
@@ -836,7 +784,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', paneId
           <>
             <div className="editor-wrapper" ref={editorWrapperRef}>
               <Editor
-                key={paneId || activeTab.id}
+                key={propTabId || activeTab.id}
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
                 theme={theme === 'light' ? 'light' : 'vs-dark'}

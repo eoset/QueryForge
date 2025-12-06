@@ -12,14 +12,10 @@ import './ExportMenu.css';
 const ROWS_PER_PAGE = 200;
 
 interface QueryResultsProps {
-  paneId?: string; // If provided, this is in split mode
   tabId?: string; // If provided, override the active tab
 }
 
-export const QueryResults: React.FC<QueryResultsProps> = ({ paneId, tabId: propTabId }) => {
-  // Determine if we're in split mode
-  const isSplitMode = !!paneId;
-  
+export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) => {
   // Use separate selectors to ensure reactivity for each property
   const activeTabId = useTabsStore((state) => propTabId || state.activeTabId);
   const activeTab = useTabsStore((state) => {
@@ -28,20 +24,13 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ paneId, tabId: propT
     return state.tabs.find((t) => t.id === targetId) || null;
   });
   
-  // Get the split pane if in split mode
-  const splitPane = isSplitMode && activeTab?.splitPanes
-    ? activeTab.splitPanes.find(p => p.id === paneId)
-    : null;
+  // Get error, execution status, and jobId from the tab
+  const error = activeTab?.error;
+  const executionStatus: ExecutionStatus = activeTab?.executionStatus || 'idle';
+  const jobId = activeTab?.jobId;
   
-  // Get error, execution status, and jobId from either split pane or main tab
-  const error = isSplitMode && splitPane ? splitPane.error : activeTab?.error;
-  const executionStatus: ExecutionStatus = isSplitMode && splitPane 
-    ? splitPane.executionStatus 
-    : (activeTab?.executionStatus || 'idle');
-  const jobId = isSplitMode && splitPane ? splitPane.jobId : activeTab?.jobId;
-  
-  // Cache key for split mode includes the pane ID
-  const cacheKey = isSplitMode && paneId && activeTab ? `${activeTab.id}-${paneId}` : activeTabId;
+  // Cache key uses tab ID
+  const cacheKey = activeTabId;
   
   // All hooks must be called before any conditional returns
   const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});

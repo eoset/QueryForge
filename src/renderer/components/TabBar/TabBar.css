@@ -4,25 +4,36 @@
   border-bottom: 1px solid var(--border-primary);
   align-items: center;
   height: 35px;
+  flex-shrink: 0;
+  overflow: visible;
+  position: relative;
+  z-index: 100;
+}
+
+/* When used inside split panes, don't grow vertically */
+.tab-bar-left,
+.tab-bar-right {
+  height: 35px;
+  flex-shrink: 0;
 }
 
 .tabs-container {
   display: flex;
   flex: 1;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: visible;
   align-items: center;
 }
 
 .tab {
   display: flex;
   align-items: center;
-  padding: 0 0.75rem;
+  padding: 0 0.5rem 0 0.75rem;
   background-color: var(--bg-tertiary);
   border-right: 1px solid var(--border-primary);
   cursor: pointer;
   user-select: none;
-  min-width: 120px;
+  min-width: 100px;
   max-width: 200px;
   position: relative;
   height: 35px;
@@ -77,8 +88,73 @@
   font-size: 0.75rem;
 }
 
+/* Tab dropdown button */
+.tab-dropdown-container {
+  position: relative;
+}
+
+.tab-dropdown {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: 0.625rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  opacity: 0;
+  margin-left: 2px;
+}
+
+.tab:hover .tab-dropdown,
+.tab-dropdown-container:has(.tab-dropdown-menu) .tab-dropdown {
+  opacity: 1;
+}
+
+.tab-dropdown:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dropdown-arrow {
+  font-size: 0.625rem;
+  line-height: 1;
+}
+
+/* Tab dropdown menu */
+.tab-dropdown-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 140px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+}
+
+.tab-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.tab-dropdown-item:hover {
+  background-color: var(--bg-hover);
+}
+
 .tab-close {
-  margin-left: 0.5rem;
+  margin-left: 4px;
   background: none;
   border: none;
   cursor: pointer;

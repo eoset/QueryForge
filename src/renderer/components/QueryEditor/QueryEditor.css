@@ -140,17 +140,6 @@
   background-color: var(--accent-success-hover);
 }
 
-.query-editor-toolbar .split-button {
-  background-color: var(--button-secondary);
-  min-width: auto;
-  padding: 0.25rem 0.5rem;
-  font-size: 1rem;
-}
-
-.query-editor-toolbar .split-button:hover {
-  background-color: var(--bg-hover);
-}
-
 .query-editor-toolbar .cancel-button {
   background-color: var(--accent-danger);
 }

@@ -4,7 +4,6 @@ import { QueryResults } from '../QueryResults/QueryResults';
 import './SplitEditorPane.css';
 
 interface SplitEditorPaneProps {
-  paneId: string;
   tabId: string;
   isActive: boolean;
   onFocus: () => void;
@@ -12,7 +11,6 @@ interface SplitEditorPaneProps {
 }
 
 export const SplitEditorPane: React.FC<SplitEditorPaneProps> = ({
-  paneId,
   tabId,
   isActive,
   onFocus,
@@ -64,14 +62,14 @@ export const SplitEditorPane: React.FC<SplitEditorPaneProps> = ({
       onClick={onFocus}
     >
       <div className="split-pane-editor" style={{ height: `${editorHeight}px` }}>
-        <QueryEditor key={paneId} theme={theme} paneId={paneId} tabId={tabId} onFocus={onFocus} />
+        <QueryEditor key={tabId} theme={theme} tabId={tabId} onFocus={onFocus} />
       </div>
       <div
         className="split-pane-resize-handle"
         onMouseDown={handleResizeStart}
       />
       <div className="split-pane-results" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-        <QueryResults paneId={paneId} tabId={tabId} />
+        <QueryResults tabId={tabId} />
       </div>
     </div>
   );

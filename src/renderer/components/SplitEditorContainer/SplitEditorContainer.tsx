@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useEffect, useState } from 'react';
 import { useTabsStore } from '../../stores/tabs-store';
-import { SplitEditorPane } from '../SplitEditorPane/SplitEditorPane';
+import { TabBar } from '../TabBar/TabBar';
 import { QueryEditor } from '../QueryEditor/QueryEditor';
 import { QueryResults } from '../QueryResults/QueryResults';
 import './SplitEditorContainer.css';
@@ -16,12 +16,20 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
   onEditorResize,
   theme,
 }) => {
-  const activeTab = useTabsStore((state) => {
-    const tab = state.tabs.find((t) => t.id === state.activeTabId);
-    return tab || null;
-  });
+  const { 
+    tabs,
+    isSplitView, 
+    splitRatio, 
+    activeLeftTabId, 
+    activeRightTabId,
+    setSplitRatio,
+    closeSplitView,
+  } = useTabsStore();
   
-  const { setActiveSplitPane, setSplitRatio } = useTabsStore();
+  // Get the active tabs for each side
+  const leftTab = tabs.find(t => t.id === activeLeftTabId);
+  const rightTab = tabs.find(t => t.id === activeRightTabId);
+  const activeTab = useTabsStore(state => state.tabs.find(t => t.id === state.activeTabId));
   
   const [isResizingVertical, setIsResizingVertical] = useState(false);
   const [isResizingSplit, setIsResizingSplit] = useState(false);
@@ -44,8 +52,8 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
     e.preventDefault();
     setIsResizingSplit(true);
     resizeStartXRef.current = e.clientX;
-    resizeStartRatioRef.current = activeTab?.splitRatio || 0.5;
-  }, [activeTab?.splitRatio]);
+    resizeStartRatioRef.current = splitRatio;
+  }, [splitRatio]);
 
   // Vertical resize effect
   useEffect(() => {
@@ -76,7 +84,7 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
 
   // Split resize effect
   useEffect(() => {
-    if (!isResizingSplit || !activeTab?.isSplit || !containerRef.current) return;
+    if (!isResizingSplit || !isSplitView || !containerRef.current) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       const containerRect = containerRef.current?.getBoundingClientRect();
@@ -84,7 +92,7 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
       
       const newRatio = (e.clientX - containerRect.left) / containerRect.width;
       const clampedRatio = Math.max(0.2, Math.min(0.8, newRatio));
-      setSplitRatio(activeTab.id, clampedRatio);
+      setSplitRatio(clampedRatio);
     };
 
     const handleMouseUp = () => {
@@ -102,75 +110,101 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, [isResizingSplit, activeTab, setSplitRatio]);
+  }, [isResizingSplit, isSplitView, setSplitRatio]);
 
-  const handlePaneFocus = useCallback((paneId: string) => {
-    if (activeTab) {
-      setActiveSplitPane(activeTab.id, paneId);
-    }
-  }, [activeTab, setActiveSplitPane]);
+  // Render split view with tab bars above each editor
+  if (isSplitView) {
+    return (
+      <div className="split-editor-container split-mode" ref={containerRef}>
+        {/* Left side */}
+        <div 
+          className="split-pane-wrapper" 
+          style={{ width: `calc(${splitRatio * 100}% - 2px)` }}
+        >
+          <TabBar side="left" />
+          <div className="split-pane-content">
+            {leftTab ? (
+              <>
+                <div className="query-section" style={{ height: `${editorHeight}px` }}>
+                  <QueryEditor key={leftTab.id} theme={theme} tabId={leftTab.id} />
+                </div>
+                <div
+                  className="resize-handle-horizontal"
+                  onMouseDown={handleVerticalResizeStart}
+                />
+                <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+                  <QueryResults tabId={leftTab.id} />
+                </div>
+              </>
+            ) : (
+              <div className="no-tab-message">No tab selected</div>
+            )}
+          </div>
+        </div>
+        
+        {/* Split divider */}
+        <div
+          className="split-divider"
+          onMouseDown={handleSplitResizeStart}
+        >
+          <button 
+            className="close-split-button"
+            onClick={closeSplitView}
+            title="Close split view"
+          >
+            ×
+          </button>
+        </div>
+        
+        {/* Right side */}
+        <div 
+          className="split-pane-wrapper" 
+          style={{ width: `calc(${(1 - splitRatio) * 100}% - 2px)` }}
+        >
+          <TabBar side="right" />
+          <div className="split-pane-content">
+            {rightTab ? (
+              <>
+                <div className="query-section" style={{ height: `${editorHeight}px` }}>
+                  <QueryEditor key={rightTab.id} theme={theme} tabId={rightTab.id} />
+                </div>
+                <div
+                  className="resize-handle-horizontal"
+                  onMouseDown={handleVerticalResizeStart}
+                />
+                <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+                  <QueryResults tabId={rightTab.id} />
+                </div>
+              </>
+            ) : (
+              <div className="no-tab-message">No tab selected</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
+  // Render single view (original layout) - TabBar is rendered in App.tsx
   if (!activeTab) {
     return (
-      <div className="split-editor-container">
+      <div className="split-editor-container single-mode">
         <div className="no-tab-message">No active tab</div>
       </div>
     );
   }
 
-  // Render split view
-  if (activeTab.isSplit && activeTab.splitPanes) {
-    const [leftPane, rightPane] = activeTab.splitPanes;
-    const splitRatio = activeTab.splitRatio || 0.5;
-
-    return (
-      <div className="split-editor-container split-mode" ref={containerRef}>
-        <div 
-          className="split-pane-container" 
-          style={{ width: `calc(${splitRatio * 100}% - 2px)` }}
-        >
-          <SplitEditorPane
-            key={leftPane.id}
-            paneId={leftPane.id}
-            tabId={activeTab.id}
-            isActive={activeTab.activeSplitPaneId === leftPane.id}
-            onFocus={() => handlePaneFocus(leftPane.id)}
-            theme={theme}
-          />
-        </div>
-        <div
-          className="split-divider"
-          onMouseDown={handleSplitResizeStart}
-        />
-        <div 
-          className="split-pane-container" 
-          style={{ width: `calc(${(1 - splitRatio) * 100}% - 2px)` }}
-        >
-          <SplitEditorPane
-            key={rightPane.id}
-            paneId={rightPane.id}
-            tabId={activeTab.id}
-            isActive={activeTab.activeSplitPaneId === rightPane.id}
-            onFocus={() => handlePaneFocus(rightPane.id)}
-            theme={theme}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  // Render single view (original layout)
   return (
     <div className="split-editor-container single-mode">
       <div className="query-section" style={{ height: `${editorHeight}px` }}>
-        <QueryEditor theme={theme} />
+        <QueryEditor key={activeTab.id} theme={theme} tabId={activeTab.id} />
       </div>
       <div
         className="resize-handle-horizontal"
         onMouseDown={handleVerticalResizeStart}
       />
       <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-        <QueryResults />
+        <QueryResults tabId={activeTab.id} />
       </div>
     </div>
   );

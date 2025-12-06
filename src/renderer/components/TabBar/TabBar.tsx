@@ -1,13 +1,43 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTabsStore } from '../../stores/tabs-store';
+import type { SplitSide } from '../../../shared/types/query';
 import './TabBar.css';
 
-export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
-  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
-  const queryTabs = tabs.filter(tab => tab.type === 'query');
+interface TabBarProps {
+  side?: SplitSide; // If provided, only show tabs for this side
+}
+
+export const TabBar: React.FC<TabBarProps> = ({ side }) => {
+  const { 
+    tabs, 
+    activeTabId, 
+    setActiveTab, 
+    closeTab, 
+    createTab, 
+    reorderTabs,
+    isSplitView,
+    activeLeftTabId,
+    activeRightTabId,
+    splitTabToRight,
+    setActiveSideTab,
+  } = useTabsStore();
+  
+  // Filter tabs based on side (when in split view) or show all (when not split)
+  const queryTabs = tabs.filter(tab => {
+    if (tab.type !== 'query') return false;
+    if (!isSplitView) return true;
+    if (side === 'right') return tab.splitSide === 'right';
+    return !tab.splitSide || tab.splitSide === 'left';
+  });
+  
+  // Determine active tab for this side
+  const sideActiveTabId = side === 'right' ? activeRightTabId : (side === 'left' ? activeLeftTabId : activeTabId);
+  
   const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [dropdownTabId, setDropdownTabId] = useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const dragImageRef = useRef<HTMLCanvasElement | null>(null);
 
   // Create a transparent drag image canvas once
@@ -22,8 +52,26 @@ export const TabBar: React.FC = () => {
     dragImageRef.current = canvas;
   }, []);
 
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownTabId(null);
+      }
+    };
+    
+    if (dropdownTabId) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [dropdownTabId]);
+
   const handleTabClick = (tabId: string) => {
-    setActiveTab(tabId);
+    if (side && isSplitView) {
+      setActiveSideTab(side, tabId);
+    } else {
+      setActiveTab(tabId);
+    }
   };
 
   const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
@@ -40,22 +88,45 @@ export const TabBar: React.FC = () => {
   };
 
   const handleNewTab = () => {
-    createTab();
+    createTab(side);
+  };
+
+  const handleDropdownClick = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    if (dropdownTabId === tabId) {
+      setDropdownTabId(null);
+      setDropdownPosition(null);
+    } else {
+      // Calculate position for fixed dropdown
+      const button = e.currentTarget as HTMLElement;
+      const rect = button.getBoundingClientRect();
+      setDropdownPosition({
+        top: rect.bottom + 2,
+        left: rect.left,
+      });
+      setDropdownTabId(tabId);
+    }
+  };
+
+  const handleSplitToRight = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    setDropdownTabId(null);
+    setDropdownPosition(null);
+    splitTabToRight(tabId);
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
-    // Don't start drag if clicking on the close button
+    // Don't start drag if clicking on the close button or dropdown
     const target = e.target as HTMLElement;
-    if (target.closest('.tab-close')) {
+    if (target.closest('.tab-close') || target.closest('.tab-dropdown')) {
       e.preventDefault();
       return;
     }
     
     setDraggedTabIndex(index);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
+    e.dataTransfer.setData('text/plain', '');
     
-    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
     if (dragImageRef.current) {
       e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
     }
@@ -76,7 +147,6 @@ export const TabBar: React.FC = () => {
   const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault();
     
-    // Map dropIndex from queryTabs array back to full tabs array
     const dropTab = queryTabs[dropIndex];
     if (!dropTab) {
       setDraggedTabIndex(null);
@@ -100,7 +170,7 @@ export const TabBar: React.FC = () => {
   };
 
   return (
-    <div className="tab-bar">
+    <div className={`tab-bar ${side ? `tab-bar-${side}` : ''}`}>
       <div className="tabs-container">
         {queryTabs.map((tab, index) => (
           <div
@@ -111,13 +181,41 @@ export const TabBar: React.FC = () => {
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, index)}
             onDragEnd={handleDragEnd}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
+            className={`tab ${tab.id === sideActiveTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
               draggedTabIndex === index ? 'dragging' : ''
             } ${dragOverIndex === index ? 'drag-over' : ''}`}
             onClick={() => handleTabClick(tab.id)}
           >
             <span className="tab-title">{tab.title}</span>
             {tab.isModified && <span className="modified-indicator">●</span>}
+            
+            {/* Dropdown button - only show if not already in split view or on left side */}
+            {(!isSplitView || side === 'left' || !side) && (
+              <div className="tab-dropdown-container" ref={dropdownTabId === tab.id ? dropdownRef : null}>
+                <button
+                  className="tab-dropdown"
+                  onClick={(e) => handleDropdownClick(e, tab.id)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title="Tab options"
+                >
+                  <span className="dropdown-arrow">▾</span>
+                </button>
+                {dropdownTabId === tab.id && dropdownPosition && (
+                  <div 
+                    className="tab-dropdown-menu"
+                    style={{ top: dropdownPosition.top, left: dropdownPosition.left }}
+                  >
+                    <button 
+                      className="tab-dropdown-item"
+                      onClick={(e) => handleSplitToRight(e, tab.id)}
+                    >
+                      Split to Right
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            
             <button
               className="tab-close"
               onClick={(e) => handleCloseTab(e, tab.id)}
