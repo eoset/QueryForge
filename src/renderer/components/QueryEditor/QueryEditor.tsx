@@ -20,9 +20,11 @@ import './QueryEditor.css';
 
 interface QueryEditorProps {
   theme?: 'dark' | 'light';
+  tabId?: string; // If provided, override the active tab
+  onFocus?: () => void; // Called when editor gains focus (for split mode)
 }
 
-export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId: propTabId, onFocus }) => {
   // ============================================================================
   // State
   // ============================================================================
@@ -53,22 +55,55 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
+  const toggleSplitHandlerRef = useRef<(() => void) | null>(null);
   const errorDecorationsRef = useRef<string[]>([]);
 
   // ============================================================================
   // Store Selectors
   // ============================================================================
 
+  // Get the tab (either from prop or from active tab)
   const activeTab = useTabsStore((state) => {
-    const tab = state.tabs.find((t) => t.id === state.activeTabId);
+    const targetTabId = propTabId || state.activeTabId;
+    const tab = state.tabs.find((t) => t.id === targetTabId);
     return tab || null;
   });
 
+  // Get store functions
+  const { 
+    setTabQuery, 
+    setTabResults, 
+    setTabError, 
+    setTabStatus, 
+    updateTab,
+  } = useTabsStore();
+
+  // Get query text and execution state from the tab
   const queryText = activeTab?.queryText || '';
   const isExecuting = activeTab?.executionStatus === 'running';
   const jobId = activeTab?.jobId || null;
 
-  const { setTabQuery, setTabResults, setTabError, setTabStatus, updateTab } = useTabsStore();
+  // Create wrapper functions that work with the current tab
+  const setQuery = useCallback((text: string) => {
+    if (!activeTab) return;
+    setTabQuery(activeTab.id, text);
+  }, [activeTab, setTabQuery]);
+
+  const setResults = useCallback((results: any) => {
+    if (!activeTab) return;
+    setTabResults(activeTab.id, results);
+  }, [activeTab, setTabResults]);
+
+  const setError = useCallback((error: string) => {
+    if (!activeTab) return;
+    setTabError(activeTab.id, error);
+  }, [activeTab, setTabError]);
+
+  const setStatus = useCallback((status: any) => {
+    if (!activeTab) return;
+    setTabStatus(activeTab.id, status);
+  }, [activeTab, setTabStatus]);
+
   const { saveQuery, updateQuery } = useQueriesStore();
   const { executeQuery, cancelQuery, isConnected } = useBigQuery();
   const connection = useConnectionStore((state) => state.connection);
@@ -315,10 +350,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const handleInsertTableReference = (event: CustomEvent) => {
       if (activeTab) {
         const tableRef = event.detail as string;
-        const currentText = activeTab.queryText || '';
+        const currentText = queryText;
         const newText =
           currentText + (currentText && !currentText.endsWith(' ') ? ' ' : '') + tableRef + ' ';
-        setTabQuery(activeTab.id, newText);
+        setQuery(newText);
 
         if (editorRef.current) {
           editorRef.current.focus();
@@ -336,23 +371,23 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     return () => {
       window.removeEventListener('insertTableReference', handleInsertTableReference as EventListener);
     };
-  }, [activeTab, setTabQuery]);
+  }, [activeTab, queryText, setQuery]);
 
   // ============================================================================
   // Handlers
   // ============================================================================
 
   const handleExecute = async () => {
-    const currentTab = useTabsStore
-      .getState()
-      .tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
+    // Get the current tab's state
+    const targetTabId = propTabId || useTabsStore.getState().activeTabId;
+    const currentTab = useTabsStore.getState().tabs.find((t) => t.id === targetTabId);
     if (!currentTab) return;
 
     const currentConnection = useConnectionStore.getState().connection;
     const currentIsConnected = currentConnection !== null;
 
     if (!currentIsConnected) {
-      setTabError(currentTab.id, 'Not connected to BigQuery. Please configure a connection first.');
+      setError('Not connected to BigQuery. Please configure a connection first.');
       return;
     }
 
@@ -365,17 +400,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       if (selection && !selection.isEmpty() && model) {
         queryTextToExecute = model.getValueInRange(selection);
       } else {
-        queryTextToExecute = currentTab.queryText || '';
+        queryTextToExecute = queryText;
       }
     } else {
-      queryTextToExecute = currentTab.queryText || '';
+      queryTextToExecute = queryText;
     }
 
     if (!queryTextToExecute.trim()) {
-      setTabError(currentTab.id, 'Please enter a query or select text to execute');
+      setError('Please enter a query or select text to execute');
       return;
     }
 
+    // Update status to running
     useTabsStore.getState().updateTab(currentTab.id, {
       executionStatus: 'running',
       error: '',
@@ -385,8 +421,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     setCompletedQueryText(null);
     setCompletedQueryExecutionTime(null);
 
+    // Use tab ID as cache key
+    const cacheKey = currentTab.id;
     if (window.electronAPI?.resultsCache) {
-      await window.electronAPI.resultsCache.delete(currentTab.id).catch((err: unknown) => {
+      await window.electronAPI.resultsCache.delete(cacheKey).catch((err: unknown) => {
         console.error('Failed to clear cache:', err);
       });
     }
@@ -394,10 +432,12 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const executionStartTime = Date.now();
 
     try {
-      const result = await executeQuery(queryTextToExecute, currentTab.id);
+      const result = await executeQuery(queryTextToExecute, cacheKey);
+      
+      // Update job ID
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
 
-      setTabResults(currentTab.id, result);
+      setResults(result);
 
       setCompletedQueryText(queryTextToExecute);
       setCompletedQueryExecutionTime(result.executionTimeMs);
@@ -455,7 +495,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       const electronPrefix = /^Error: Error invoking remote method 'bigquery:execute':\s*/i;
       errorMessage = errorMessage.replace(electronPrefix, '');
 
-      setTabError(currentTab.id, errorMessage);
+      setError(errorMessage);
 
       useQueryHistoryStore.getState().addEntry({
         queryText: queryTextToExecute,
@@ -473,16 +513,16 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
     try {
       await cancelQuery(jobId);
-      setTabStatus(activeTab.id, 'cancelled');
+      setStatus('cancelled');
     } catch (err: any) {
-      setTabError(activeTab.id, err.message || 'Failed to cancel query');
+      setError(err.message || 'Failed to cancel query');
     }
   };
 
   const handleQueryChange = (value: string | undefined) => {
     if (activeTab) {
       const newQueryText = value || '';
-      setTabQuery(activeTab.id, newQueryText);
+      setQuery(newQueryText);
 
       if (completedQueryText !== null && newQueryText !== completedQueryText) {
         setCompletedQueryText(null);
@@ -557,9 +597,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         keywordCase: 'upper',
         indentStyle: 'standard',
       });
-      setTabQuery(activeTab.id, formatted);
+      setQuery(formatted);
     } catch (err: any) {
-      setTabError(activeTab.id, `Formatting failed: ${err.message || 'Invalid SQL syntax'}`);
+      setError(`Formatting failed: ${err.message || 'Invalid SQL syntax'}`);
     }
   };
 
@@ -573,7 +613,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
       const selectStarMatch = trimmedQuery.match(/SELECT\s+\*\s+FROM/i);
       if (!selectStarMatch) {
-        setTabError(activeTab.id, 'No SELECT * FROM statement found');
+        setError('No SELECT * FROM statement found');
         return;
       }
 
@@ -581,7 +621,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         /FROM\s+([^\s]+(?:\s+AS\s+\w+)?)(?:\s|$|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP|ORDER|HAVING|LIMIT)/i
       );
       if (!fromMatch) {
-        setTabError(activeTab.id, 'Could not find table reference in FROM clause');
+        setError('Could not find table reference in FROM clause');
         return;
       }
 
@@ -594,8 +634,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       let tableId: string;
 
       if (parts.length === 1) {
-        setTabError(
-          activeTab.id,
+        setError(
           'Cannot determine dataset from table name. Please use dataset.table or project.dataset.table format.'
         );
         return;
@@ -606,8 +645,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         datasetId = parts[1];
         tableId = parts[2];
       } else {
-        setTabError(
-          activeTab.id,
+        setError(
           'Invalid table reference format. Expected: dataset.table or project.dataset.table'
         );
         return;
@@ -616,7 +654,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
 
       if (!schemaResult.fields || schemaResult.fields.length === 0) {
-        setTabError(activeTab.id, 'No columns found in table schema');
+        setError('No columns found in table schema');
         return;
       }
 
@@ -640,18 +678,17 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           keywordCase: 'upper',
           indentStyle: 'standard',
         });
-        setTabQuery(activeTab.id, formatted);
+        setQuery(formatted);
       } catch (formatError: any) {
-        setTabQuery(activeTab.id, expandedQuery);
-        setTabError(
-          activeTab.id,
+        setQuery(expandedQuery);
+        setError(
           `Expanded SELECT * but formatting failed: ${formatError.message || 'Invalid SQL syntax'}`
         );
       }
     } catch (err: any) {
-      setTabError(activeTab.id, `Failed to expand SELECT *: ${err.message || 'Unknown error'}`);
+      setError(`Failed to expand SELECT *: ${err.message || 'Unknown error'}`);
     }
-  }, [activeTab, queryText, connection, setTabQuery, setTabError]);
+  }, [activeTab, queryText, connection, setQuery, setError]);
 
   const handleDbtify = () => {
     if (!activeTab || !queryText.trim()) {
@@ -665,24 +702,42 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         connection?.projectId || 'project',
         getAllTables
       );
-      setTabQuery(activeTab.id, bigQuerySyntax);
+      setQuery(bigQuerySyntax);
     } else {
       if (sqlValidationStatus.isValid !== true) {
         return;
       }
       const dbtSyntax = convertToDbtSyntax(queryText);
-      setTabQuery(activeTab.id, dbtSyntax);
+      setQuery(dbtSyntax);
     }
   };
 
-  // Update handler refs
+  // Update handler refs - must update on every render to capture current paneId and queryText
   useEffect(() => {
     executeHandlerRef.current = handleExecute;
-  }, [executeQuery, setTabError, setTabStatus, setTabResults]);
+  });
 
   useEffect(() => {
     expandSelectStarHandlerRef.current = handleExpandSelectStar;
   }, [handleExpandSelectStar]);
+
+  // Handle split toggle - now using global split state
+  const { isSplitView, splitTabToRight, closeSplitView } = useTabsStore();
+  
+  const handleToggleSplit = useCallback(() => {
+    if (activeTab) {
+      if (isSplitView) {
+        closeSplitView();
+      } else {
+        splitTabToRight(activeTab.id);
+      }
+    }
+  }, [activeTab, isSplitView, splitTabToRight, closeSplitView]);
+
+  // Update handler ref for split toggle
+  useEffect(() => {
+    toggleSplitHandlerRef.current = handleToggleSplit;
+  }, [handleToggleSplit]);
 
   // ============================================================================
   // Render
@@ -700,6 +755,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         onExpandSelectStar={handleExpandSelectStar}
         onDbtify={handleDbtify}
         onOpenSaveDialog={handleOpenSaveDialog}
+        onToggleSplit={handleToggleSplit}
         isExecuting={isExecuting}
         isConnected={isConnected}
         hasQuery={!!queryText.trim()}
@@ -707,6 +763,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         isQueryValid={sqlValidationStatus.isValid}
         enableDbtSupport={connection?.enableDbtSupport ?? false}
         savedQueryId={activeTab?.savedQueryId || null}
+        isSplit={isSplitView}
+        isSplitMode={false}
       />
 
       <SaveQueryDialog
@@ -726,6 +784,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           <>
             <div className="editor-wrapper" ref={editorWrapperRef}>
               <Editor
+                key={propTabId || activeTab.id}
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
                 theme={theme === 'light' ? 'light' : 'vs-dark'}
@@ -744,25 +803,38 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 onMount={(editor) => {
                   editorRef.current = editor;
 
-                  // Cmd+Enter / Ctrl+Enter to run query
-                  editor.addCommand(
-                    (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.Enter,
-                    () => {
+                  // Use onKeyDown instead of addCommand - addCommand is global and gets overwritten
+                  // when multiple editors exist. onKeyDown is instance-scoped.
+                  editor.onKeyDown((e) => {
+                    const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+                    
+                    // Cmd+Enter / Ctrl+Enter to run query
+                    if (isCmdOrCtrl && e.keyCode === (window as any).monaco.KeyCode.Enter) {
+                      e.preventDefault();
+                      e.stopPropagation();
                       if (executeHandlerRef.current) {
                         executeHandlerRef.current();
                       }
                     }
-                  );
-
-                  // Cmd+B / Ctrl+B to expand SELECT *
-                  editor.addCommand(
-                    (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.KeyB,
-                    () => {
+                    
+                    // Cmd+B / Ctrl+B to expand SELECT *
+                    if (isCmdOrCtrl && e.keyCode === (window as any).monaco.KeyCode.KeyB) {
+                      e.preventDefault();
+                      e.stopPropagation();
                       if (expandSelectStarHandlerRef.current) {
                         expandSelectStarHandlerRef.current();
                       }
                     }
-                  );
+                    
+                    // Cmd+\ / Ctrl+\ to toggle split view
+                    if (isCmdOrCtrl && e.keyCode === (window as any).monaco.KeyCode.Backslash) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (toggleSplitHandlerRef.current) {
+                        toggleSplitHandlerRef.current();
+                      }
+                    }
+                  });
 
                   // Track selection changes for validation
                   editor.onDidChangeCursorSelection(() => {
@@ -772,6 +844,13 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                       setSelectedText(model.getValueInRange(selection));
                     } else {
                       setSelectedText('');
+                    }
+                  });
+
+                  // Notify parent when editor gains focus (for split mode)
+                  editor.onDidFocusEditorText(() => {
+                    if (onFocus) {
+                      onFocus();
                     }
                   });
                 }}
