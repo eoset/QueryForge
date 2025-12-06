@@ -69,11 +69,9 @@ export async function initTreeSitterParser(): Promise<boolean> {
       parser.setLanguage(BigQueryLang.default);
       
       treeSitterParser = parser;
-      console.log('[TreeSitterValidator] Successfully initialized tree-sitter-sql-bigquery');
       return true;
     } catch (error) {
       initializationError = error as Error;
-      console.warn('[TreeSitterValidator] Failed to initialize tree-sitter:', error);
       return false;
     }
   })();

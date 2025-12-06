@@ -65,6 +65,24 @@ export interface Row {
 }
 
 /**
+ * Schema field with nested field support for RECORD/STRUCT types
+ */
+export interface SchemaField extends ColumnMetadata {
+  fields?: SchemaField[];
+}
+
+/**
+ * Stored schema record from the cache
+ */
+export interface StoredSchema {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  fields: SchemaField[];
+  lastUpdated: number;
+}
+
+/**
  * Query history entry - tracks executed queries with metadata
  */
 export interface QueryHistoryEntry {

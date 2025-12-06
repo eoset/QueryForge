@@ -1,5 +1,5 @@
 import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../../shared/types/query';
 import type { Dataset, Table } from '../../shared/types/dataset';
 import type { JobDetails } from '../../shared/types/bigquery';
 
@@ -89,6 +89,28 @@ export interface ElectronAPI {
     stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
   };
 
+  // Schema cache (SQLite-backed with 12-hour TTL)
+  schemaCache: {
+    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
+    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
+    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
+    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
+    getForProject(projectId: string): Promise<StoredSchema[]>;
+    needsRefresh(projectId: string): Promise<boolean>;
+    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
+    deleteForProject(projectId: string): Promise<void>;
+    deleteExpired(): Promise<number>;
+    clear(): Promise<void>;
+    stats(): Promise<{
+      totalSchemas: number;
+      validSchemas: number;
+      expiredSchemas: number;
+      oldestTimestamp: number | null;
+      newestTimestamp: number | null;
+      databaseSizeBytes: number;
+    }>;
+  };
+
   // Menu events
   menu: {
     onShowHelp(callback: () => void): () => void;
@@ -101,6 +123,7 @@ export interface ElectronAPI {
     onShowConnection(callback: () => void): () => void;
     onDisconnect(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
+    onSearchSchema(callback: () => void): () => void;
   };
 
   // Export operations

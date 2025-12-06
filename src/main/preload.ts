@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry } from '../shared/types/query';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 import type { JobDetails } from '../shared/types/bigquery';
 
@@ -86,6 +86,28 @@ export interface ElectronAPI {
     clear(): Promise<void>;
   };
 
+  // Schema cache
+  schemaCache: {
+    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
+    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
+    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
+    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
+    getForProject(projectId: string): Promise<StoredSchema[]>;
+    needsRefresh(projectId: string): Promise<boolean>;
+    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
+    deleteForProject(projectId: string): Promise<void>;
+    deleteExpired(): Promise<number>;
+    clear(): Promise<void>;
+    stats(): Promise<{
+      totalSchemas: number;
+      validSchemas: number;
+      expiredSchemas: number;
+      oldestTimestamp: number | null;
+      newestTimestamp: number | null;
+      databaseSizeBytes: number;
+    }>;
+  };
+
   // Menu events
   menu: {
     onShowHelp(callback: () => void): () => void;
@@ -93,6 +115,7 @@ export interface ElectronAPI {
     onShowAbout(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
     onSaveQuery(callback: () => void): () => void;
+    onSearchSchema(callback: () => void): () => void;
   };
 
   // App info
@@ -194,6 +217,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clear: () => ipcRenderer.invoke('results-cache:clear'),
     stats: () => ipcRenderer.invoke('results-cache:stats'),
   },
+  schemaCache: {
+    save: (projectId: string, datasetId: string, tableId: string, fields: SchemaField[]) =>
+      ipcRenderer.invoke('schema-cache:save', projectId, datasetId, tableId, fields),
+    saveBatch: (schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>) =>
+      ipcRenderer.invoke('schema-cache:saveBatch', schemas),
+    get: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:get', projectId, datasetId, tableId),
+    hasValid: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:hasValid', projectId, datasetId, tableId),
+    getForProject: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:getForProject', projectId),
+    needsRefresh: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:needsRefresh', projectId),
+    delete: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:delete', projectId, datasetId, tableId),
+    deleteForProject: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:deleteForProject', projectId),
+    deleteExpired: () => ipcRenderer.invoke('schema-cache:deleteExpired'),
+    clear: () => ipcRenderer.invoke('schema-cache:clear'),
+    stats: () => ipcRenderer.invoke('schema-cache:stats'),
+  },
   menu: {
     onShowHelp: (callback: () => void) => {
       const handler = () => callback();
@@ -219,6 +263,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = () => callback();
       ipcRenderer.on('menu:save-query', handler);
       return () => ipcRenderer.removeListener('menu:save-query', handler);
+    },
+    onSearchSchema: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:search-schema', handler);
+      return () => ipcRenderer.removeListener('menu:search-schema', handler);
     },
   },
   app: {

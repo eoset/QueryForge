@@ -1,5 +1,8 @@
 import '@testing-library/jest-dom';
 
+// Mock Element.scrollIntoView for jsdom
+Element.prototype.scrollIntoView = jest.fn();
+
 // Mock HTMLCanvasElement.getContext for jsdom
 HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
   clearRect: jest.fn(),
@@ -82,10 +85,31 @@ global.window = global.window || {};
     onShowConnection: jest.fn(() => () => {}),
     onDisconnect: jest.fn(() => () => {}),
     onToggleTheme: jest.fn(() => () => {}),
+    onSearchSchema: jest.fn(() => () => {}),
   },
   resultsCache: {
     get: jest.fn().mockResolvedValue(null),
     set: jest.fn().mockResolvedValue(undefined),
+  },
+  schemaCache: {
+    save: jest.fn().mockResolvedValue(undefined),
+    saveBatch: jest.fn().mockResolvedValue(undefined),
+    get: jest.fn().mockResolvedValue(null),
+    hasValid: jest.fn().mockResolvedValue(false),
+    getForProject: jest.fn().mockResolvedValue([]),
+    needsRefresh: jest.fn().mockResolvedValue(true),
+    delete: jest.fn().mockResolvedValue(undefined),
+    deleteForProject: jest.fn().mockResolvedValue(undefined),
+    deleteExpired: jest.fn().mockResolvedValue(0),
+    clear: jest.fn().mockResolvedValue(undefined),
+    stats: jest.fn().mockResolvedValue({
+      totalSchemas: 0,
+      validSchemas: 0,
+      expiredSchemas: 0,
+      oldestTimestamp: null,
+      newestTimestamp: null,
+      databaseSizeBytes: 0,
+    }),
   },
 };
 
