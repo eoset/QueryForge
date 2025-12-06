@@ -7591,176 +7591,261 @@ export const SavedQueries: React.FC<SavedQueriesProps> = ({ onClose }) => {
 };
 ````
 
-## File: src/renderer/components/SchemaSidebar/SchemaSidebar.tsx
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
 ````typescript
-import React, { useState, useEffect } from 'react';
-import type { ColumnMetadata } from '../../../shared/types/query';
-import './SchemaSidebar.css';
+import React, { useState, useEffect, useRef, memo } from 'react';
+import { useQueriesStore } from '../../stores/queries-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { SavedQuery } from '../../../shared/types/query';
+import './SavedQueriesTree.css';
 
-interface SchemaField extends ColumnMetadata {
-  fields?: SchemaField[];
+interface SavedQueriesTreeProps {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
 }
 
-interface TableMetadata {
-  creationTime?: number;
-  lastModifiedTime?: number;
-  numRows?: number;
-  numBytes?: number;
-}
-
-interface SchemaSidebarProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
-}
-
-export const SchemaSidebar: React.FC<SchemaSidebarProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const [schema, setSchema] = useState<SchemaField[]>([]);
-  const [metadata, setMetadata] = useState<TableMetadata | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
+  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
+  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    query: SavedQuery;
+  } | null>(null);
+  const [hoveredQuery, setHoveredQuery] = useState<{
+    query: SavedQuery;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    const loadSchema = async () => {
-      if (!window.electronAPI) {
-        setError('Electron API not available');
-        setIsLoading(false);
-        return;
-      }
+    loadQueries();
+  }, [loadQueries]);
 
-      setIsLoading(true);
-      setError(null);
+  useEffect(() => {
+    setStoreSearchTerm(searchTerm);
+  }, [searchTerm, setStoreSearchTerm]);
 
-      try {
-        const result = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
-        setSchema(result.fields as SchemaField[]);
-        setMetadata(result.metadata);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load table schema');
-        console.error('Failed to load table schema:', err);
-      } finally {
-        setIsLoading(false);
+  // Expose refresh function and loading state to parent
+  useEffect(() => {
+    if (onRefreshReady) {
+      onRefreshReady(loadQueries, isLoading);
+    }
+  }, [onRefreshReady, loadQueries, isLoading]);
+
+  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
+    event.preventDefault();
+    event.stopPropagation();
+    
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      query,
+    });
+  };
+
+  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    
+    // Clear any existing timeouts
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+    
+    // Add a small delay before showing tooltip
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery({
+        query,
+        x: rect.right + 8,
+        y: rect.top,
+      });
+    }, 300);
+  };
+
+  const handleQueryMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Delay hiding to allow cursor to move into tooltip
+    hideTimeoutRef.current = setTimeout(() => {
+      setHoveredQuery(null);
+    }, 100);
+  };
+
+  const handleTooltipMouseEnter = () => {
+    // Cancel the hide timeout when entering tooltip
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
+  };
+
+  const handleTooltipMouseLeave = () => {
+    // Hide tooltip when leaving it
+    setHoveredQuery(null);
+  };
+
+  const handleLoadToNewTab = () => {
+    if (!contextMenu) return;
+    
+    const { query } = contextMenu;
+    
+    const newTabId = createTab();
+    setTabQuery(newTabId, query.sqlText);
+    updateTab(newTabId, {
+      title: query.name,
+      savedQueryId: query.id,
+      isModified: false,
+    });
+    
+    setContextMenu(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
       }
     };
 
-    loadSchema();
-  }, [datasetId, tableId]);
-
-  const formatDate = (timestamp?: number): string => {
-    if (!timestamp) return 'N/A';
-    const date = new Date(timestamp);
-    return date.toLocaleString();
-  };
-
-  const formatBytes = (bytes?: number): string => {
-    if (!bytes) return 'N/A';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    let size = bytes;
-    let unitIndex = 0;
-    
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
+    if (contextMenu?.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
     }
-    
-    return `${size.toFixed(2)} ${units[unitIndex]}`;
-  };
+  }, [contextMenu?.visible]);
 
-  const formatNumber = (num?: number): string => {
-    if (num === undefined || num === null) return 'N/A';
-    return num.toLocaleString();
-  };
+  // Close context menu on escape key
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && contextMenu?.visible) {
+        setContextMenu(null);
+      }
+    };
 
-  const renderField = (field: SchemaField, depth: number = 0): React.ReactNode => {
-    const isNested = field.fields && field.fields.length > 0;
-    const indent = `${depth}rem`;
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [contextMenu?.visible]);
 
-    return (
-      <div key={field.name} className="schema-field-item">
-        <div 
-          className="schema-field-row" 
-          style={{ paddingLeft: indent }}
-        >
-          {isNested && <span className="schema-field-icon">▼</span>}
-          {!isNested && <span className="schema-field-icon-spacer"></span>}
-          <span className="schema-field-name">{field.name}</span>
-          <span className="schema-field-type">{field.type}</span>
-          {field.mode && field.mode !== 'NULLABLE' && (
-            <span className={`schema-field-mode schema-field-mode-${field.mode.toLowerCase()}`}>
-              {field.mode}
-            </span>
-          )}
-        </div>
-        {isNested && (
-          <div className="schema-field-nested">
-            {field.fields!.map((nestedField) => renderField(nestedField, depth + 1))}
-          </div>
-        )}
-      </div>
-    );
-  };
+  // Filter queries based on search term
+  const filteredQueries = React.useMemo(() => {
+    if (!searchTerm.trim()) {
+      return queries;
+    }
+    return getFilteredQueries();
+  }, [queries, searchTerm, getFilteredQueries]);
 
   return (
-    <div className="schema-sidebar">
-      <div className="schema-sidebar-header">
-        <div className="schema-sidebar-title">
-          <div className="schema-sidebar-title-content">
-            <span className="schema-sidebar-table-name">{tableId}</span>
-            <span className="schema-sidebar-table-path">{projectId}.{datasetId}</span>
+    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
+      {!collapsed && (
+        <>
+          <div className="saved-queries-tree-search">
+            <input
+              type="text"
+              className="saved-queries-tree-search-input"
+              placeholder="Search saved queries..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchTerm('');
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                className="saved-queries-tree-search-clear"
+                onClick={() => setSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <div className="saved-queries-tree-content">
+            {isLoading && queries.length === 0 && (
+              <div className="saved-queries-tree-loading">Loading saved queries...</div>
+            )}
+            {filteredQueries.length === 0 && !isLoading && (
+              <div className="saved-queries-tree-empty">
+                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
+              </div>
+            )}
+            {filteredQueries.map((query) => (
+              <div
+                key={query.id}
+                className="saved-query-item"
+                onContextMenu={(e) => handleQueryContextMenu(e, query)}
+                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
+                onMouseLeave={handleQueryMouseLeave}
+              >
+                <span className="saved-query-icon">📝</span>
+                <div className="saved-query-info">
+                  <span className="saved-query-name">{query.name}</span>
+                  {query.description && (
+                    <span className="saved-query-description">{query.description}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {contextMenu?.visible && (
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+        >
+          <div className="context-menu-item" onClick={handleLoadToNewTab}>
+            Open in new tab
           </div>
         </div>
-        <button className="schema-sidebar-close" onClick={onClose} title="Close">
-          ×
-        </button>
-      </div>
-      <div className="schema-sidebar-content">
-        {isLoading && (
-          <div className="schema-sidebar-loading">Loading schema...</div>
-        )}
-        {error && (
-          <div className="schema-sidebar-error">{error}</div>
-        )}
-        {!isLoading && !error && (
-          <>
-            {metadata && (
-              <div className="schema-metadata">
-                <div className="schema-metadata-item">
-                  <span className="schema-metadata-label">Created:</span>
-                  <span className="schema-metadata-value">{formatDate(metadata.creationTime)}</span>
-                </div>
-                <div className="schema-metadata-item">
-                  <span className="schema-metadata-label">Modified:</span>
-                  <span className="schema-metadata-value">{formatDate(metadata.lastModifiedTime)}</span>
-                </div>
-                <div className="schema-metadata-item">
-                  <span className="schema-metadata-label">Rows:</span>
-                  <span className="schema-metadata-value">{formatNumber(metadata.numRows)}</span>
-                </div>
-                <div className="schema-metadata-item">
-                  <span className="schema-metadata-label">Size:</span>
-                  <span className="schema-metadata-value">{formatBytes(metadata.numBytes)}</span>
-                </div>
-              </div>
-            )}
-            {schema.length === 0 ? (
-              <div className="schema-sidebar-empty">No schema available</div>
-            ) : (
-              <div className="schema-fields">
-                {schema.map((field) => renderField(field))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+      )}
+      {hoveredQuery && (
+        <div
+          className="saved-query-tooltip"
+          style={{
+            position: 'fixed',
+            left: `${hoveredQuery.x}px`,
+            top: `${hoveredQuery.y}px`,
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
+        </div>
+      )}
     </div>
   );
 };
+
+export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.collapsed === nextProps.collapsed &&
+    prevProps.onToggleCollapse === nextProps.onToggleCollapse
+  );
+});
 ````
 
 ## File: src/renderer/components/SidebarHeader/SidebarHeader.tsx
@@ -13541,261 +13626,238 @@ export const ExportMenu: React.FC<ExportMenuProps> = ({
 }
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.tsx
-````typescript
-import React, { useState, useEffect, useRef, memo } from 'react';
-import { useQueriesStore } from '../../stores/queries-store';
-import { useTabsStore } from '../../stores/tabs-store';
-import type { SavedQuery } from '../../../shared/types/query';
-import './SavedQueriesTree.css';
-
-interface SavedQueriesTreeProps {
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+````css
+.saved-queries-tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-primary);
+  overflow: hidden;
+  min-height: 0;
 }
 
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
-  const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
-  const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    query: SavedQuery;
-  } | null>(null);
-  const [hoveredQuery, setHoveredQuery] = useState<{
-    query: SavedQuery;
-    x: number;
-    y: number;
-  } | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+.saved-queries-tree.collapsed {
+  width: 30px;
+}
 
-  useEffect(() => {
-    loadQueries();
-  }, [loadQueries]);
+.saved-queries-tree-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+  min-height: 35px;
+}
 
-  useEffect(() => {
-    setStoreSearchTerm(searchTerm);
-  }, [searchTerm, setStoreSearchTerm]);
+.collapse-button {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  margin-right: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+  border-radius: 3px;
+}
 
-  // Expose refresh function and loading state to parent
-  useEffect(() => {
-    if (onRefreshReady) {
-      onRefreshReady(loadQueries, isLoading);
-    }
-  }, [onRefreshReady, loadQueries, isLoading]);
+.collapse-button:hover {
+  background-color: var(--border-primary);
+}
 
-  const handleQueryContextMenu = (event: React.MouseEvent, query: SavedQuery) => {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    setContextMenu({
-      visible: true,
-      x: event.clientX,
-      y: event.clientY,
-      query,
-    });
-  };
+.saved-queries-tree-title {
+  flex: 1;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
-  const handleQueryMouseEnter = (event: React.MouseEvent, query: SavedQuery) => {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    
-    // Clear any existing timeouts
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-    
-    // Add a small delay before showing tooltip
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery({
-        query,
-        x: rect.right + 8,
-        y: rect.top,
-      });
-    }, 300);
-  };
+.refresh-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 3px;
+}
 
-  const handleQueryMouseLeave = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    // Delay hiding to allow cursor to move into tooltip
-    hideTimeoutRef.current = setTimeout(() => {
-      setHoveredQuery(null);
-    }, 100);
-  };
+.refresh-button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background-color: var(--border-primary);
+}
 
-  const handleTooltipMouseEnter = () => {
-    // Cancel the hide timeout when entering tooltip
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    }
-  };
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-  const handleTooltipMouseLeave = () => {
-    // Hide tooltip when leaving it
-    setHoveredQuery(null);
-  };
+.saved-queries-tree-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  position: relative;
+}
 
-  const handleLoadToNewTab = () => {
-    if (!contextMenu) return;
-    
-    const { query } = contextMenu;
-    
-    const newTabId = createTab();
-    setTabQuery(newTabId, query.sqlText);
-    updateTab(newTabId, {
-      title: query.name,
-      savedQueryId: query.id,
-      isModified: false,
-    });
-    
-    setContextMenu(null);
-  };
+.saved-queries-tree-search-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  background-color: var(--border-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  box-sizing: border-box;
+}
 
-  // Close context menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
+.saved-queries-tree-search-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background-color: var(--bg-primary);
+}
 
-    if (contextMenu?.visible) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [contextMenu?.visible]);
+.saved-queries-tree-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
 
-  // Close context menu on escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && contextMenu?.visible) {
-        setContextMenu(null);
-      }
-    };
+.saved-queries-tree-search-clear:hover {
+  color: var(--text-primary);
+}
 
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, [contextMenu?.visible]);
+.saved-queries-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem;
+}
 
-  // Filter queries based on search term
-  const filteredQueries = React.useMemo(() => {
-    if (!searchTerm.trim()) {
-      return queries;
-    }
-    return getFilteredQueries();
-  }, [queries, searchTerm, getFilteredQueries]);
+.saved-queries-tree-loading,
+.saved-queries-tree-empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
 
-  return (
-    <div className={`saved-queries-tree ${collapsed ? 'collapsed' : ''}`}>
-      {!collapsed && (
-        <>
-          <div className="saved-queries-tree-search">
-            <input
-              type="text"
-              className="saved-queries-tree-search-input"
-              placeholder="Search saved queries..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setSearchTerm('');
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                className="saved-queries-tree-search-clear"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <div className="saved-queries-tree-content">
-            {isLoading && queries.length === 0 && (
-              <div className="saved-queries-tree-loading">Loading saved queries...</div>
-            )}
-            {filteredQueries.length === 0 && !isLoading && (
-              <div className="saved-queries-tree-empty">
-                {searchTerm ? 'No matching queries found' : 'No saved queries yet'}
-              </div>
-            )}
-            {filteredQueries.map((query) => (
-              <div
-                key={query.id}
-                className="saved-query-item"
-                onContextMenu={(e) => handleQueryContextMenu(e, query)}
-                onMouseEnter={(e) => handleQueryMouseEnter(e, query)}
-                onMouseLeave={handleQueryMouseLeave}
-              >
-                <span className="saved-query-icon">📝</span>
-                <div className="saved-query-info">
-                  <span className="saved-query-name">{query.name}</span>
-                  {query.description && (
-                    <span className="saved-query-description">{query.description}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-      {contextMenu?.visible && (
-        <div
-          ref={contextMenuRef}
-          className="context-menu"
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="context-menu-item" onClick={handleLoadToNewTab}>
-            Open in new tab
-          </div>
-        </div>
-      )}
-      {hoveredQuery && (
-        <div
-          className="saved-query-tooltip"
-          style={{
-            position: 'fixed',
-            left: `${hoveredQuery.x}px`,
-            top: `${hoveredQuery.y}px`,
-          }}
-          onMouseEnter={handleTooltipMouseEnter}
-          onMouseLeave={handleTooltipMouseLeave}
-        >
-          <pre className="saved-query-tooltip-code">{hoveredQuery.query.sqlText}</pre>
-        </div>
-      )}
-    </div>
-  );
-};
+.saved-query-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 3px;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
 
-export const SavedQueriesTree = memo(SavedQueriesTreeComponent, (prevProps, nextProps) => {
-  return (
-    prevProps.collapsed === nextProps.collapsed &&
-    prevProps.onToggleCollapse === nextProps.onToggleCollapse
-  );
-});
+.saved-query-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.saved-query-icon {
+  margin-right: 0.5rem;
+  font-size: 1rem;
+}
+
+.saved-query-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.saved-query-name {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-query-description {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: var(--shadow-dropdown);
+  z-index: 1000;
+  min-width: 150px;
+}
+
+.context-menu-item {
+  padding: 0.5rem 0.75rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Query preview tooltip */
+.saved-query-tooltip {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-tooltip);
+  z-index: 1000;
+  max-width: 400px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.saved-query-tooltip-code {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 284px;
+}
 ````
 
 ## File: src/renderer/components/SchemaSearchModal/SchemaSearchModal.css
@@ -14466,217 +14528,228 @@ export const SchemaSearchModal: React.FC<SchemaSearchModalProps> = ({ onClose, o
 };
 ````
 
-## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
-````css
-.schema-sidebar {
-  width: 100%;
-  height: 100%;
-  background-color: var(--bg-secondary);
-  border-left: 1px solid var(--border-primary);
-  display: flex;
-  flex-direction: column;
-  color: var(--text-primary);
+## File: src/renderer/components/SchemaSidebar/SchemaSidebar.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import type { ColumnMetadata } from '../../../shared/types/query';
+import './SchemaSidebar.css';
+
+interface SchemaField extends ColumnMetadata {
+  fields?: SchemaField[];
 }
 
-.schema-sidebar-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  background-color: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  height: 35px;
-  gap: 0.5rem;
+interface TableMetadata {
+  creationTime?: number;
+  lastModifiedTime?: number;
+  numRows?: number;
+  numBytes?: number;
+  // Partitioning info
+  timePartitioning?: {
+    type: string; // DAY, HOUR, MONTH, YEAR
+    field?: string; // Column name, or _PARTITIONTIME for ingestion-time partitioning
+    requirePartitionFilter?: boolean;
+  };
+  rangePartitioning?: {
+    field: string;
+    range: {
+      start: string;
+      end: string;
+      interval: string;
+    };
+  };
+  // Clustering info
+  clustering?: {
+    fields: string[];
+  };
 }
 
-.schema-sidebar-title {
-  flex: 1;
-  min-width: 0;
+interface SchemaSidebarProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
 }
 
-.schema-sidebar-title-content {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
+export const SchemaSidebar: React.FC<SchemaSidebarProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [schema, setSchema] = useState<SchemaField[]>([]);
+  const [metadata, setMetadata] = useState<TableMetadata | undefined>(undefined);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-.schema-sidebar-table-name {
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-weight: 400;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+  useEffect(() => {
+    const loadSchema = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
 
-.schema-sidebar-table-path {
-  font-size: 0.625rem;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 0.125rem;
-}
+      setIsLoading(true);
+      setError(null);
 
-.schema-sidebar-close {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.875rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
+      try {
+        const result = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
+        setSchema(result.fields as SchemaField[]);
+        setMetadata(result.metadata);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load table schema');
+        console.error('Failed to load table schema:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-.schema-sidebar-close:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
+    loadSchema();
+  }, [datasetId, tableId]);
 
-.schema-sidebar-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem 0;
-}
+  const formatDate = (timestamp?: number): string => {
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp);
+    return date.toLocaleString();
+  };
 
-.schema-metadata {
-  padding: 0.75rem 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  background-color: var(--bg-primary);
-}
+  const formatBytes = (bytes?: number): string => {
+    if (!bytes) return 'N/A';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let size = bytes;
+    let unitIndex = 0;
+    
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
+  };
 
-.schema-metadata-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.375rem 0;
-  font-size: 0.75rem;
-  gap: 0.5rem;
-}
+  const formatNumber = (num?: number): string => {
+    if (num === undefined || num === null) return 'N/A';
+    return num.toLocaleString();
+  };
 
-.schema-metadata-item:first-child {
-  padding-top: 0;
-}
+  const renderField = (field: SchemaField, depth: number = 0): React.ReactNode => {
+    const isNested = field.fields && field.fields.length > 0;
+    const indent = `${depth}rem`;
 
-.schema-metadata-item:last-child {
-  padding-bottom: 0;
-}
+    return (
+      <div key={field.name} className="schema-field-item">
+        <div 
+          className="schema-field-row" 
+          style={{ paddingLeft: indent }}
+        >
+          {isNested && <span className="schema-field-icon">▼</span>}
+          {!isNested && <span className="schema-field-icon-spacer"></span>}
+          <span className="schema-field-name">{field.name}</span>
+          <span className="schema-field-type">{field.type}</span>
+          {field.mode && field.mode !== 'NULLABLE' && (
+            <span className={`schema-field-mode schema-field-mode-${field.mode.toLowerCase()}`}>
+              {field.mode}
+            </span>
+          )}
+        </div>
+        {isNested && (
+          <div className="schema-field-nested">
+            {field.fields!.map((nestedField) => renderField(nestedField, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
-.schema-metadata-label {
-  color: var(--text-secondary);
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.schema-metadata-value {
-  color: var(--text-primary);
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.schema-sidebar-loading,
-.schema-sidebar-error,
-.schema-sidebar-empty {
-  padding: 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.schema-sidebar-error {
-  color: var(--text-error);
-}
-
-.schema-fields {
-  display: flex;
-  flex-direction: column;
-}
-
-.schema-field-item {
-  user-select: none;
-}
-
-.schema-field-row {
-  display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  cursor: default;
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  transition: background-color 0.15s ease;
-  gap: 0.375rem;
-}
-
-.schema-field-row:hover {
-  background-color: var(--bg-hover);
-}
-
-.schema-field-icon {
-  font-size: 0.625rem;
-  color: var(--text-secondary);
-  width: 12px;
-  display: inline-block;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.schema-field-icon-spacer {
-  width: 12px;
-  display: inline-block;
-  flex-shrink: 0;
-}
-
-.schema-field-name {
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-  min-width: 0;
-}
-
-.schema-field-type {
-  flex-shrink: 0;
-  color: var(--text-type);
-  font-size: 0.75rem;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  margin-left: auto;
-}
-
-.schema-field-mode {
-  flex-shrink: 0;
-  font-size: 0.625rem;
-  padding: 0.125rem 0.25rem;
-  border-radius: 2px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.schema-field-mode-required {
-  background-color: var(--badge-required-bg);
-  color: var(--badge-required-text);
-}
-
-.schema-field-mode-repeated {
-  background-color: var(--badge-repeated-bg);
-  color: var(--badge-repeated-text);
-}
-
-.schema-field-nested {
-  padding-left: 0;
-}
+  return (
+    <div className="schema-sidebar">
+      <div className="schema-sidebar-header">
+        <div className="schema-sidebar-title">
+          <div className="schema-sidebar-title-content">
+            <span className="schema-sidebar-table-name">{tableId}</span>
+            <span className="schema-sidebar-table-path">{projectId}.{datasetId}</span>
+          </div>
+        </div>
+        <button className="schema-sidebar-close" onClick={onClose} title="Close">
+          ×
+        </button>
+      </div>
+      <div className="schema-sidebar-content">
+        {isLoading && (
+          <div className="schema-sidebar-loading">Loading schema...</div>
+        )}
+        {error && (
+          <div className="schema-sidebar-error">{error}</div>
+        )}
+        {!isLoading && !error && (
+          <>
+            {metadata && (
+              <div className="schema-metadata">
+                <div className="schema-metadata-item">
+                  <span className="schema-metadata-label">Created:</span>
+                  <span className="schema-metadata-value">{formatDate(metadata.creationTime)}</span>
+                </div>
+                <div className="schema-metadata-item">
+                  <span className="schema-metadata-label">Modified:</span>
+                  <span className="schema-metadata-value">{formatDate(metadata.lastModifiedTime)}</span>
+                </div>
+                <div className="schema-metadata-item">
+                  <span className="schema-metadata-label">Rows:</span>
+                  <span className="schema-metadata-value">{formatNumber(metadata.numRows)}</span>
+                </div>
+                <div className="schema-metadata-item">
+                  <span className="schema-metadata-label">Size:</span>
+                  <span className="schema-metadata-value">{formatBytes(metadata.numBytes)}</span>
+                </div>
+                {(metadata.timePartitioning || metadata.rangePartitioning) && (
+                  <div className="schema-metadata-item">
+                    <span className="schema-metadata-label">Partitioned:</span>
+                    <span className="schema-metadata-value schema-metadata-partition">
+                      {metadata.timePartitioning ? (
+                        <>
+                          <span className="schema-partition-badge">{metadata.timePartitioning.type}</span>
+                          <span className="schema-partition-field">
+                            {metadata.timePartitioning.field || '_PARTITIONTIME'}
+                          </span>
+                        </>
+                      ) : metadata.rangePartitioning ? (
+                        <>
+                          <span className="schema-partition-badge">RANGE</span>
+                          <span className="schema-partition-field">
+                            {metadata.rangePartitioning.field}
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                )}
+                {metadata.clustering && metadata.clustering.fields.length > 0 && (
+                  <div className="schema-metadata-item">
+                    <span className="schema-metadata-label">Clustered:</span>
+                    <span className="schema-metadata-value schema-metadata-cluster">
+                      {metadata.clustering.fields.map((field, index) => (
+                        <span key={field} className="schema-cluster-field">
+                          {field}{index < metadata.clustering!.fields.length - 1 ? ', ' : ''}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+            {schema.length === 0 ? (
+              <div className="schema-sidebar-empty">No schema available</div>
+            ) : (
+              <div className="schema-fields">
+                {schema.map((field) => renderField(field))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/components/SidebarHeader/SidebarHeader.css
@@ -17873,127 +17946,6 @@ export const countSelectStatements = (sql: string): number => {
   <div id="root"></div>
 </body>
 </html>
-````
-
-## File: src/renderer/themes.css
-````css
-/* Theme CSS Variables - Dark Theme (Default) and Light Theme */
-
-:root {
-  /* Dark theme (default) - Cursor-inspired colors */
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --bg-tertiary: #2d2d30;
-  --bg-input: #3c3c3c;
-  --bg-hover: #2a2d2e;
-  --bg-active: #094771;
-  --bg-active-hover: #0e639c;
-  --bg-scrollbar: #1e1e1e;
-  --bg-scrollbar-thumb: #424242;
-  --bg-scrollbar-thumb-hover: #4e4e4e;
-  --bg-scrollbar-thumb-active: #5e5e5e;
-  --bg-overlay: rgba(0, 0, 0, 0.7);
-  --bg-error: #3a1d1d;
-  
-  --border-primary: #3e3e42;
-  --border-error: #6a1f1f;
-  --border-active: #007acc;
-  
-  --text-primary: #cccccc;
-  --text-secondary: #858585;
-  --text-white: #ffffff;
-  --text-active: #ffffff;
-  --text-disabled: #6e6e6e;
-  --text-error: #f48771;
-  --text-success: #4ec9b0;
-  --text-warning: #dcdcaa;
-  --text-type: #569cd6;
-  --text-keyword: #c586c0;
-  --text-link: #007acc;
-  --text-tags: #4ec9b0;
-  
-  --accent-primary: #007acc;
-  --accent-primary-hover: #1177bb;
-  --accent-success: #0e7c3c;
-  --accent-success-hover: #0f8f45;
-  --accent-danger: #a1260d;
-  --accent-danger-hover: #c72e0f;
-  --accent-close-hover: #e81123;
-  --accent-orange: #ff694a;
-  --accent-orange-hover: #ff8566;
-  
-  --button-secondary: #3e3e42;
-  --button-secondary-hover: #4a4a4a;
-  
-  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.4);
-  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.5);
-  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.4);
-
-  /* Field mode badges */
-  --badge-required-bg: rgba(244, 135, 113, 0.15);
-  --badge-required-text: #f48771;
-  --badge-repeated-bg: rgba(197, 134, 192, 0.15);
-  --badge-repeated-text: #c586c0;
-}
-
-/* Light theme */
-[data-theme='light'] {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f3f3f3;
-  --bg-tertiary: #e8e8e8;
-  --bg-input: #ffffff;
-  --bg-hover: #e8e8e8;
-  --bg-active: #0078d4;
-  --bg-active-hover: #106ebe;
-  --bg-scrollbar: #f3f3f3;
-  --bg-scrollbar-thumb: #c1c1c1;
-  --bg-scrollbar-thumb-hover: #a8a8a8;
-  --bg-scrollbar-thumb-active: #909090;
-  --bg-overlay: rgba(0, 0, 0, 0.4);
-  --bg-error: #fde7e9;
-  
-  --border-primary: #d4d4d4;
-  --border-error: #f1707b;
-  --border-active: #0078d4;
-  
-  --text-primary: #333333;
-  --text-secondary: #6e6e6e;
-  --text-white: #ffffff;
-  --text-active: #0078d4;
-  --text-disabled: #a0a0a0;
-  --text-error: #d32f2f;
-  --text-success: #107c10;
-  --text-warning: #795e26;
-  --text-type: #0451a5;
-  --text-keyword: #af00db;
-  --text-link: #0078d4;
-  --text-tags: #107c10;
-  
-  --accent-primary: #0078d4;
-  --accent-primary-hover: #106ebe;
-  --accent-success: #107c10;
-  --accent-success-hover: #0e6b0e;
-  --accent-danger: #d32f2f;
-  --accent-danger-hover: #b71c1c;
-  --accent-close-hover: #d32f2f;
-  --accent-orange: #d83b01;
-  --accent-orange-hover: #ea4300;
-  
-  --button-secondary: #e1e1e1;
-  --button-secondary-hover: #d1d1d1;
-  
-  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.15);
-  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.1);
-  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.2);
-  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.15);
-
-  /* Field mode badges */
-  --badge-required-bg: rgba(211, 47, 47, 0.1);
-  --badge-required-text: #d32f2f;
-  --badge-repeated-bg: rgba(175, 0, 219, 0.1);
-  --badge-repeated-text: #af00db;
-}
 ````
 
 ## File: src/shared/types/bigquery.ts
@@ -25056,237 +25008,249 @@ export const QueryResults: React.FC = () => {
 };
 ````
 
-## File: src/renderer/components/SavedQueriesTree/SavedQueriesTree.css
+## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
 ````css
-.saved-queries-tree {
+.schema-sidebar {
+  width: 100%;
+  height: 100%;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-primary);
   display: flex;
   flex-direction: column;
-  flex: 1;
-  background-color: var(--bg-secondary);
   color: var(--text-primary);
-  border-right: 1px solid var(--border-primary);
-  overflow: hidden;
-  min-height: 0;
 }
 
-.saved-queries-tree.collapsed {
-  width: 30px;
-}
-
-.saved-queries-tree-header {
+.schema-sidebar-header {
   display: flex;
   align-items: center;
   padding: 0.5rem;
   background-color: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-primary);
-  min-height: 35px;
+  height: 35px;
+  gap: 0.5rem;
 }
 
-.collapse-button {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.75rem;
-  padding: 0.25rem;
-  margin-right: 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.collapse-button:hover {
-  background-color: var(--border-primary);
-}
-
-.saved-queries-tree-title {
+.schema-sidebar-title {
   flex: 1;
-  font-size: 0.8125rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  min-width: 0;
 }
 
-.refresh-button {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem 0.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 3px;
-}
-
-.refresh-button:hover:not(:disabled) {
-  color: var(--text-primary);
-  background-color: var(--border-primary);
-}
-
-.refresh-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.saved-queries-tree-search {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--border-primary);
-  position: relative;
-}
-
-.saved-queries-tree-search-input {
-  width: 100%;
-  padding: 0.375rem 0.5rem;
-  background-color: var(--border-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-}
-
-.saved-queries-tree-search-input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-  background-color: var(--bg-primary);
-}
-
-.saved-queries-tree-search-clear {
-  position: absolute;
-  right: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s ease;
-}
-
-.saved-queries-tree-search-clear:hover {
-  color: var(--text-primary);
-}
-
-.saved-queries-tree-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0.25rem;
-}
-
-.saved-queries-tree-loading,
-.saved-queries-tree-empty {
-  padding: 1rem;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.saved-query-item {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem;
-  cursor: pointer;
-  border-radius: 3px;
-  margin-bottom: 0.25rem;
-  transition: background-color 0.15s ease;
-}
-
-.saved-query-item:hover {
-  background-color: var(--bg-hover);
-}
-
-.saved-query-icon {
-  margin-right: 0.5rem;
-  font-size: 1rem;
-}
-
-.saved-query-info {
-  flex: 1;
+.schema-sidebar-title-content {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.saved-query-name {
+.schema-sidebar-table-name {
   font-size: 0.8125rem;
   color: var(--text-primary);
+  font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.saved-query-description {
+.schema-sidebar-table-path {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 0.125rem;
+}
+
+.schema-sidebar-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.schema-sidebar-close:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.schema-sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.25rem 0;
+}
+
+.schema-metadata {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-primary);
+}
+
+.schema-metadata-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.375rem 0;
+  font-size: 0.75rem;
+  gap: 0.5rem;
+}
+
+.schema-metadata-item:first-child {
+  padding-top: 0;
+}
+
+.schema-metadata-item:last-child {
+  padding-bottom: 0;
+}
+
+.schema-metadata-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.schema-metadata-value {
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.schema-sidebar-loading,
+.schema-sidebar-error,
+.schema-sidebar-empty {
+  padding: 1rem;
+  text-align: center;
   font-size: 0.75rem;
   color: var(--text-secondary);
-  margin-top: 0.25rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.context-menu {
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  box-shadow: var(--shadow-dropdown);
-  z-index: 1000;
-  min-width: 150px;
+.schema-sidebar-error {
+  color: var(--text-error);
 }
 
-.context-menu-item {
-  padding: 0.5rem 0.75rem;
+.schema-fields {
+  display: flex;
+  flex-direction: column;
+}
+
+.schema-field-item {
+  user-select: none;
+}
+
+.schema-field-row {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  cursor: default;
   color: var(--text-primary);
-  cursor: pointer;
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   transition: background-color 0.15s ease;
+  gap: 0.375rem;
 }
 
-.context-menu-item:hover:not(.disabled) {
+.schema-field-row:hover {
   background-color: var(--bg-hover);
 }
 
-.context-menu-item.disabled {
+.schema-field-icon {
+  font-size: 0.625rem;
   color: var(--text-secondary);
-  cursor: not-allowed;
-  opacity: 0.5;
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+  flex-shrink: 0;
 }
 
-/* Query preview tooltip */
-.saved-query-tooltip {
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  box-shadow: var(--shadow-tooltip);
-  z-index: 1000;
-  max-width: 400px;
-  min-width: 200px;
-  max-height: 300px;
+.schema-field-icon-spacer {
+  width: 12px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.schema-field-name {
+  flex: 0 1 auto;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  min-width: 0;
 }
 
-.saved-query-tooltip-code {
-  margin: 0;
-  padding: 0.75rem;
-  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+.schema-field-type {
+  flex-shrink: 0;
+  color: var(--text-type);
   font-size: 0.75rem;
-  line-height: 1.4;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  margin-left: auto;
+}
+
+.schema-field-mode {
+  flex-shrink: 0;
+  font-size: 0.625rem;
+  padding: 0.125rem 0.25rem;
+  border-radius: 2px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.schema-field-mode-required {
+  background-color: var(--badge-required-bg);
+  color: var(--badge-required-text);
+}
+
+.schema-field-mode-repeated {
+  background-color: var(--badge-repeated-bg);
+  color: var(--badge-repeated-text);
+}
+
+.schema-field-nested {
+  padding-left: 0;
+}
+
+/* Partition and Clustering metadata styles */
+.schema-metadata-partition,
+.schema-metadata-cluster {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.schema-partition-badge {
+  font-size: 0.625rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background-color: var(--badge-partition-bg, rgba(66, 153, 225, 0.15));
+  color: var(--badge-partition-text, #4299e5);
+}
+
+.schema-partition-field {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.6875rem;
   color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-y: auto;
-  max-height: 284px;
+}
+
+.schema-cluster-field {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.6875rem;
+  color: var(--text-primary);
 }
 ````
 
@@ -25757,6 +25721,131 @@ body {
   min-height: 0;
   overflow: hidden;
   background-color: var(--bg-primary);
+}
+````
+
+## File: src/renderer/themes.css
+````css
+/* Theme CSS Variables - Dark Theme (Default) and Light Theme */
+
+:root {
+  /* Dark theme (default) - Cursor-inspired colors */
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d30;
+  --bg-input: #3c3c3c;
+  --bg-hover: #2a2d2e;
+  --bg-active: #094771;
+  --bg-active-hover: #0e639c;
+  --bg-scrollbar: #1e1e1e;
+  --bg-scrollbar-thumb: #424242;
+  --bg-scrollbar-thumb-hover: #4e4e4e;
+  --bg-scrollbar-thumb-active: #5e5e5e;
+  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --bg-error: #3a1d1d;
+  
+  --border-primary: #3e3e42;
+  --border-error: #6a1f1f;
+  --border-active: #007acc;
+  
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-white: #ffffff;
+  --text-active: #ffffff;
+  --text-disabled: #6e6e6e;
+  --text-error: #f48771;
+  --text-success: #4ec9b0;
+  --text-warning: #dcdcaa;
+  --text-type: #569cd6;
+  --text-keyword: #c586c0;
+  --text-link: #007acc;
+  --text-tags: #4ec9b0;
+  
+  --accent-primary: #007acc;
+  --accent-primary-hover: #1177bb;
+  --accent-success: #0e7c3c;
+  --accent-success-hover: #0f8f45;
+  --accent-danger: #a1260d;
+  --accent-danger-hover: #c72e0f;
+  --accent-close-hover: #e81123;
+  --accent-orange: #ff694a;
+  --accent-orange-hover: #ff8566;
+  
+  --button-secondary: #3e3e42;
+  --button-secondary-hover: #4a4a4a;
+  
+  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.4);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.5);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* Field mode badges */
+  --badge-required-bg: rgba(244, 135, 113, 0.15);
+  --badge-required-text: #f48771;
+  --badge-repeated-bg: rgba(197, 134, 192, 0.15);
+  --badge-repeated-text: #c586c0;
+  --badge-partition-bg: rgba(86, 156, 214, 0.15);
+  --badge-partition-text: #569cd6;
+}
+
+/* Light theme */
+[data-theme='light'] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f3f3;
+  --bg-tertiary: #e8e8e8;
+  --bg-input: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-active: #0078d4;
+  --bg-active-hover: #106ebe;
+  --bg-scrollbar: #f3f3f3;
+  --bg-scrollbar-thumb: #c1c1c1;
+  --bg-scrollbar-thumb-hover: #a8a8a8;
+  --bg-scrollbar-thumb-active: #909090;
+  --bg-overlay: rgba(0, 0, 0, 0.4);
+  --bg-error: #fde7e9;
+  
+  --border-primary: #d4d4d4;
+  --border-error: #f1707b;
+  --border-active: #0078d4;
+  
+  --text-primary: #333333;
+  --text-secondary: #6e6e6e;
+  --text-white: #ffffff;
+  --text-active: #0078d4;
+  --text-disabled: #a0a0a0;
+  --text-error: #d32f2f;
+  --text-success: #107c10;
+  --text-warning: #795e26;
+  --text-type: #0451a5;
+  --text-keyword: #af00db;
+  --text-link: #0078d4;
+  --text-tags: #107c10;
+  
+  --accent-primary: #0078d4;
+  --accent-primary-hover: #106ebe;
+  --accent-success: #107c10;
+  --accent-success-hover: #0e6b0e;
+  --accent-danger: #d32f2f;
+  --accent-danger-hover: #b71c1c;
+  --accent-close-hover: #d32f2f;
+  --accent-orange: #d83b01;
+  --accent-orange-hover: #ea4300;
+  
+  --button-secondary: #e1e1e1;
+  --button-secondary-hover: #d1d1d1;
+  
+  --shadow-dialog: 0 8px 16px rgba(0, 0, 0, 0.15);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 4px 20px rgba(0, 0, 0, 0.2);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Field mode badges */
+  --badge-required-bg: rgba(211, 47, 47, 0.1);
+  --badge-required-text: #d32f2f;
+  --badge-repeated-bg: rgba(175, 0, 219, 0.1);
+  --badge-repeated-text: #af00db;
+  --badge-partition-bg: rgba(4, 81, 165, 0.1);
+  --badge-partition-text: #0451a5;
 }
 ````
 
@@ -32760,6 +32849,421 @@ jest.mock('@monaco-editor/react', () => ({
 }));
 ````
 
+## File: src/main/main.ts
+````typescript
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
+import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
+
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
+
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
+}
+
+let mainWindow: BrowserWindow | null = null;
+
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerSchemaCacheHandlers();
+registerExportHandlers();
+registerQueryHistoryHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+        { type: 'separator' },
+        {
+          label: 'Search Schema...',
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            mainWindow?.webContents.send('menu:search-schema');
+          },
+        },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Toggle Theme',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-theme');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
+  }
+}
+
+// Set icon early
+setAppIcon();
+
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
+  }
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+  closeSchemaCacheDatabase();
+  closeHistoryDatabase();
+});
+````
+
 ## File: src/main/ipc/bigquery.ts
 ````typescript
 import { ipcMain } from 'electron';
@@ -33791,6 +34295,31 @@ export function registerBigQueryHandlers(): void {
                 : metadata.numBytes)
             : undefined;
 
+          // Extract partitioning info
+          const timePartitioning = metadata.timePartitioning
+            ? {
+                type: metadata.timePartitioning.type || 'DAY',
+                field: metadata.timePartitioning.field,
+                requirePartitionFilter: metadata.timePartitioning.requirePartitionFilter,
+              }
+            : undefined;
+
+          const rangePartitioning = metadata.rangePartitioning
+            ? {
+                field: metadata.rangePartitioning.field,
+                range: {
+                  start: String(metadata.rangePartitioning.range?.start || ''),
+                  end: String(metadata.rangePartitioning.range?.end || ''),
+                  interval: String(metadata.rangePartitioning.range?.interval || ''),
+                },
+              }
+            : undefined;
+
+          // Extract clustering info
+          const clustering = metadata.clustering?.fields && metadata.clustering.fields.length > 0
+            ? { fields: metadata.clustering.fields }
+            : undefined;
+
           return {
             fields: schema.fields.map(transformField),
             metadata: {
@@ -33798,6 +34327,9 @@ export function registerBigQueryHandlers(): void {
               lastModifiedTime,
               numRows,
               numBytes,
+              timePartitioning,
+              rangePartitioning,
+              clustering,
             },
           };
         } catch (error: any) {
@@ -34074,421 +34606,6 @@ export function registerBigQueryHandlers(): void {
     }
   });
 }
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
-import { registerExportHandlers } from './ipc/export';
-import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-registerSchemaCacheHandlers();
-registerExportHandlers();
-registerQueryHistoryHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        {
-          label: 'Save Query',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => {
-            mainWindow?.webContents.send('menu:save-query');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-        { type: 'separator' },
-        {
-          label: 'Search Schema...',
-          accelerator: 'CmdOrCtrl+P',
-          click: () => {
-            mainWindow?.webContents.send('menu:search-schema');
-          },
-        },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-  closeSchemaCacheDatabase();
-  closeHistoryDatabase();
-});
 ````
 
 ## File: src/main/preload.ts
