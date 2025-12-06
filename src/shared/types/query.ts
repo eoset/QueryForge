@@ -4,19 +4,41 @@
 
 export type TabType = 'query' | 'explorer' | 'saved-queries';
 
+export type ExecutionStatus = 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+
+/**
+ * Split pane - represents one side of a split editor view
+ */
+export interface SplitPane {
+  id: string;
+  queryText: string;
+  isModified: boolean;
+  executionStatus: ExecutionStatus;
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string;
+  lastExecutedQueryText?: string;
+}
+
 export interface QueryTab {
   id: string;
   title: string;
   type?: TabType; // 'query' by default, 'explorer' for Explorer tab
   queryText: string;
   isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  executionStatus: ExecutionStatus;
   jobId?: string;
   results?: QueryResult;
   error?: string;
   lastExecuted?: string; // ISO timestamp
   lastExecutedQueryText?: string; // The query text that was last executed
   savedQueryId?: string;
+  // Split view support
+  isSplit?: boolean;
+  splitPanes?: [SplitPane, SplitPane]; // Left and right panes
+  activeSplitPaneId?: string; // Which pane is currently focused
+  splitRatio?: number; // 0-1, position of the divider (0.5 = 50/50)
 }
 
 export interface SavedQuery {

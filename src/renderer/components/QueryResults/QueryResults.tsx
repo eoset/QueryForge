@@ -3,7 +3,7 @@ import { useTabsStore } from '../../stores/tabs-store';
 import { RowContextMenu } from './RowContextMenu';
 import { ExportMenu, type ExportFormat } from './ExportMenu';
 import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
+import type { QueryTab, QueryResult, ColumnMetadata, Row, ExecutionStatus } from '../../../shared/types/query';
 import { formatBigQueryValue } from '../../utils/bigquery-formatter';
 import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
 import './QueryResults.css';
@@ -11,13 +11,37 @@ import './ExportMenu.css';
 
 const ROWS_PER_PAGE = 200;
 
-export const QueryResults: React.FC = () => {
+interface QueryResultsProps {
+  paneId?: string; // If provided, this is in split mode
+  tabId?: string; // If provided, override the active tab
+}
+
+export const QueryResults: React.FC<QueryResultsProps> = ({ paneId, tabId: propTabId }) => {
+  // Determine if we're in split mode
+  const isSplitMode = !!paneId;
+  
   // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
+  const activeTabId = useTabsStore((state) => propTabId || state.activeTabId);
   const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
+    const targetId = propTabId || state.activeTabId;
+    if (!targetId) return null;
+    return state.tabs.find((t) => t.id === targetId) || null;
   });
+  
+  // Get the split pane if in split mode
+  const splitPane = isSplitMode && activeTab?.splitPanes
+    ? activeTab.splitPanes.find(p => p.id === paneId)
+    : null;
+  
+  // Get error, execution status, and jobId from either split pane or main tab
+  const error = isSplitMode && splitPane ? splitPane.error : activeTab?.error;
+  const executionStatus: ExecutionStatus = isSplitMode && splitPane 
+    ? splitPane.executionStatus 
+    : (activeTab?.executionStatus || 'idle');
+  const jobId = isSplitMode && splitPane ? splitPane.jobId : activeTab?.jobId;
+  
+  // Cache key for split mode includes the pane ID
+  const cacheKey = isSplitMode && paneId && activeTab ? `${activeTab.id}-${paneId}` : activeTabId;
   
   // All hooks must be called before any conditional returns
   const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
@@ -49,9 +73,6 @@ export const QueryResults: React.FC = () => {
   const [isLoadingCache, setIsLoadingCache] = useState(false);
   const [isLoadingPage, setIsLoadingPage] = useState(false);
   const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  const jobId = activeTab?.jobId;
   
   // Listen for progress events during query execution AND background fetching
   useEffect(() => {
@@ -79,7 +100,7 @@ export const QueryResults: React.FC = () => {
   // Listen for rows updates (background fetching of additional pages)
   // Data is saved directly to SQLite by the main process - we just reload from cache
   useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
+    if (!window.electronAPI?.bigquery?.onRowsUpdate || !cacheKey) return;
     
     const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
       // Only process updates for the current job
@@ -88,13 +109,13 @@ export const QueryResults: React.FC = () => {
       // Data is already in SQLite cache - just reload metadata and current page
       if (window.electronAPI?.resultsCache) {
         // Reload metadata to reflect final row count
-        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
+        const metadata = await window.electronAPI.resultsCache.getMetadata(cacheKey);
         if (metadata) {
           setResultsMetadata(metadata);
         }
         
         // Reload current page to ensure we have latest data
-        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
+        const pageRows = await window.electronAPI.resultsCache.getPage(cacheKey, currentPage);
         if (pageRows) {
           setCurrentPageRows(pageRows);
         }
@@ -106,11 +127,11 @@ export const QueryResults: React.FC = () => {
     });
     
     return unsubscribe;
-  }, [activeTabId, jobId, currentPage]);
+  }, [cacheKey, jobId, currentPage]);
   
   // Load metadata from cache when tab changes or when execution completes
   useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
+    if (!cacheKey || !window.electronAPI?.resultsCache) {
       setResultsMetadata(null);
       setCurrentPageRows([]);
       return;
@@ -126,7 +147,7 @@ export const QueryResults: React.FC = () => {
     // Load metadata from cache
     setIsLoadingCache(true);
     window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
+      .getMetadata(cacheKey)
       .then((metadata: {
         columns: ColumnMetadata[];
         totalRows: number;
@@ -151,18 +172,18 @@ export const QueryResults: React.FC = () => {
         setCurrentPageRows([]);
         setIsLoadingCache(false);
       });
-  }, [activeTabId, executionStatus]);
+  }, [cacheKey, executionStatus]);
   
   // Load current page from cache when metadata or page changes
   useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+    if (!cacheKey || !resultsMetadata || !window.electronAPI?.resultsCache) {
       setCurrentPageRows([]);
       return;
     }
     
     setIsLoadingPage(true);
     window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
+      .getPage(cacheKey, currentPage)
       .then((pageRows: Row[] | null) => {
         if (pageRows) {
           setCurrentPageRows(pageRows);
@@ -176,11 +197,11 @@ export const QueryResults: React.FC = () => {
         setCurrentPageRows([]);
         setIsLoadingPage(false);
       });
-  }, [activeTabId, currentPage, resultsMetadata]);
+  }, [cacheKey, currentPage, resultsMetadata]);
   
   // Prefetch adjacent pages for smoother navigation
   useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
+    if (!cacheKey || !resultsMetadata || !window.electronAPI?.resultsCache) {
       return;
     }
     
@@ -188,18 +209,18 @@ export const QueryResults: React.FC = () => {
     
     // Prefetch next page if available
     if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
+      window.electronAPI.resultsCache.getPage(cacheKey, currentPage + 1).catch(() => {
         // Silently fail prefetch
       });
     }
     
     // Prefetch previous page if available
     if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
+      window.electronAPI.resultsCache.getPage(cacheKey, currentPage - 1).catch(() => {
         // Silently fail prefetch
       });
     }
-  }, [activeTabId, currentPage, resultsMetadata]);
+  }, [cacheKey, currentPage, resultsMetadata]);
   
   // Reset column widths when results change (use jobId as stable identifier)
   const resultsJobId = resultsMetadata?.jobId;
@@ -379,14 +400,14 @@ export const QueryResults: React.FC = () => {
 
   // Handle export action - fetches all rows from cache
   const handleExport = useCallback(async (format: ExportFormat) => {
-    if (!activeTabId || !resultsMetadata || isExporting) return;
+    if (!cacheKey || !resultsMetadata || isExporting) return;
 
     setIsExporting(true);
     setExportMenu(null);
 
     try {
       // Fetch all rows from cache for export
-      const allResults = await window.electronAPI?.resultsCache?.get(activeTabId);
+      const allResults = await window.electronAPI?.resultsCache?.get(cacheKey);
       
       if (!allResults) {
         console.error('Failed to fetch results for export');
@@ -426,7 +447,7 @@ export const QueryResults: React.FC = () => {
     } finally {
       setIsExporting(false);
     }
-  }, [activeTabId, resultsMetadata, isExporting]);
+  }, [cacheKey, resultsMetadata, isExporting]);
 
   // Pagination calculations - use metadata for total rows, current page rows are already loaded
   const totalRows = resultsMetadata?.rowsReturned || 0;

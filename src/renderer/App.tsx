@@ -6,8 +6,7 @@ import { SavedQueries } from './components/SavedQueries/SavedQueries';
 import { HelpDialog } from './components/HelpDialog/HelpDialog';
 import { AboutDialog } from './components/AboutDialog/AboutDialog';
 import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
+import { SplitEditorContainer } from './components/SplitEditorContainer/SplitEditorContainer';
 import { DatasetTree } from './components/DatasetTree/DatasetTree';
 import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
 import { QueryHistory } from './components/QueryHistory/QueryHistory';
@@ -28,15 +27,12 @@ const App: React.FC = () => {
   const [showSchemaSearch, setShowSchemaSearch] = useState(false);
   const [theme, setTheme] = useState<Theme>('dark');
   const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
   const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
   const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
   const resizeStartXLeftRef = useRef(0);
   const resizeStartWidthLeftRef = useRef(250);
   const resizeStartXRightRef = useRef(0);
@@ -181,13 +177,6 @@ const App: React.FC = () => {
     }
   }, [handleToggleTheme]);
 
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
-
   const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -203,32 +192,6 @@ const App: React.FC = () => {
     resizeStartXRightRef.current = e.clientX;
     resizeStartWidthRightRef.current = rightSidebarWidth;
   }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
 
   useEffect(() => {
     if (!isResizingLeftSidebar) return;
@@ -439,16 +402,11 @@ const App: React.FC = () => {
             />
           )}
           <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
+            <SplitEditorContainer 
+              editorHeight={editorHeight}
+              onEditorResize={setEditorHeight}
+              theme={theme}
             />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
           </div>
           {schemaSidebar && (
             <>

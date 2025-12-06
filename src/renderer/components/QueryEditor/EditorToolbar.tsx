@@ -8,6 +8,7 @@ interface EditorToolbarProps {
   onExpandSelectStar: () => void;
   onDbtify: () => void;
   onOpenSaveDialog: () => void;
+  onToggleSplit: () => void;
   isExecuting: boolean;
   isConnected: boolean;
   hasQuery: boolean;
@@ -15,6 +16,8 @@ interface EditorToolbarProps {
   isQueryValid: boolean | null;
   enableDbtSupport: boolean;
   savedQueryId: string | null;
+  isSplit: boolean;
+  isSplitMode?: boolean; // Whether this toolbar is in a split pane
 }
 
 export const EditorToolbar: React.FC<EditorToolbarProps> = ({
@@ -24,6 +27,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   onExpandSelectStar,
   onDbtify,
   onOpenSaveDialog,
+  onToggleSplit,
   isExecuting,
   isConnected,
   hasQuery,
@@ -31,6 +35,8 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   isQueryValid,
   enableDbtSupport,
   savedQueryId,
+  isSplit,
+  isSplitMode = false,
 }) => {
   const [isToolsMenuOpen, setIsToolsMenuOpen] = React.useState(false);
   const toolsMenuRef = useRef<HTMLDivElement>(null);
@@ -130,6 +136,17 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
       >
         {savedQueryId ? 'Update' : 'Save'}
       </button>
+      
+      {/* Only show split button if not in a split pane already */}
+      {!isSplitMode && (
+        <button
+          onClick={onToggleSplit}
+          className="split-button"
+          title={isSplit ? 'Close split view (Cmd+\\)' : 'Split editor (Cmd+\\)'}
+        >
+          {isSplit ? '⊟' : '⊞'}
+        </button>
+      )}
       
       {!isConnected && <span className="connection-warning">Not connected</span>}
     </div>

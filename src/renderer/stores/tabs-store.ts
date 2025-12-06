@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
+import type { QueryTab, QueryResult, TabType, SplitPane, ExecutionStatus } from '../../shared/types/query';
 
 interface TabsState {
   tabs: QueryTab[];
@@ -15,6 +15,16 @@ interface TabsState {
   setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
   loadTabs: () => Promise<void>;
   saveTabs: () => Promise<void>;
+  // Split pane functions
+  toggleSplit: (tabId: string) => void;
+  closeSplit: (tabId: string) => void;
+  setActiveSplitPane: (tabId: string, paneId: string) => void;
+  setSplitRatio: (tabId: string, ratio: number) => void;
+  setSplitPaneQuery: (tabId: string, paneId: string, queryText: string) => void;
+  setSplitPaneResults: (tabId: string, paneId: string, results: QueryResult) => void;
+  setSplitPaneError: (tabId: string, paneId: string, error: string) => void;
+  setSplitPaneStatus: (tabId: string, paneId: string, status: ExecutionStatus) => void;
+  updateSplitPane: (tabId: string, paneId: string, updates: Partial<SplitPane>) => void;
 }
 
 function generateTabId(): string {
@@ -216,6 +226,137 @@ export const useTabsStore = create<TabsState>((set, get) => {
 
     setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
       get().updateTab(tabId, { executionStatus: status });
+    },
+
+    // Split pane functions
+    toggleSplit: (tabId: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (!tab) return;
+
+      if (tab.isSplit) {
+        // Close split - merge left pane content back to main tab
+        const leftPane = tab.splitPanes?.[0];
+        get().updateTab(tabId, {
+          isSplit: false,
+          splitPanes: undefined,
+          activeSplitPaneId: undefined,
+          splitRatio: undefined,
+          queryText: leftPane?.queryText || tab.queryText,
+          isModified: leftPane?.isModified || tab.isModified,
+          executionStatus: leftPane?.executionStatus || 'idle',
+          results: leftPane?.results,
+          error: leftPane?.error,
+          jobId: leftPane?.jobId,
+          lastExecuted: leftPane?.lastExecuted,
+          lastExecutedQueryText: leftPane?.lastExecutedQueryText,
+        });
+      } else {
+        // Open split - create two panes
+        const leftPaneId = `${tabId}-left`;
+        const rightPaneId = `${tabId}-right`;
+        
+        const leftPane: SplitPane = {
+          id: leftPaneId,
+          queryText: tab.queryText,
+          isModified: tab.isModified,
+          executionStatus: tab.executionStatus,
+          jobId: tab.jobId,
+          results: tab.results,
+          error: tab.error,
+          lastExecuted: tab.lastExecuted,
+          lastExecutedQueryText: tab.lastExecutedQueryText,
+        };
+        
+        const rightPane: SplitPane = {
+          id: rightPaneId,
+          queryText: '',
+          isModified: false,
+          executionStatus: 'idle',
+        };
+        
+        get().updateTab(tabId, {
+          isSplit: true,
+          splitPanes: [leftPane, rightPane],
+          activeSplitPaneId: leftPaneId,
+          splitRatio: 0.5,
+        });
+      }
+    },
+
+    closeSplit: (tabId: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (!tab || !tab.isSplit) return;
+      
+      // Merge active pane content back to main tab
+      const activePane = tab.splitPanes?.find(p => p.id === tab.activeSplitPaneId) || tab.splitPanes?.[0];
+      get().updateTab(tabId, {
+        isSplit: false,
+        splitPanes: undefined,
+        activeSplitPaneId: undefined,
+        splitRatio: undefined,
+        queryText: activePane?.queryText || tab.queryText,
+        isModified: activePane?.isModified || tab.isModified,
+        executionStatus: activePane?.executionStatus || 'idle',
+        results: activePane?.results,
+        error: activePane?.error,
+        jobId: activePane?.jobId,
+        lastExecuted: activePane?.lastExecuted,
+        lastExecutedQueryText: activePane?.lastExecutedQueryText,
+      });
+    },
+
+    setActiveSplitPane: (tabId: string, paneId: string) => {
+      get().updateTab(tabId, { activeSplitPaneId: paneId });
+    },
+
+    setSplitRatio: (tabId: string, ratio: number) => {
+      get().updateTab(tabId, { splitRatio: Math.max(0.2, Math.min(0.8, ratio)) });
+    },
+
+    updateSplitPane: (tabId: string, paneId: string, updates: Partial<SplitPane>) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (!tab || !tab.splitPanes) return;
+      
+      const updatedPanes = tab.splitPanes.map((pane) =>
+        pane.id === paneId ? { ...pane, ...updates } : pane
+      ) as [SplitPane, SplitPane];
+      
+      get().updateTab(tabId, { splitPanes: updatedPanes });
+    },
+
+    setSplitPaneQuery: (tabId: string, paneId: string, queryText: string) => {
+      get().updateSplitPane(tabId, paneId, {
+        queryText,
+        isModified: queryText !== '',
+      });
+    },
+
+    setSplitPaneResults: (tabId: string, paneId: string, results: QueryResult) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      const pane = tab?.splitPanes?.find(p => p.id === paneId);
+      get().updateSplitPane(tabId, paneId, {
+        results,
+        executionStatus: 'completed',
+        error: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: pane?.queryText || '',
+      });
+    },
+
+    setSplitPaneError: (tabId: string, paneId: string, error: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      const pane = tab?.splitPanes?.find(p => p.id === paneId);
+      get().updateSplitPane(tabId, paneId, {
+        error,
+        executionStatus: 'error',
+        results: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: pane?.queryText || '',
+      });
+    },
+
+    setSplitPaneStatus: (tabId: string, paneId: string, status: ExecutionStatus) => {
+      get().updateSplitPane(tabId, paneId, { executionStatus: status });
     },
   };
 });
