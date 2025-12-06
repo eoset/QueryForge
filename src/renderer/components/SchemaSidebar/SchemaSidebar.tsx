@@ -11,6 +11,24 @@ interface TableMetadata {
   lastModifiedTime?: number;
   numRows?: number;
   numBytes?: number;
+  // Partitioning info
+  timePartitioning?: {
+    type: string; // DAY, HOUR, MONTH, YEAR
+    field?: string; // Column name, or _PARTITIONTIME for ingestion-time partitioning
+    requirePartitionFilter?: boolean;
+  };
+  rangePartitioning?: {
+    field: string;
+    range: {
+      start: string;
+      end: string;
+      interval: string;
+    };
+  };
+  // Clustering info
+  clustering?: {
+    fields: string[];
+  };
 }
 
 interface SchemaSidebarProps {
@@ -151,6 +169,40 @@ export const SchemaSidebar: React.FC<SchemaSidebarProps> = ({
                   <span className="schema-metadata-label">Size:</span>
                   <span className="schema-metadata-value">{formatBytes(metadata.numBytes)}</span>
                 </div>
+                {(metadata.timePartitioning || metadata.rangePartitioning) && (
+                  <div className="schema-metadata-item">
+                    <span className="schema-metadata-label">Partitioned:</span>
+                    <span className="schema-metadata-value schema-metadata-partition">
+                      {metadata.timePartitioning ? (
+                        <>
+                          <span className="schema-partition-badge">{metadata.timePartitioning.type}</span>
+                          <span className="schema-partition-field">
+                            {metadata.timePartitioning.field || '_PARTITIONTIME'}
+                          </span>
+                        </>
+                      ) : metadata.rangePartitioning ? (
+                        <>
+                          <span className="schema-partition-badge">RANGE</span>
+                          <span className="schema-partition-field">
+                            {metadata.rangePartitioning.field}
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                )}
+                {metadata.clustering && metadata.clustering.fields.length > 0 && (
+                  <div className="schema-metadata-item">
+                    <span className="schema-metadata-label">Clustered:</span>
+                    <span className="schema-metadata-value schema-metadata-cluster">
+                      {metadata.clustering.fields.map((field, index) => (
+                        <span key={field} className="schema-cluster-field">
+                          {field}{index < metadata.clustering!.fields.length - 1 ? ', ' : ''}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
             {schema.length === 0 ? (

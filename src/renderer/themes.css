@@ -56,6 +56,8 @@
   --badge-required-text: #f48771;
   --badge-repeated-bg: rgba(197, 134, 192, 0.15);
   --badge-repeated-text: #c586c0;
+  --badge-partition-bg: rgba(86, 156, 214, 0.15);
+  --badge-partition-text: #569cd6;
 }
 
 /* Light theme */
@@ -114,4 +116,6 @@
   --badge-required-text: #d32f2f;
   --badge-repeated-bg: rgba(175, 0, 219, 0.1);
   --badge-repeated-text: #af00db;
+  --badge-partition-bg: rgba(4, 81, 165, 0.1);
+  --badge-partition-text: #0451a5;
 }

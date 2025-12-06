@@ -1027,6 +1027,31 @@ export function registerBigQueryHandlers(): void {
                 : metadata.numBytes)
             : undefined;
 
+          // Extract partitioning info
+          const timePartitioning = metadata.timePartitioning
+            ? {
+                type: metadata.timePartitioning.type || 'DAY',
+                field: metadata.timePartitioning.field,
+                requirePartitionFilter: metadata.timePartitioning.requirePartitionFilter,
+              }
+            : undefined;
+
+          const rangePartitioning = metadata.rangePartitioning
+            ? {
+                field: metadata.rangePartitioning.field,
+                range: {
+                  start: String(metadata.rangePartitioning.range?.start || ''),
+                  end: String(metadata.rangePartitioning.range?.end || ''),
+                  interval: String(metadata.rangePartitioning.range?.interval || ''),
+                },
+              }
+            : undefined;
+
+          // Extract clustering info
+          const clustering = metadata.clustering?.fields && metadata.clustering.fields.length > 0
+            ? { fields: metadata.clustering.fields }
+            : undefined;
+
           return {
             fields: schema.fields.map(transformField),
             metadata: {
@@ -1034,6 +1059,9 @@ export function registerBigQueryHandlers(): void {
               lastModifiedTime,
               numRows,
               numBytes,
+              timePartitioning,
+              rangePartitioning,
+              clustering,
             },
           };
         } catch (error: any) {
