@@ -3,6 +3,16 @@ import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/
 import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 import type { JobDetails } from '../shared/types/bigquery';
+import type {
+  LLMProvider,
+  LLMConfig,
+  LLMSettings,
+  ChatMessage,
+  ChatConversation,
+  ChatResponse,
+  SchemaContext,
+  ChatStreamChunk,
+} from '../shared/types/llm';
 
 /**
  * Electron API exposed to renderer process
@@ -116,6 +126,7 @@ export interface ElectronAPI {
     onToggleTheme(callback: () => void): () => void;
     onSaveQuery(callback: () => void): () => void;
     onSearchSchema(callback: () => void): () => void;
+    onToggleAIAssistant(callback: () => void): () => void;
   };
 
   // App info
@@ -138,6 +149,41 @@ export interface ElectronAPI {
     updateByJobId(jobId: string, totalRows: number): Promise<void>;
     clear(): Promise<void>;
     count(): Promise<number>;
+  };
+
+  // LLM / AI Chat operations
+  llm: {
+    // Settings
+    getSettings(): Promise<LLMSettings>;
+    saveSettings(settings: LLMSettings): Promise<void>;
+    configureProvider(config: LLMConfig): Promise<void>;
+    getProviderConfig(provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null>;
+    hasApiKey(provider: LLMProvider): Promise<boolean>;
+    deleteProviderConfig(provider: LLMProvider): Promise<void>;
+    setActiveProvider(provider: LLMProvider | null): Promise<void>;
+    getActiveProvider(): Promise<LLMProvider | null>;
+    saveSystemPrompt(prompt: string): Promise<void>;
+    getSystemPrompt(): Promise<string>;
+    testConnection(provider?: LLMProvider): Promise<boolean>;
+    isConfigured(): Promise<boolean>;
+    
+    // Chat
+    chat(messages: ChatMessage[], schemaContext?: SchemaContext): Promise<ChatResponse>;
+    chatStream(conversationId: string, messages: ChatMessage[], schemaContext?: SchemaContext): Promise<{ messageId: string }>;
+    onStreamChunk(callback: (data: { conversationId: string; messageId: string; content: string; isComplete: boolean }) => void): () => void;
+    onStreamComplete(callback: (data: { conversationId: string; messageId: string; fullContent: string; containsQuery: boolean; sqlQuery?: string }) => void): () => void;
+    onStreamError(callback: (data: { conversationId: string; error: string }) => void): () => void;
+    
+    // Conversations
+    createConversation(title?: string, tabId?: string): Promise<ChatConversation>;
+    getConversation(id: string): Promise<ChatConversation | null>;
+    listConversations(limit?: number, offset?: number): Promise<ChatConversation[]>;
+    updateConversation(id: string, updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>): Promise<ChatConversation | null>;
+    addMessage(conversationId: string, message: ChatMessage): Promise<ChatConversation | null>;
+    deleteConversation(id: string): Promise<void>;
+    clearConversations(): Promise<void>;
+    searchConversations(query: string, limit?: number): Promise<ChatConversation[]>;
+    getTabConversation(tabId: string): Promise<ChatConversation>;
   };
 }
 
@@ -269,6 +315,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('menu:search-schema', handler);
       return () => ipcRenderer.removeListener('menu:search-schema', handler);
     },
+    onToggleAIAssistant: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-ai-assistant', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-ai-assistant', handler);
+    },
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -286,6 +337,58 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
     clear: () => ipcRenderer.invoke('query-history:clear'),
     count: () => ipcRenderer.invoke('query-history:count'),
+  },
+  llm: {
+    // Settings
+    getSettings: () => ipcRenderer.invoke('llm:getSettings'),
+    saveSettings: (settings: LLMSettings) => ipcRenderer.invoke('llm:saveSettings', settings),
+    configureProvider: (config: LLMConfig) => ipcRenderer.invoke('llm:configureProvider', config),
+    getProviderConfig: (provider: LLMProvider) => ipcRenderer.invoke('llm:getProviderConfig', provider),
+    hasApiKey: (provider: LLMProvider) => ipcRenderer.invoke('llm:hasApiKey', provider),
+    deleteProviderConfig: (provider: LLMProvider) => ipcRenderer.invoke('llm:deleteProviderConfig', provider),
+    setActiveProvider: (provider: LLMProvider | null) => ipcRenderer.invoke('llm:setActiveProvider', provider),
+    getActiveProvider: () => ipcRenderer.invoke('llm:getActiveProvider'),
+    saveSystemPrompt: (prompt: string) => ipcRenderer.invoke('llm:saveSystemPrompt', prompt),
+    getSystemPrompt: () => ipcRenderer.invoke('llm:getSystemPrompt'),
+    testConnection: (provider?: LLMProvider) => ipcRenderer.invoke('llm:testConnection', provider),
+    isConfigured: () => ipcRenderer.invoke('llm:isConfigured'),
+    
+    // Chat
+    chat: (messages: ChatMessage[], schemaContext?: SchemaContext) => 
+      ipcRenderer.invoke('llm:chat', messages, schemaContext),
+    chatStream: (conversationId: string, messages: ChatMessage[], schemaContext?: SchemaContext) =>
+      ipcRenderer.invoke('llm:chatStream', conversationId, messages, schemaContext),
+    onStreamChunk: (callback: (data: { conversationId: string; messageId: string; content: string; isComplete: boolean }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('llm:streamChunk', handler);
+      return () => ipcRenderer.removeListener('llm:streamChunk', handler);
+    },
+    onStreamComplete: (callback: (data: { conversationId: string; messageId: string; fullContent: string; containsQuery: boolean; sqlQuery?: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('llm:streamComplete', handler);
+      return () => ipcRenderer.removeListener('llm:streamComplete', handler);
+    },
+    onStreamError: (callback: (data: { conversationId: string; error: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('llm:streamError', handler);
+      return () => ipcRenderer.removeListener('llm:streamError', handler);
+    },
+    
+    // Conversations
+    createConversation: (title?: string, tabId?: string) => 
+      ipcRenderer.invoke('llm:createConversation', title, tabId),
+    getConversation: (id: string) => ipcRenderer.invoke('llm:getConversation', id),
+    listConversations: (limit?: number, offset?: number) => 
+      ipcRenderer.invoke('llm:listConversations', limit, offset),
+    updateConversation: (id: string, updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>) =>
+      ipcRenderer.invoke('llm:updateConversation', id, updates),
+    addMessage: (conversationId: string, message: ChatMessage) =>
+      ipcRenderer.invoke('llm:addMessage', conversationId, message),
+    deleteConversation: (id: string) => ipcRenderer.invoke('llm:deleteConversation', id),
+    clearConversations: () => ipcRenderer.invoke('llm:clearConversations'),
+    searchConversations: (query: string, limit?: number) =>
+      ipcRenderer.invoke('llm:searchConversations', query, limit),
+    getTabConversation: (tabId: string) => ipcRenderer.invoke('llm:getTabConversation', tabId),
   },
 } as ElectronAPI);
 

@@ -10,6 +10,7 @@ import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-
 import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
 import { registerExportHandlers } from './ipc/export';
 import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { registerLLMHandlers, closeLLMDatabases } from './ipc/llm';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
 import { clearAllResults } from './storage/results-cache-sqlite';
 
@@ -51,6 +52,7 @@ registerResultsCacheHandlers();
 registerSchemaCacheHandlers();
 registerExportHandlers();
 registerQueryHistoryHandlers();
+registerLLMHandlers();
 
 // Register app version handler
 ipcMain.handle('app:getVersion', () => {
@@ -117,6 +119,14 @@ function createMenu(): void {
         { role: 'zoomOut', label: 'Zoom Out' },
         { type: 'separator' },
         { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+        { type: 'separator' },
+        {
+          label: 'Toggle AI Assistant',
+          accelerator: 'CmdOrCtrl+Shift+A',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-ai-assistant');
+          },
+        },
       ],
     },
     {
@@ -408,4 +418,5 @@ app.on('will-quit', () => {
   closeCacheDatabase();
   closeSchemaCacheDatabase();
   closeHistoryDatabase();
+  closeLLMDatabases();
 });
