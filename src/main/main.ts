@@ -7,6 +7,7 @@ import { registerQueriesHandlers } from './ipc/queries';
 import { registerUISettingsHandlers } from './ipc/ui-settings';
 import { registerTabsHandlers } from './ipc/tabs';
 import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
 import { registerExportHandlers } from './ipc/export';
 import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
 import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
@@ -47,6 +48,7 @@ registerQueriesHandlers();
 registerUISettingsHandlers();
 registerTabsHandlers();
 registerResultsCacheHandlers();
+registerSchemaCacheHandlers();
 registerExportHandlers();
 registerQueryHistoryHandlers();
 
@@ -93,6 +95,14 @@ function createMenu(): void {
         { role: 'cut', label: 'Cut' },
         { role: 'copy', label: 'Copy' },
         { role: 'paste', label: 'Paste' },
+        { type: 'separator' },
+        {
+          label: 'Search Schema...',
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            mainWindow?.webContents.send('menu:search-schema');
+          },
+        },
       ],
     },
     {
@@ -396,5 +406,6 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   clearAllResults();
   closeCacheDatabase();
+  closeSchemaCacheDatabase();
   closeHistoryDatabase();
 });

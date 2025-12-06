@@ -14,6 +14,7 @@ import { QueryHistory } from './components/QueryHistory/QueryHistory';
 import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
 import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
 import './themes.css';
 import './App.css';
 
@@ -24,6 +25,7 @@ const App: React.FC = () => {
   const [showSavedQueries, setShowSavedQueries] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [showSchemaSearch, setShowSchemaSearch] = useState(false);
   const [theme, setTheme] = useState<Theme>('dark');
   const [editorHeight, setEditorHeight] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
@@ -165,12 +167,16 @@ const App: React.FC = () => {
       const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
         handleToggleTheme();
       });
+      const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
+        setShowSchemaSearch(true);
+      });
 
       return () => {
         removeHelpListener();
         removeAboutListener();
         removeNewTabListener();
         removeToggleThemeListener();
+        removeSearchSchemaListener();
       };
     }
   }, [handleToggleTheme]);
@@ -318,10 +324,17 @@ const App: React.FC = () => {
   }, [isResizingRightSidebar]);
 
   useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9)
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
     const handleKeyDown = (e: KeyboardEvent) => {
       // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
       const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Schema search: CMD/CTRL + P
+      if (isModifierPressed && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setShowSchemaSearch(true);
+        return;
+      }
       
       // Check if the key is a number between 1-9
       const keyCode = e.key;
@@ -466,6 +479,12 @@ const App: React.FC = () => {
       )}
       {showAboutDialog && (
         <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+      {showSchemaSearch && (
+        <SchemaSearchModal
+          onClose={() => setShowSchemaSearch(false)}
+          onShowSchema={handleShowSchema}
+        />
       )}
     </div>
   );
