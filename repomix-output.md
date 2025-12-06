@@ -165,6 +165,14 @@ src/
       SidebarSwitcher/
         SidebarSwitcher.css
         SidebarSwitcher.tsx
+      SplitEditorContainer/
+        index.ts
+        SplitEditorContainer.css
+        SplitEditorContainer.tsx
+      SplitEditorPane/
+        index.ts
+        SplitEditorPane.css
+        SplitEditorPane.tsx
       TabBar/
         TabBar.css
         TabBar.tsx
@@ -7904,146 +7912,6 @@ export const SidebarHeader: React.FC<SidebarHeaderProps> = ({
 };
 ````
 
-## File: src/renderer/components/TabBar/TabBar.tsx
-````typescript
-import React, { useState, useRef, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import './TabBar.css';
-
-export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, createTab, reorderTabs } = useTabsStore();
-  // Filter out Explorer and Saved Queries tabs (they're now in the sidebar)
-  const queryTabs = tabs.filter(tab => tab.type === 'query');
-  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
-
-  // Create a transparent drag image canvas once
-  useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, 1, 1);
-    }
-    dragImageRef.current = canvas;
-  }, []);
-
-  const handleTabClick = (tabId: string) => {
-    setActiveTab(tabId);
-  };
-
-  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
-    e.stopPropagation();
-    const tab = queryTabs.find((t) => t.id === tabId);
-    
-    if (tab?.isModified) {
-      const confirmed = window.confirm(
-        'This tab has unsaved changes. Are you sure you want to close it?'
-      );
-      if (!confirmed) return;
-    }
-    closeTab(tabId);
-  };
-
-  const handleNewTab = () => {
-    createTab();
-  };
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    // Don't start drag if clicking on the close button
-    const target = e.target as HTMLElement;
-    if (target.closest('.tab-close')) {
-      e.preventDefault();
-      return;
-    }
-    
-    setDraggedTabIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', ''); // Set data to enable drag
-    
-    // Use a transparent canvas as drag image to prevent default browser drag image (globe icon)
-    if (dragImageRef.current) {
-      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (draggedTabIndex !== null && draggedTabIndex !== index) {
-      setDragOverIndex(index);
-    }
-  };
-
-  const handleDragLeave = () => {
-    setDragOverIndex(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault();
-    
-    // Map dropIndex from queryTabs array back to full tabs array
-    const dropTab = queryTabs[dropIndex];
-    if (!dropTab) {
-      setDraggedTabIndex(null);
-      setDragOverIndex(null);
-      return;
-    }
-    
-    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
-    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
-    
-    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
-      reorderTabs(actualDragIndex, actualDropIndex);
-    }
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedTabIndex(null);
-    setDragOverIndex(null);
-  };
-
-  return (
-    <div className="tab-bar">
-      <div className="tabs-container">
-        {queryTabs.map((tab, index) => (
-          <div
-            key={tab.id}
-            draggable
-            onDragStart={(e) => handleDragStart(e, index)}
-            onDragOver={(e) => handleDragOver(e, index)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleDrop(e, index)}
-            onDragEnd={handleDragEnd}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
-              draggedTabIndex === index ? 'dragging' : ''
-            } ${dragOverIndex === index ? 'drag-over' : ''}`}
-            onClick={() => handleTabClick(tab.id)}
-          >
-            <span className="tab-title">{tab.title}</span>
-            {tab.isModified && <span className="modified-indicator">●</span>}
-            <button
-              className="tab-close"
-              onClick={(e) => handleCloseTab(e, tab.id)}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
-          +
-        </button>
-      </div>
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/stores/bigquery-metadata-store.ts
 ````typescript
 import { create } from 'zustand';
@@ -8227,302 +8095,6 @@ export const useQueriesStore = create<QueriesState>((set, get) => ({
     );
   },
 }));
-````
-
-## File: src/renderer/stores/tabs-store.ts
-````typescript
-import { create } from 'zustand';
-import type { QueryTab, QueryResult, TabType } from '../../shared/types/query';
-
-interface TabsState {
-  tabs: QueryTab[];
-  activeTabId: string | null;
-  createTab: () => string;
-  closeTab: (tabId: string) => void;
-  setActiveTab: (tabId: string) => void;
-  reorderTabs: (fromIndex: number, toIndex: number) => void;
-  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
-  setTabQuery: (tabId: string, queryText: string) => void;
-  setTabResults: (tabId: string, results: QueryResult) => void;
-  setTabError: (tabId: string, error: string) => void;
-  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
-  loadTabs: () => Promise<void>;
-  saveTabs: () => Promise<void>;
-}
-
-function generateTabId(): string {
-  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
-
-// Debounce function for saving tabs
-let saveTimeout: NodeJS.Timeout | null = null;
-const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-  }
-  saveTimeout = setTimeout(() => {
-    saveFn().catch((error) => {
-      console.error('Failed to save tabs:', error);
-    });
-  }, delay);
-};
-
-// Filter out any legacy Explorer or Saved Queries tabs
-function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
-  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
-}
-
-export const useTabsStore = create<TabsState>((set, get) => {
-  return {
-    tabs: [
-      {
-        id: generateTabId(),
-        title: 'Query 1',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-      {
-        id: generateTabId(),
-        title: 'Query 2',
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      },
-    ],
-    activeTabId: null,
-
-    loadTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const savedTabs = await window.electronAPI.tabs.getTabs();
-        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
-        
-        // Filter out any legacy Explorer or Saved Queries tabs
-        let filteredTabs = filterStaticTabs(savedTabs || []);
-        
-        if (filteredTabs.length === 0) {
-          // No saved tabs, use default tabs
-          filteredTabs = get().tabs;
-        }
-        
-        // Ensure active tab ID is valid (not a static tab)
-        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
-        
-        if (filteredTabs.length > 0) {
-          set({
-            tabs: filteredTabs,
-            activeTabId: validActiveTabId,
-          });
-        } else {
-          // No tabs left, use default
-          const defaultTabId = get().tabs[0]?.id || null;
-          set({ activeTabId: defaultTabId });
-        }
-      } catch (error) {
-        console.error('Failed to load tabs:', error);
-        // Use default tab if loading fails
-        const defaultTabId = get().tabs[0]?.id || null;
-        set({ activeTabId: defaultTabId });
-      }
-    },
-
-    saveTabs: async () => {
-      if (!window.electronAPI?.tabs) {
-        return;
-      }
-      try {
-        const { tabs, activeTabId } = get();
-        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
-      } catch (error) {
-        console.error('Failed to save tabs:', error);
-      }
-    },
-
-    createTab: () => {
-      const tabs = get().tabs;
-      const newTabId = generateTabId();
-      const newTab: QueryTab = {
-        id: newTabId,
-        title: `Query ${tabs.length + 1}`,
-        type: 'query',
-        queryText: '',
-        isModified: false,
-        executionStatus: 'idle',
-      };
-      const updatedTabs = [...tabs, newTab];
-      set({
-        tabs: updatedTabs,
-        activeTabId: newTabId,
-      });
-      return newTabId;
-    },
-
-    closeTab: (tabId: string) => {
-      const { tabs, activeTabId } = get();
-      const tabIndex = tabs.findIndex((t) => t.id === tabId);
-      if (tabIndex === -1) return;
-
-      const newTabs = tabs.filter((t) => t.id !== tabId);
-      
-      // If closing the active tab, switch to another tab
-      let newActiveTabId = activeTabId;
-      if (activeTabId === tabId) {
-        if (newTabs.length > 0) {
-          // Switch to the tab that was before this one, or the first tab
-          newActiveTabId = newTabs[tabIndex - 1]?.id || newTabs[0]?.id || null;
-        } else {
-          // No tabs left
-          newActiveTabId = null;
-        }
-      }
-
-      set({
-        tabs: newTabs,
-        activeTabId: newActiveTabId,
-      });
-    },
-
-    setActiveTab: (tabId: string) => {
-      set({ activeTabId: tabId });
-    },
-
-    reorderTabs: (fromIndex: number, toIndex: number) => {
-      const { tabs } = get();
-      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
-        return;
-      }
-      
-      const newTabs = [...tabs];
-      const [movedTab] = newTabs.splice(fromIndex, 1);
-      newTabs.splice(toIndex, 0, movedTab);
-      
-      set({ tabs: newTabs });
-    },
-
-    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
-      set((state) => {
-        const updatedTabs = state.tabs.map((tab) =>
-          tab.id === tabId ? { ...tab, ...updates } : tab
-        );
-        return {
-          tabs: updatedTabs,
-        };
-      });
-    },
-
-    setTabQuery: (tabId: string, queryText: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (tab) {
-        get().updateTab(tabId, {
-          queryText,
-          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
-        });
-      }
-    },
-
-    setTabResults: (tabId: string, results: QueryResult) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        results,
-        executionStatus: 'completed',
-        error: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabError: (tabId: string, error: string) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      get().updateTab(tabId, {
-        error,
-        executionStatus: 'error',
-        results: undefined,
-        lastExecuted: new Date().toISOString(),
-        lastExecutedQueryText: tab?.queryText || '',
-      });
-    },
-
-    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
-      get().updateTab(tabId, { executionStatus: status });
-    },
-  };
-});
-
-// Subscribe to tab changes and auto-save (debounced)
-let previousTabs: QueryTab[] = [];
-let previousActiveTabId: string | null = null;
-
-useTabsStore.subscribe((state) => {
-  // Filter out any legacy static tabs that might have been loaded
-  const filteredTabs = filterStaticTabs(state.tabs);
-  if (filteredTabs.length !== state.tabs.length) {
-    // Found static tabs, remove them
-    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
-    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
-    return;
-  }
-  
-  // Check if tabs or activeTabId actually changed
-  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
-  
-  if (tabsChanged) {
-    previousTabs = state.tabs;
-    previousActiveTabId = state.activeTabId;
-    // Auto-save when tabs or activeTabId changes
-    debouncedSave(() => useTabsStore.getState().saveTabs());
-  }
-});
-
-// Track if initialization has been done to prevent multiple calls
-let isInitialized = false;
-
-// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
-// This function can be called multiple times safely (idempotent)
-export function initializeTabsStore(): void {
-  if (isInitialized) {
-    return; // Already initialized
-  }
-
-  if (window.electronAPI?.tabs) {
-    isInitialized = true;
-    
-    useTabsStore.getState().loadTabs().then(() => {
-      // Initialize active tab after loading
-      const state = useTabsStore.getState();
-      if (!state.activeTabId && state.tabs.length > 0) {
-        useTabsStore.setState({ activeTabId: state.tabs[0].id });
-      }
-    }).catch((error) => {
-      console.error('Failed to initialize tabs:', error);
-      // Fallback: Initialize active tab on first load if loading fails
-      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-    });
-
-    // Listen for before-close event to save tabs immediately
-    window.electronAPI.tabs.onBeforeClose(() => {
-      // Clear any pending debounced save and save immediately
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-        saveTimeout = null;
-      }
-      useTabsStore.getState().saveTabs();
-    });
-  } else {
-    // Fallback: Initialize active tab on first load if electronAPI is not available
-    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
-  }
-}
-
-// Try to initialize immediately if electronAPI is already available
-// Otherwise, it will be initialized from App.tsx
-if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
-  initializeTabsStore();
-}
 ````
 
 ## File: src/renderer/index.tsx
@@ -12433,147 +12005,6 @@ export const EditorStatusBar: React.FC<EditorStatusBarProps> = ({
 };
 ````
 
-## File: src/renderer/components/QueryEditor/EditorToolbar.tsx
-````typescript
-import React, { useRef, useEffect } from 'react';
-import './QueryEditor.css';
-
-interface EditorToolbarProps {
-  onExecute: () => void;
-  onCancel: () => void;
-  onFormat: () => void;
-  onExpandSelectStar: () => void;
-  onDbtify: () => void;
-  onOpenSaveDialog: () => void;
-  isExecuting: boolean;
-  isConnected: boolean;
-  hasQuery: boolean;
-  hasDbtSyntax: boolean;
-  isQueryValid: boolean | null;
-  enableDbtSupport: boolean;
-  savedQueryId: string | null;
-}
-
-export const EditorToolbar: React.FC<EditorToolbarProps> = ({
-  onExecute,
-  onCancel,
-  onFormat,
-  onExpandSelectStar,
-  onDbtify,
-  onOpenSaveDialog,
-  isExecuting,
-  isConnected,
-  hasQuery,
-  hasDbtSyntax,
-  isQueryValid,
-  enableDbtSupport,
-  savedQueryId,
-}) => {
-  const [isToolsMenuOpen, setIsToolsMenuOpen] = React.useState(false);
-  const toolsMenuRef = useRef<HTMLDivElement>(null);
-
-  // Close tools menu on click outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (toolsMenuRef.current && target && !toolsMenuRef.current.contains(target)) {
-        setIsToolsMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleToolAction = (action: () => void) => {
-    action();
-    setIsToolsMenuOpen(false);
-  };
-
-  const shouldDisableRunButton = isExecuting || !isConnected;
-
-  return (
-    <div className="query-editor-toolbar">
-      <button
-        onClick={onExecute}
-        disabled={shouldDisableRunButton}
-        className="run-button"
-      >
-        {isExecuting ? (
-          'Executing...'
-        ) : (
-          <>
-            Run <span className="arrow-icon">→</span>
-          </>
-        )}
-      </button>
-      
-      {isExecuting && (
-        <button onClick={onCancel} className="cancel-button">
-          Cancel
-        </button>
-      )}
-      
-      <div className="tools-dropdown" ref={toolsMenuRef}>
-        <button
-          onClick={() => setIsToolsMenuOpen((prev) => !prev)}
-          className={`tools-button${isToolsMenuOpen ? ' open' : ''}`}
-          aria-haspopup="true"
-          aria-expanded={isToolsMenuOpen}
-        >
-          Tools <span className="arrow-icon">▾</span>
-        </button>
-        
-        {isToolsMenuOpen && (
-          <div className="tools-menu">
-            <button
-              onClick={() => handleToolAction(onFormat)}
-              disabled={!hasQuery}
-              className="tools-menu-item"
-              title="Format SQL query"
-            >
-              Format
-            </button>
-            <button
-              onClick={() => handleToolAction(onExpandSelectStar)}
-              disabled={!hasQuery || !isConnected}
-              className="tools-menu-item"
-              title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
-            >
-              Expand *
-            </button>
-            {enableDbtSupport && (
-              <button
-                onClick={() => handleToolAction(onDbtify)}
-                disabled={!hasQuery || (!hasDbtSyntax && isQueryValid !== true)}
-                className="tools-menu-item"
-                title={
-                  hasDbtSyntax
-                    ? 'Convert dbt source/ref syntax back to BigQuery table references'
-                    : 'Convert table references to dbt source syntax'
-                }
-              >
-                {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      
-      <button
-        onClick={onOpenSaveDialog}
-        disabled={!hasQuery}
-        className="save-button"
-      >
-        {savedQueryId ? 'Update' : 'Save'}
-      </button>
-      
-      {!isConnected && <span className="connection-warning">Not connected</span>}
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/components/QueryEditor/index.ts
 ````typescript
 // QueryEditor subcomponents
@@ -14905,139 +14336,306 @@ export const SidebarSwitcher: React.FC<SidebarSwitcherProps> = ({
 };
 ````
 
-## File: src/renderer/components/TabBar/TabBar.css
+## File: src/renderer/components/SplitEditorContainer/index.ts
+````typescript
+export { SplitEditorContainer } from './SplitEditorContainer';
+````
+
+## File: src/renderer/components/SplitEditorPane/index.ts
+````typescript
+export { SplitEditorPane } from './SplitEditorPane';
+````
+
+## File: src/renderer/components/SplitEditorPane/SplitEditorPane.css
 ````css
-.tab-bar {
+.split-editor-pane {
   display: flex;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-}
-
-.tabs-container {
-  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
   flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  align-items: center;
+  border: 1px solid transparent;
+  transition: border-color 0.15s ease;
 }
 
-.tab {
-  display: flex;
-  align-items: center;
-  padding: 0 0.75rem;
-  background-color: var(--bg-tertiary);
-  border-right: 1px solid var(--border-primary);
-  cursor: pointer;
-  user-select: none;
-  min-width: 120px;
-  max-width: 200px;
+.split-editor-pane.active {
+  border-color: var(--accent-primary);
+}
+
+.split-pane-editor {
+  flex: 0 0 auto;
+  min-height: 100px;
+  max-height: 500px;
+  overflow: hidden;
+}
+
+.split-pane-resize-handle {
+  height: 4px;
+  background-color: var(--border-primary);
+  cursor: row-resize;
+  flex-shrink: 0;
   position: relative;
-  height: 35px;
-  color: var(--text-primary);
   transition: background-color 0.15s ease;
 }
 
-.tab[draggable='true'] {
-  cursor: grab;
+.split-pane-resize-handle:hover {
+  background-color: var(--accent-primary);
 }
 
-.tab[draggable='true']:active {
-  cursor: grabbing;
-}
-
-.tab:hover {
-  background-color: var(--bg-hover);
-}
-
-.tab.active {
-  background-color: var(--bg-primary);
-  border-bottom: 2px solid var(--accent-primary);
-  color: var(--text-active);
-  font-weight: 500;
-}
-
-.tab.dragging {
-  opacity: 0.5;
-  cursor: grabbing;
-}
-
-.tab.drag-over {
-  border-left: 2px solid var(--accent-primary);
-  padding-left: calc(0.75rem - 2px);
-}
-
-.tab.modified .tab-title::after {
+.split-pane-resize-handle::before {
   content: '';
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  cursor: row-resize;
 }
 
-.tab-title {
+.split-pane-results {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.8125rem;
+  background-color: var(--bg-primary);
+}
+````
+
+## File: src/renderer/components/TabBar/TabBar.tsx
+````typescript
+import React, { useState, useRef, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { SplitSide } from '../../../shared/types/query';
+import './TabBar.css';
+
+interface TabBarProps {
+  side?: SplitSide; // If provided, only show tabs for this side
 }
 
-.modified-indicator {
-  color: var(--accent-primary);
-  margin-left: 0.25rem;
-  font-size: 0.75rem;
-}
+export const TabBar: React.FC<TabBarProps> = ({ side }) => {
+  const { 
+    tabs, 
+    activeTabId, 
+    setActiveTab, 
+    closeTab, 
+    createTab, 
+    reorderTabs,
+    isSplitView,
+    activeLeftTabId,
+    activeRightTabId,
+    splitTabToRight,
+    setActiveSideTab,
+  } = useTabsStore();
+  
+  // Filter tabs based on side (when in split view) or show all (when not split)
+  const queryTabs = tabs.filter(tab => {
+    if (tab.type !== 'query') return false;
+    if (!isSplitView) return true;
+    if (side === 'right') return tab.splitSide === 'right';
+    return !tab.splitSide || tab.splitSide === 'left';
+  });
+  
+  // Determine active tab for this side
+  const sideActiveTabId = side === 'right' ? activeRightTabId : (side === 'left' ? activeLeftTabId : activeTabId);
+  
+  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [dropdownTabId, setDropdownTabId] = useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const dragImageRef = useRef<HTMLCanvasElement | null>(null);
 
-.tab-close {
-  margin-left: 0.5rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  color: var(--text-secondary);
-  padding: 0;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
+  // Create a transparent drag image canvas once
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, 1, 1);
+    }
+    dragImageRef.current = canvas;
+  }, []);
 
-.tab-close:hover {
-  background-color: var(--accent-close-hover);
-  color: white;
-}
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setDropdownTabId(null);
+      }
+    };
+    
+    if (dropdownTabId) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [dropdownTabId]);
 
-.tab-close:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
+  const handleTabClick = (tabId: string) => {
+    if (side && isSplitView) {
+      setActiveSideTab(side, tabId);
+    } else {
+      setActiveTab(tabId);
+    }
+  };
 
-.tab-close:disabled:hover {
-  background-color: transparent;
-  color: var(--text-secondary);
-}
+  const handleCloseTab = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    const tab = queryTabs.find((t) => t.id === tabId);
+    
+    if (tab?.isModified) {
+      const confirmed = window.confirm(
+        'This tab has unsaved changes. Are you sure you want to close it?'
+      );
+      if (!confirmed) return;
+    }
+    closeTab(tabId);
+  };
 
-.new-tab-button {
-  padding: 0 0.75rem;
-  background: none;
-  border: none;
-  border-left: 1px solid var(--border-primary);
-  cursor: pointer;
-  font-size: 1.25rem;
-  color: var(--text-secondary);
-  font-weight: 300;
-  height: 35px;
-  display: flex;
-  align-items: center;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  flex-shrink: 0;
-}
+  const handleNewTab = () => {
+    createTab(side);
+  };
 
-.new-tab-button:hover {
-  background-color: var(--bg-hover);
-  color: var(--text-primary);
-}
+  const handleDropdownClick = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    if (dropdownTabId === tabId) {
+      setDropdownTabId(null);
+      setDropdownPosition(null);
+    } else {
+      // Calculate position for fixed dropdown
+      const button = e.currentTarget as HTMLElement;
+      const rect = button.getBoundingClientRect();
+      setDropdownPosition({
+        top: rect.bottom + 2,
+        left: rect.left,
+      });
+      setDropdownTabId(tabId);
+    }
+  };
+
+  const handleSplitToRight = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    setDropdownTabId(null);
+    setDropdownPosition(null);
+    splitTabToRight(tabId);
+  };
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    // Don't start drag if clicking on the close button or dropdown
+    const target = e.target as HTMLElement;
+    if (target.closest('.tab-close') || target.closest('.tab-dropdown')) {
+      e.preventDefault();
+      return;
+    }
+    
+    setDraggedTabIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', '');
+    
+    if (dragImageRef.current) {
+      e.dataTransfer.setDragImage(dragImageRef.current, 0, 0);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedTabIndex !== null && draggedTabIndex !== index) {
+      setDragOverIndex(index);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    
+    const dropTab = queryTabs[dropIndex];
+    if (!dropTab) {
+      setDraggedTabIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    
+    const actualDropIndex = tabs.findIndex(t => t.id === dropTab.id);
+    const actualDragIndex = draggedTabIndex !== null ? tabs.findIndex(t => t.id === queryTabs[draggedTabIndex]?.id) : null;
+    
+    if (actualDragIndex !== null && actualDragIndex !== -1 && actualDropIndex !== -1 && actualDragIndex !== actualDropIndex) {
+      reorderTabs(actualDragIndex, actualDropIndex);
+    }
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedTabIndex(null);
+    setDragOverIndex(null);
+  };
+
+  return (
+    <div className={`tab-bar ${side ? `tab-bar-${side}` : ''}`}>
+      <div className="tabs-container">
+        {queryTabs.map((tab, index) => (
+          <div
+            key={tab.id}
+            draggable
+            onDragStart={(e) => handleDragStart(e, index)}
+            onDragOver={(e) => handleDragOver(e, index)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleDrop(e, index)}
+            onDragEnd={handleDragEnd}
+            className={`tab ${tab.id === sideActiveTabId ? 'active' : ''} ${tab.isModified ? 'modified' : ''} ${
+              draggedTabIndex === index ? 'dragging' : ''
+            } ${dragOverIndex === index ? 'drag-over' : ''}`}
+            onClick={() => handleTabClick(tab.id)}
+          >
+            <span className="tab-title">{tab.title}</span>
+            {tab.isModified && <span className="modified-indicator">●</span>}
+            
+            {/* Dropdown button - only show if not already in split view or on left side */}
+            {(!isSplitView || side === 'left' || !side) && (
+              <div className="tab-dropdown-container" ref={dropdownTabId === tab.id ? dropdownRef : null}>
+                <button
+                  className="tab-dropdown"
+                  onClick={(e) => handleDropdownClick(e, tab.id)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title="Tab options"
+                >
+                  <span className="dropdown-arrow">▾</span>
+                </button>
+                {dropdownTabId === tab.id && dropdownPosition && (
+                  <div 
+                    className="tab-dropdown-menu"
+                    style={{ top: dropdownPosition.top, left: dropdownPosition.left }}
+                  >
+                    <button 
+                      className="tab-dropdown-item"
+                      onClick={(e) => handleSplitToRight(e, tab.id)}
+                    >
+                      Split to Right
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <button
+              className="tab-close"
+              onClick={(e) => handleCloseTab(e, tab.id)}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button className="new-tab-button" onClick={handleNewTab} title="New Tab">
+          +
+        </button>
+      </div>
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
@@ -24356,658 +23954,6 @@ export const QueryHistory = memo(QueryHistoryComponent, (prevProps, nextProps) =
 });
 ````
 
-## File: src/renderer/components/QueryResults/QueryResults.tsx
-````typescript
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { useTabsStore } from '../../stores/tabs-store';
-import { RowContextMenu } from './RowContextMenu';
-import { ExportMenu, type ExportFormat } from './ExportMenu';
-import { CanvasTable } from './CanvasTable';
-import type { QueryTab, QueryResult, ColumnMetadata, Row } from '../../../shared/types/query';
-import { formatBigQueryValue } from '../../utils/bigquery-formatter';
-import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
-import './QueryResults.css';
-import './ExportMenu.css';
-
-const ROWS_PER_PAGE = 200;
-
-export const QueryResults: React.FC = () => {
-  // Use separate selectors to ensure reactivity for each property
-  const activeTabId = useTabsStore((state) => state.activeTabId);
-  const activeTab = useTabsStore((state) => {
-    if (!activeTabId) return null;
-    return state.tabs.find((t) => t.id === activeTabId) || null;
-  });
-  
-  // All hooks must be called before any conditional returns
-  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
-  const [currentPage, setCurrentPage] = useState(1);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    rowIndex?: number;
-    columnIndex?: number;
-    isRowNumberColumn?: boolean;
-  } | null>(null);
-  const [exportMenu, setExportMenu] = useState<{ x: number; y: number } | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [sortColumn, setSortColumn] = useState<number | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
-  
-  // Store metadata and current page separately for efficient cache access
-  const [resultsMetadata, setResultsMetadata] = useState<{
-    columns: any[];
-    totalRows: number;
-    rowsReturned: number;
-    executionTimeMs: number;
-    bytesProcessed?: number;
-    jobId: string;
-    hasMore: boolean;
-  } | null>(null);
-  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
-  const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isLoadingPage, setIsLoadingPage] = useState(false);
-  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
-  const error = activeTab?.error;
-  const executionStatus: QueryTab['executionStatus'] = activeTab?.executionStatus || 'idle';
-  const jobId = activeTab?.jobId;
-  
-  // Listen for progress events during query execution AND background fetching
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onProgress) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
-      // Show progress during initial execution or background page fetching
-      if (data.jobId === jobId) {
-        setProgressMessage(data.message);
-        setIsBackgroundFetching(!data.isComplete);
-      }
-    });
-    
-    return unsubscribe;
-  }, [jobId]);
-  
-  // Clear progress when execution status changes to idle or error
-  useEffect(() => {
-    if (executionStatus === 'idle' || executionStatus === 'error') {
-      setProgressMessage(null);
-      setIsBackgroundFetching(false);
-    }
-  }, [executionStatus]);
-  
-  // Listen for rows updates (background fetching of additional pages)
-  // Data is saved directly to SQLite by the main process - we just reload from cache
-  useEffect(() => {
-    if (!window.electronAPI?.bigquery?.onRowsUpdate || !activeTabId) return;
-    
-    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
-      // Only process updates for the current job
-      if (data.jobId !== jobId) return;
-      
-      // Data is already in SQLite cache - just reload metadata and current page
-      if (window.electronAPI?.resultsCache) {
-        // Reload metadata to reflect final row count
-        const metadata = await window.electronAPI.resultsCache.getMetadata(activeTabId);
-        if (metadata) {
-          setResultsMetadata(metadata);
-        }
-        
-        // Reload current page to ensure we have latest data
-        const pageRows = await window.electronAPI.resultsCache.getPage(activeTabId, currentPage);
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        }
-        
-        // Clear loading indicators
-        setProgressMessage(null);
-        setIsBackgroundFetching(false);
-      }
-    });
-    
-    return unsubscribe;
-  }, [activeTabId, jobId, currentPage]);
-  
-  // Load metadata from cache when tab changes or when execution completes
-  useEffect(() => {
-    if (!activeTabId || !window.electronAPI?.resultsCache) {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // If query is running, don't load from cache (wait for new results)
-    if (executionStatus === 'running') {
-      setResultsMetadata(null);
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    // Load metadata from cache
-    setIsLoadingCache(true);
-    window.electronAPI.resultsCache
-      .getMetadata(activeTabId)
-      .then((metadata: {
-        columns: ColumnMetadata[];
-        totalRows: number;
-        rowsReturned: number;
-        executionTimeMs: number;
-        bytesProcessed?: number;
-        jobId: string;
-        hasMore: boolean;
-      } | null) => {
-        if (metadata) {
-          setResultsMetadata(metadata);
-          setIsLoadingCache(false);
-        } else {
-          setResultsMetadata(null);
-          setCurrentPageRows([]);
-          setIsLoadingCache(false);
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load results metadata from cache:', err);
-        setResultsMetadata(null);
-        setCurrentPageRows([]);
-        setIsLoadingCache(false);
-      });
-  }, [activeTabId, executionStatus]);
-  
-  // Load current page from cache when metadata or page changes
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      setCurrentPageRows([]);
-      return;
-    }
-    
-    setIsLoadingPage(true);
-    window.electronAPI.resultsCache
-      .getPage(activeTabId, currentPage)
-      .then((pageRows: Row[] | null) => {
-        if (pageRows) {
-          setCurrentPageRows(pageRows);
-        } else {
-          setCurrentPageRows([]);
-        }
-        setIsLoadingPage(false);
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to load page from cache:', err);
-        setCurrentPageRows([]);
-        setIsLoadingPage(false);
-      });
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Prefetch adjacent pages for smoother navigation
-  useEffect(() => {
-    if (!activeTabId || !resultsMetadata || !window.electronAPI?.resultsCache) {
-      return;
-    }
-    
-    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
-    
-    // Prefetch next page if available
-    if (currentPage < totalPages) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage + 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-    
-    // Prefetch previous page if available
-    if (currentPage > 1) {
-      window.electronAPI.resultsCache.getPage(activeTabId, currentPage - 1).catch(() => {
-        // Silently fail prefetch
-      });
-    }
-  }, [activeTabId, currentPage, resultsMetadata]);
-  
-  // Reset column widths when results change (use jobId as stable identifier)
-  const resultsJobId = resultsMetadata?.jobId;
-  const resultsColumnCount = resultsMetadata?.columns?.length;
-  
-  useEffect(() => {
-    if (resultsJobId !== undefined) {
-      setColumnWidths({});
-      setCurrentPage(1); // Reset to first page when results change
-      setSortColumn(null); // Reset sorting when results change
-      setSortDirection(null);
-    }
-  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
-
-  // Sort rows based on selected column and direction
-  const sortedRows = React.useMemo(() => {
-    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
-      return currentPageRows;
-    }
-
-    const sorted = [...currentPageRows].sort((a, b) => {
-      const aValue = a.values[sortColumn];
-      const bValue = b.values[sortColumn];
-      const column = resultsMetadata?.columns[sortColumn];
-      const columnType = (column?.type || '').toUpperCase();
-
-      // Handle null/undefined values
-      if (aValue === null || aValue === undefined) {
-        return bValue === null || bValue === undefined ? 0 : 1;
-      }
-      if (bValue === null || bValue === undefined) {
-        return -1;
-      }
-
-      let comparison = 0;
-
-      // Compare based on column type
-      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
-        comparison = Number(aValue) - Number(bValue);
-      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
-        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
-      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
-        const aDate = new Date(aValue).getTime();
-        const bDate = new Date(bValue).getTime();
-        comparison = aDate - bDate;
-      } else {
-        // String comparison (case-insensitive)
-        const aStr = String(aValue).toLowerCase();
-        const bStr = String(bValue).toLowerCase();
-        comparison = aStr.localeCompare(bStr);
-      }
-
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
-
-    return sorted;
-  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
-
-  // Create a QueryResult-like object for compatibility with existing code
-  const results: QueryResult | null = resultsMetadata
-    ? {
-        columns: resultsMetadata.columns,
-        rows: sortedRows, // Use sorted rows instead of currentPageRows
-        totalRows: resultsMetadata.totalRows,
-        rowsReturned: resultsMetadata.rowsReturned,
-        executionTimeMs: resultsMetadata.executionTimeMs,
-        bytesProcessed: resultsMetadata.bytesProcessed,
-        jobId: resultsMetadata.jobId,
-        hasMore: resultsMetadata.hasMore,
-      }
-    : null;
-
-  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
-    setColumnWidths((prev) => ({
-      ...prev,
-      [columnIndex]: width,
-    }));
-  }, []);
-
-  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      rowIndex,
-      isRowNumberColumn,
-    });
-  }, []);
-
-  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
-    // Pass both type and name to formatter for better date detection
-    return formatBigQueryValue(value, columnType, columnName);
-  }, []);
-
-  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
-    const formatted = formatValue(val, columnType, columnName);
-    // Escape commas, quotes, and newlines in values
-    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
-      return `"${formatted.replace(/"/g, '""')}"`;
-    }
-    return formatted;
-  }, [formatValue]);
-
-  const handleCopyRowValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
-
-    // Use sorted rows from results (which matches what's displayed)
-    const rowIndex = contextMenu.rowIndex;
-    const row = results.rows[rowIndex];
-    
-    if (!row) return;
-
-    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
-    const values = row.values.map((val: any, idx: number) => {
-      const col = results.columns[idx];
-      return formatCSVValue(val, col?.type, col?.name);
-    });
-
-    // Format: header1,header2,header3\nvalue1,value2,value3
-    const csvText = [headers.join(','), values.join(',')].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleCopyColumnValues = useCallback(() => {
-    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
-
-    const columnIndex = contextMenu.columnIndex;
-    const column = results.columns[columnIndex];
-    
-    if (!column) return;
-
-    // Get header
-    const header = formatCSVValue(column.name);
-    
-    // Get all values for this column from sorted rows (matches what's displayed)
-    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
-
-    // Format: header\nvalue1\nvalue2\nvalue3...
-    const csvText = [header, ...values].join('\n');
-    
-    // Copy to clipboard
-    navigator.clipboard.writeText(csvText).catch((err) => {
-      console.error('Failed to copy to clipboard:', err);
-    });
-  }, [results, contextMenu, formatCSVValue]);
-
-  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      columnIndex,
-    });
-  }, []);
-
-  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
-    setSortColumn(columnIndex);
-    setSortDirection(direction);
-  }, []);
-
-  // Export button click handler
-  const handleExportClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    setExportMenu({
-      x: rect.left,
-      y: rect.bottom + 4,
-    });
-  }, []);
-
-  // Handle export action - fetches all rows from cache
-  const handleExport = useCallback(async (format: ExportFormat) => {
-    if (!activeTabId || !resultsMetadata || isExporting) return;
-
-    setIsExporting(true);
-    setExportMenu(null);
-
-    try {
-      // Fetch all rows from cache for export
-      const allResults = await window.electronAPI?.resultsCache?.get(activeTabId);
-      
-      if (!allResults) {
-        console.error('Failed to fetch results for export');
-        return;
-      }
-
-      const columns = allResults.columns;
-      const rows = allResults.rows;
-
-      if (format === 'csv') {
-        const csvContent = resultsToCSV(columns, rows);
-        const result = await window.electronAPI.export.saveFile(csvContent, {
-          format: 'csv',
-          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
-        });
-        if (result.error) {
-          console.error('Export failed:', result.error);
-        }
-      } else if (format === 'json') {
-        const jsonContent = resultsToJSON(columns, rows);
-        const result = await window.electronAPI.export.saveFile(jsonContent, {
-          format: 'json',
-          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
-        });
-        if (result.error) {
-          console.error('Export failed:', result.error);
-        }
-      } else if (format === 'clipboard-csv') {
-        const csvContent = resultsToCSV(columns, rows);
-        await navigator.clipboard.writeText(csvContent);
-      } else if (format === 'clipboard-json') {
-        const jsonContent = resultsToJSON(columns, rows);
-        await navigator.clipboard.writeText(jsonContent);
-      }
-    } catch (error) {
-      console.error('Export failed:', error);
-    } finally {
-      setIsExporting(false);
-    }
-  }, [activeTabId, resultsMetadata, isExporting]);
-
-  // Pagination calculations - use metadata for total rows, current page rows are already loaded
-  const totalRows = resultsMetadata?.rowsReturned || 0;
-  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
-
-  const handlePreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-
-  const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-
-  // Now we can do conditional returns after all hooks
-  if (error) {
-    return (
-      <div className="query-results">
-        <div className="error-results">
-          <strong>Error:</strong> {error}
-        </div>
-      </div>
-    );
-  }
-
-  if (!resultsMetadata) {
-    // Show progress message if available, otherwise show default messages
-    const message = executionStatus === 'running' 
-      ? (progressMessage || 'Executing query...')
-      : isLoadingCache
-      ? 'Loading results...'
-      : 'Execute a query to see results here.';
-    
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>{message}</div>
-          {(executionStatus === 'running' || isLoadingCache) && (
-            <div className="query-spinner-container">
-              <div className="query-spinner"></div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-  
-  // Show loading indicator while page is loading
-  if (isLoadingPage && currentPageRows.length === 0) {
-    return (
-      <div className="query-results">
-        <div className="no-results">
-          <div>Loading page {currentPage}...</div>
-          <div className="query-spinner-container">
-            <div className="query-spinner"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if we have columns and rows to display
-  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
-  const hasRows = currentPageRows && currentPageRows.length > 0;
-
-  // Determine how to display row count
-  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
-  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
-  // - hasMore indicates if there are more rows beyond our limit
-  const displayRowCount = () => {
-    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
-      // We hit the limit - show how many we have of the total
-      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else if (resultsMetadata.hasMore) {
-      // Still loading more rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    } else {
-      // We have all rows
-      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
-    }
-  };
-
-  if (!hasColumns && !hasRows) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">No data to display (empty result set).</div>
-      </div>
-    );
-  }
-
-  if (!hasColumns) {
-    return (
-      <div className="query-results">
-        <div className="results-header">
-          <div className="results-info">
-            <span>{displayRowCount()}</span>
-            <span> • {resultsMetadata.executionTimeMs}ms</span>
-            {resultsMetadata.bytesProcessed && (
-              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-            )}
-            {progressMessage && (
-              <span className="loading-indicator"> • {progressMessage}</span>
-            )}
-          </div>
-        </div>
-        <div className="no-results">Error: No column information available.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="query-results">
-      <div className="results-header">
-        <div className="results-info">
-          <span>{displayRowCount()}</span>
-          <span> • {resultsMetadata.executionTimeMs}ms</span>
-          {resultsMetadata.bytesProcessed && (
-            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
-          )}
-          {progressMessage && (
-            <span className="loading-indicator"> • {progressMessage}</span>
-          )}
-        </div>
-        <button
-          className="export-button"
-          onClick={handleExportClick}
-          disabled={isExporting || !hasRows}
-          title="Export results"
-        >
-          <span className="export-button-icon">⬇</span>
-          <span className="export-button-text">Export</span>
-        </button>
-      </div>
-      <div className="results-table-container">
-        {hasRows && results ? (
-          <CanvasTable
-            results={results}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-            onRowContextMenu={handleRowContextMenu}
-            onColumnContextMenu={handleColumnContextMenu}
-            formatValue={formatValue}
-            currentPage={currentPage}
-            rowsPerPage={ROWS_PER_PAGE}
-            sortColumn={sortColumn}
-            sortDirection={sortDirection}
-            onSortColumn={handleSortColumn}
-          />
-        ) : (
-          <div className="no-rows-message">No rows returned</div>
-        )}
-      </div>
-      {hasRows && totalPages > 1 && (
-        <div className="results-pagination">
-          <button
-            className="pagination-button"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-            title="Previous page"
-          >
-            ‹
-          </button>
-          <span className="pagination-info">
-            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-            title="Next page"
-          >
-            ›
-          </button>
-        </div>
-      )}
-      {contextMenu && (
-        <RowContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
-          menuLabel={
-            contextMenu.columnIndex !== undefined 
-              ? 'Copy column values (with header)' 
-              : contextMenu.isRowNumberColumn 
-                ? 'Copy row as CSV' 
-                : 'Copy values (with headers)'
-          }
-        />
-      )}
-      {exportMenu && (
-        <ExportMenu
-          x={exportMenu.x}
-          y={exportMenu.y}
-          onClose={() => setExportMenu(null)}
-          onExport={handleExport}
-          isExporting={isExporting}
-        />
-      )}
-    </div>
-  );
-};
-````
-
 ## File: src/renderer/components/SchemaSidebar/SchemaSidebar.css
 ````css
 .schema-sidebar {
@@ -25251,6 +24197,1184 @@ export const QueryResults: React.FC = () => {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 0.6875rem;
   color: var(--text-primary);
+}
+````
+
+## File: src/renderer/components/SplitEditorContainer/SplitEditorContainer.css
+````css
+.split-editor-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.split-editor-container.single-mode {
+  flex-direction: column;
+}
+
+.split-editor-container.split-mode {
+  flex-direction: row;
+}
+
+/* Split pane wrapper - holds tab bar + content */
+.split-pane-wrapper {
+  height: 100%;
+  min-width: 200px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Content area below the tab bar */
+.split-pane-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Editor and results layout within a pane */
+.editor-results-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.split-divider {
+  width: 4px;
+  background-color: var(--border-primary);
+  cursor: col-resize;
+  flex-shrink: 0;
+  position: relative;
+  transition: background-color 0.15s ease;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.split-divider:hover {
+  background-color: var(--accent-primary);
+}
+
+.split-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -2px;
+  right: -2px;
+  bottom: 0;
+  cursor: col-resize;
+}
+
+/* Close split button on the divider */
+.close-split-button {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+  z-index: 10;
+}
+
+.split-divider:hover .close-split-button {
+  opacity: 1;
+}
+
+.close-split-button:hover {
+  background-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+/* Query section styling */
+.query-section {
+  flex: 0 0 auto;
+  min-height: 200px;
+  max-height: 800px;
+  border-bottom: 1px solid var(--border-primary);
+  overflow: hidden;
+}
+
+.resize-handle-horizontal {
+  height: 4px;
+  background-color: var(--border-primary);
+  cursor: row-resize;
+  flex-shrink: 0;
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+
+.resize-handle-horizontal:hover {
+  background-color: var(--accent-primary);
+}
+
+.resize-handle-horizontal::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  cursor: row-resize;
+}
+
+.results-section {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+}
+````
+
+## File: src/renderer/components/SplitEditorContainer/SplitEditorContainer.tsx
+````typescript
+import React, { useCallback, useRef, useEffect, useState } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { TabBar } from '../TabBar/TabBar';
+import { QueryEditor } from '../QueryEditor/QueryEditor';
+import { QueryResults } from '../QueryResults/QueryResults';
+import './SplitEditorContainer.css';
+
+interface SplitEditorContainerProps {
+  editorHeight: number;
+  onEditorResize: (height: number) => void;
+  theme: 'dark' | 'light';
+}
+
+export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
+  editorHeight,
+  onEditorResize,
+  theme,
+}) => {
+  const { 
+    tabs,
+    isSplitView, 
+    splitRatio, 
+    activeLeftTabId, 
+    activeRightTabId,
+    setSplitRatio,
+    closeSplitView,
+  } = useTabsStore();
+  
+  // Get the active tabs for each side
+  const leftTab = tabs.find(t => t.id === activeLeftTabId);
+  const rightTab = tabs.find(t => t.id === activeRightTabId);
+  const activeTab = useTabsStore(state => state.tabs.find(t => t.id === state.activeTabId));
+  
+  const [isResizingVertical, setIsResizingVertical] = useState(false);
+  const [isResizingSplit, setIsResizingSplit] = useState(false);
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(350);
+  const resizeStartXRef = useRef(0);
+  const resizeStartRatioRef = useRef(0.5);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Handle vertical resize (editor/results divider)
+  const handleVerticalResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingVertical(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  // Handle split divider resize
+  const handleSplitResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingSplit(true);
+    resizeStartXRef.current = e.clientX;
+    resizeStartRatioRef.current = splitRatio;
+  }, [splitRatio]);
+
+  // Vertical resize effect
+  useEffect(() => {
+    if (!isResizingVertical) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff));
+      onEditorResize(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingVertical(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingVertical, onEditorResize]);
+
+  // Split resize effect
+  useEffect(() => {
+    if (!isResizingSplit || !isSplitView || !containerRef.current) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) return;
+      
+      const newRatio = (e.clientX - containerRect.left) / containerRect.width;
+      const clampedRatio = Math.max(0.2, Math.min(0.8, newRatio));
+      setSplitRatio(clampedRatio);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingSplit(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingSplit, isSplitView, setSplitRatio]);
+
+  // Render split view with tab bars above each editor
+  if (isSplitView) {
+    return (
+      <div className="split-editor-container split-mode" ref={containerRef}>
+        {/* Left side */}
+        <div 
+          className="split-pane-wrapper" 
+          style={{ width: `calc(${splitRatio * 100}% - 2px)` }}
+        >
+          <TabBar side="left" />
+          <div className="split-pane-content">
+            {leftTab ? (
+              <>
+                <div className="query-section" style={{ height: `${editorHeight}px` }}>
+                  <QueryEditor key={leftTab.id} theme={theme} tabId={leftTab.id} />
+                </div>
+                <div
+                  className="resize-handle-horizontal"
+                  onMouseDown={handleVerticalResizeStart}
+                />
+                <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+                  <QueryResults tabId={leftTab.id} />
+                </div>
+              </>
+            ) : (
+              <div className="no-tab-message">No tab selected</div>
+            )}
+          </div>
+        </div>
+        
+        {/* Split divider */}
+        <div
+          className="split-divider"
+          onMouseDown={handleSplitResizeStart}
+        >
+          <button 
+            className="close-split-button"
+            onClick={closeSplitView}
+            title="Close split view"
+          >
+            ×
+          </button>
+        </div>
+        
+        {/* Right side */}
+        <div 
+          className="split-pane-wrapper" 
+          style={{ width: `calc(${(1 - splitRatio) * 100}% - 2px)` }}
+        >
+          <TabBar side="right" />
+          <div className="split-pane-content">
+            {rightTab ? (
+              <>
+                <div className="query-section" style={{ height: `${editorHeight}px` }}>
+                  <QueryEditor key={rightTab.id} theme={theme} tabId={rightTab.id} />
+                </div>
+                <div
+                  className="resize-handle-horizontal"
+                  onMouseDown={handleVerticalResizeStart}
+                />
+                <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+                  <QueryResults tabId={rightTab.id} />
+                </div>
+              </>
+            ) : (
+              <div className="no-tab-message">No tab selected</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Render single view (original layout) - TabBar is rendered in App.tsx
+  if (!activeTab) {
+    return (
+      <div className="split-editor-container single-mode">
+        <div className="no-tab-message">No active tab</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="split-editor-container single-mode">
+      <div className="query-section" style={{ height: `${editorHeight}px` }}>
+        <QueryEditor key={activeTab.id} theme={theme} tabId={activeTab.id} />
+      </div>
+      <div
+        className="resize-handle-horizontal"
+        onMouseDown={handleVerticalResizeStart}
+      />
+      <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+        <QueryResults tabId={activeTab.id} />
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/SplitEditorPane/SplitEditorPane.tsx
+````typescript
+import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { QueryEditor } from '../QueryEditor/QueryEditor';
+import { QueryResults } from '../QueryResults/QueryResults';
+import './SplitEditorPane.css';
+
+interface SplitEditorPaneProps {
+  tabId: string;
+  isActive: boolean;
+  onFocus: () => void;
+  theme?: 'dark' | 'light';
+}
+
+export const SplitEditorPane: React.FC<SplitEditorPaneProps> = ({
+  tabId,
+  isActive,
+  onFocus,
+  theme = 'dark',
+}) => {
+  const [editorHeight, setEditorHeight] = useState(250);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(250);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = editorHeight;
+  }, [editorHeight]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientY - resizeStartYRef.current;
+      const newHeight = Math.max(100, Math.min(500, resizeStartHeightRef.current + diff));
+      setEditorHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`split-editor-pane ${isActive ? 'active' : ''}`}
+      onClick={onFocus}
+    >
+      <div className="split-pane-editor" style={{ height: `${editorHeight}px` }}>
+        <QueryEditor key={tabId} theme={theme} tabId={tabId} onFocus={onFocus} />
+      </div>
+      <div
+        className="split-pane-resize-handle"
+        onMouseDown={handleResizeStart}
+      />
+      <div className="split-pane-results" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
+        <QueryResults tabId={tabId} />
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/components/TabBar/TabBar.css
+````css
+.tab-bar {
+  display: flex;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+  flex-shrink: 0;
+  overflow: visible;
+  position: relative;
+  z-index: 100;
+}
+
+/* When used inside split panes, don't grow vertically */
+.tab-bar-left,
+.tab-bar-right {
+  height: 35px;
+  flex-shrink: 0;
+}
+
+.tabs-container {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: visible;
+  align-items: center;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem 0 0.75rem;
+  background-color: var(--bg-tertiary);
+  border-right: 1px solid var(--border-primary);
+  cursor: pointer;
+  user-select: none;
+  min-width: 100px;
+  max-width: 200px;
+  position: relative;
+  height: 35px;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.tab[draggable='true'] {
+  cursor: grab;
+}
+
+.tab[draggable='true']:active {
+  cursor: grabbing;
+}
+
+.tab:hover {
+  background-color: var(--bg-hover);
+}
+
+.tab.active {
+  background-color: var(--bg-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  color: var(--text-active);
+  font-weight: 500;
+}
+
+.tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.tab.drag-over {
+  border-left: 2px solid var(--accent-primary);
+  padding-left: calc(0.75rem - 2px);
+}
+
+.tab.modified .tab-title::after {
+  content: '';
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.modified-indicator {
+  color: var(--accent-primary);
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+}
+
+/* Tab dropdown button */
+.tab-dropdown-container {
+  position: relative;
+}
+
+.tab-dropdown {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: 0.625rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  opacity: 0;
+  margin-left: 2px;
+}
+
+.tab:hover .tab-dropdown,
+.tab-dropdown-container:has(.tab-dropdown-menu) .tab-dropdown {
+  opacity: 1;
+}
+
+.tab-dropdown:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dropdown-arrow {
+  font-size: 0.625rem;
+  line-height: 1;
+}
+
+/* Tab dropdown menu */
+.tab-dropdown-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 140px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+}
+
+.tab-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.tab-dropdown-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.tab-close {
+  margin-left: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab-close:hover {
+  background-color: var(--accent-close-hover);
+  color: white;
+}
+
+.tab-close:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.tab-close:disabled:hover {
+  background-color: transparent;
+  color: var(--text-secondary);
+}
+
+.new-tab-button {
+  padding: 0 0.75rem;
+  background: none;
+  border: none;
+  border-left: 1px solid var(--border-primary);
+  cursor: pointer;
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  font-weight: 300;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.new-tab-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+````
+
+## File: src/renderer/stores/tabs-store.ts
+````typescript
+import { create } from 'zustand';
+import type { QueryTab, QueryResult, SplitSide } from '../../shared/types/query';
+
+interface TabsState {
+  tabs: QueryTab[];
+  activeTabId: string | null;
+  // Global split view state
+  isSplitView: boolean;
+  splitRatio: number;
+  activeLeftTabId: string | null;
+  activeRightTabId: string | null;
+  // Tab management
+  createTab: (side?: SplitSide) => string;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  reorderTabs: (fromIndex: number, toIndex: number) => void;
+  updateTab: (tabId: string, updates: Partial<QueryTab>) => void;
+  setTabQuery: (tabId: string, queryText: string) => void;
+  setTabResults: (tabId: string, results: QueryResult) => void;
+  setTabError: (tabId: string, error: string) => void;
+  setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => void;
+  loadTabs: () => Promise<void>;
+  saveTabs: () => Promise<void>;
+  // Split view functions
+  splitTabToRight: (tabId: string) => void;
+  moveTabToSide: (tabId: string, side: SplitSide) => void;
+  closeSplitView: () => void;
+  setSplitRatio: (ratio: number) => void;
+  setActiveSideTab: (side: SplitSide, tabId: string) => void;
+}
+
+function generateTabId(): string {
+  return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Debounce function for saving tabs
+let saveTimeout: NodeJS.Timeout | null = null;
+const debouncedSave = (saveFn: () => Promise<void>, delay: number = 500) => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = setTimeout(() => {
+    saveFn().catch((error) => {
+      console.error('Failed to save tabs:', error);
+    });
+  }, delay);
+};
+
+// Filter out any legacy Explorer or Saved Queries tabs
+function filterStaticTabs(tabs: QueryTab[]): QueryTab[] {
+  return tabs.filter(t => t.type !== 'explorer' && t.type !== 'saved-queries');
+}
+
+export const useTabsStore = create<TabsState>((set, get) => {
+  return {
+    tabs: [
+      {
+        id: generateTabId(),
+        title: 'Query 1',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+      {
+        id: generateTabId(),
+        title: 'Query 2',
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+      },
+    ],
+    activeTabId: null,
+    // Global split view state
+    isSplitView: false,
+    splitRatio: 0.5,
+    activeLeftTabId: null,
+    activeRightTabId: null,
+
+    loadTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const savedTabs = await window.electronAPI.tabs.getTabs();
+        const savedActiveTabId = await window.electronAPI.tabs.getActiveTabId();
+        
+        // Filter out any legacy Explorer or Saved Queries tabs
+        let filteredTabs = filterStaticTabs(savedTabs || []);
+        
+        if (filteredTabs.length === 0) {
+          // No saved tabs, use default tabs
+          filteredTabs = get().tabs;
+        }
+        
+        // Ensure active tab ID is valid (not a static tab)
+        const validActiveTabId = filteredTabs.find(t => t.id === savedActiveTabId)?.id || filteredTabs[0]?.id || null;
+        
+        if (filteredTabs.length > 0) {
+          set({
+            tabs: filteredTabs,
+            activeTabId: validActiveTabId,
+          });
+        } else {
+          // No tabs left, use default
+          const defaultTabId = get().tabs[0]?.id || null;
+          set({ activeTabId: defaultTabId });
+        }
+      } catch (error) {
+        console.error('Failed to load tabs:', error);
+        // Use default tab if loading fails
+        const defaultTabId = get().tabs[0]?.id || null;
+        set({ activeTabId: defaultTabId });
+      }
+    },
+
+    saveTabs: async () => {
+      if (!window.electronAPI?.tabs) {
+        return;
+      }
+      try {
+        const { tabs, activeTabId } = get();
+        await window.electronAPI.tabs.saveTabs(tabs, activeTabId);
+      } catch (error) {
+        console.error('Failed to save tabs:', error);
+      }
+    },
+
+    createTab: (side?: SplitSide) => {
+      const { tabs, isSplitView } = get();
+      const newTabId = generateTabId();
+      
+      // Count tabs to generate title
+      const queryTabCount = tabs.filter(t => t.type === 'query').length;
+      
+      const newTab: QueryTab = {
+        id: newTabId,
+        title: `Query ${queryTabCount + 1}`,
+        type: 'query',
+        queryText: '',
+        isModified: false,
+        executionStatus: 'idle',
+        splitSide: isSplitView ? (side || 'left') : undefined,
+      };
+      
+      const updatedTabs = [...tabs, newTab];
+      
+      // Update active tab for the appropriate side
+      if (isSplitView && side === 'right') {
+        set({
+          tabs: updatedTabs,
+          activeRightTabId: newTabId,
+          activeTabId: newTabId,
+        });
+      } else if (isSplitView) {
+        set({
+          tabs: updatedTabs,
+          activeLeftTabId: newTabId,
+          activeTabId: newTabId,
+        });
+      } else {
+        set({
+          tabs: updatedTabs,
+          activeTabId: newTabId,
+        });
+      }
+      
+      return newTabId;
+    },
+
+    closeTab: (tabId: string) => {
+      const { tabs, activeTabId, isSplitView, activeLeftTabId, activeRightTabId } = get();
+      const tab = tabs.find((t) => t.id === tabId);
+      if (!tab) return;
+
+      const tabIndex = tabs.findIndex((t) => t.id === tabId);
+      const newTabs = tabs.filter((t) => t.id !== tabId);
+      
+      // Determine which tabs belong to which side
+      const leftTabs = newTabs.filter(t => !t.splitSide || t.splitSide === 'left');
+      const rightTabs = newTabs.filter(t => t.splitSide === 'right');
+      
+      let newActiveTabId = activeTabId;
+      let newActiveLeftTabId = activeLeftTabId;
+      let newActiveRightTabId = activeRightTabId;
+      let newIsSplitView = isSplitView;
+      
+      if (isSplitView) {
+        // In split view mode
+        if (tab.splitSide === 'right') {
+          // Closing a right-side tab
+          if (activeRightTabId === tabId) {
+            // Find another right tab, or close split view
+            const nextRightTab = rightTabs[0];
+            if (nextRightTab) {
+              newActiveRightTabId = nextRightTab.id;
+            } else {
+              // No more right tabs, close split view
+              newIsSplitView = false;
+              newActiveRightTabId = null;
+              // Move focus to left side
+              newActiveTabId = newActiveLeftTabId;
+            }
+          }
+        } else {
+          // Closing a left-side tab
+          if (activeLeftTabId === tabId) {
+            const nextLeftTab = leftTabs.length > 0 ? leftTabs[Math.max(0, leftTabs.findIndex(t => t.id === tabId) - 1)] || leftTabs[0] : null;
+            if (nextLeftTab) {
+              newActiveLeftTabId = nextLeftTab.id;
+            } else if (rightTabs.length > 0) {
+              // No more left tabs, move all right tabs to left and close split
+              newIsSplitView = false;
+              newActiveLeftTabId = null;
+              newActiveRightTabId = null;
+              newActiveTabId = rightTabs[0].id;
+              // Clear splitSide from all remaining tabs
+              newTabs.forEach(t => { t.splitSide = undefined; });
+            } else {
+              newActiveLeftTabId = null;
+              newActiveTabId = null;
+            }
+          }
+        }
+        
+        // Update active tab to be the focused side's active tab
+        if (newIsSplitView) {
+          newActiveTabId = tab.splitSide === 'right' ? newActiveLeftTabId : (activeTabId === tabId ? newActiveLeftTabId : activeTabId);
+        }
+      } else {
+        // Single view mode
+        if (activeTabId === tabId) {
+          if (newTabs.length > 0) {
+            newActiveTabId = newTabs[Math.max(0, tabIndex - 1)]?.id || newTabs[0]?.id || null;
+          } else {
+            newActiveTabId = null;
+          }
+        }
+      }
+
+      set({
+        tabs: newTabs,
+        activeTabId: newActiveTabId,
+        isSplitView: newIsSplitView,
+        activeLeftTabId: newActiveLeftTabId,
+        activeRightTabId: newActiveRightTabId,
+      });
+    },
+
+    setActiveTab: (tabId: string) => {
+      const { tabs, isSplitView } = get();
+      const tab = tabs.find(t => t.id === tabId);
+      if (!tab) return;
+      
+      if (isSplitView) {
+        if (tab.splitSide === 'right') {
+          set({ activeTabId: tabId, activeRightTabId: tabId });
+        } else {
+          set({ activeTabId: tabId, activeLeftTabId: tabId });
+        }
+      } else {
+        set({ activeTabId: tabId });
+      }
+    },
+
+    reorderTabs: (fromIndex: number, toIndex: number) => {
+      const { tabs } = get();
+      if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) {
+        return;
+      }
+      
+      const newTabs = [...tabs];
+      const [movedTab] = newTabs.splice(fromIndex, 1);
+      newTabs.splice(toIndex, 0, movedTab);
+      
+      set({ tabs: newTabs });
+    },
+
+    updateTab: (tabId: string, updates: Partial<QueryTab>) => {
+      set((state) => {
+        const updatedTabs = state.tabs.map((tab) =>
+          tab.id === tabId ? { ...tab, ...updates } : tab
+        );
+        return {
+          tabs: updatedTabs,
+        };
+      });
+    },
+
+    setTabQuery: (tabId: string, queryText: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab) {
+        get().updateTab(tabId, {
+          queryText,
+          isModified: queryText !== (tab.savedQueryId ? tab.queryText : ''),
+        });
+      }
+    },
+
+    setTabResults: (tabId: string, results: QueryResult) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        results,
+        executionStatus: 'completed',
+        error: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabError: (tabId: string, error: string) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      get().updateTab(tabId, {
+        error,
+        executionStatus: 'error',
+        results: undefined,
+        lastExecuted: new Date().toISOString(),
+        lastExecutedQueryText: tab?.queryText || '',
+      });
+    },
+
+    setTabStatus: (tabId: string, status: QueryTab['executionStatus']) => {
+      get().updateTab(tabId, { executionStatus: status });
+    },
+
+    // Split view functions
+    splitTabToRight: (tabId: string) => {
+      const { tabs, activeLeftTabId } = get();
+      const tab = tabs.find(t => t.id === tabId);
+      if (!tab) return;
+      
+      // Mark the tab as belonging to the right side
+      const updatedTabs = tabs.map(t => 
+        t.id === tabId 
+          ? { ...t, splitSide: 'right' as SplitSide }
+          : t
+      );
+      
+      // Find another tab for the left side if needed
+      const leftTabs = updatedTabs.filter(t => !t.splitSide || t.splitSide === 'left');
+      let newActiveLeftTabId = activeLeftTabId;
+      
+      if (activeLeftTabId === tabId || !leftTabs.find(t => t.id === activeLeftTabId)) {
+        // Need to find a new left tab
+        newActiveLeftTabId = leftTabs[0]?.id || null;
+        
+        // If no left tabs exist, create one
+        if (!newActiveLeftTabId) {
+          const newTabId = generateTabId();
+          const queryTabCount = updatedTabs.filter(t => t.type === 'query').length;
+          const newTab: QueryTab = {
+            id: newTabId,
+            title: `Query ${queryTabCount + 1}`,
+            type: 'query',
+            queryText: '',
+            isModified: false,
+            executionStatus: 'idle',
+            splitSide: 'left',
+          };
+          updatedTabs.push(newTab);
+          newActiveLeftTabId = newTabId;
+        }
+      }
+      
+      set({
+        tabs: updatedTabs,
+        isSplitView: true,
+        splitRatio: 0.5,
+        activeLeftTabId: newActiveLeftTabId,
+        activeRightTabId: tabId,
+        activeTabId: tabId, // Focus on the newly split tab
+      });
+    },
+
+    moveTabToSide: (tabId: string, side: SplitSide) => {
+      const { tabs, activeLeftTabId, activeRightTabId, isSplitView } = get();
+      if (!isSplitView) return;
+      
+      const tab = tabs.find(t => t.id === tabId);
+      if (!tab) return;
+      
+      // Update the tab's side
+      const updatedTabs = tabs.map(t =>
+        t.id === tabId ? { ...t, splitSide: side } : t
+      );
+      
+      // Update active tabs for each side
+      let newActiveLeftTabId = activeLeftTabId;
+      let newActiveRightTabId = activeRightTabId;
+      
+      if (side === 'right' && activeLeftTabId === tabId) {
+        // Moving from left to right, find new left active
+        const leftTabs = updatedTabs.filter(t => !t.splitSide || t.splitSide === 'left');
+        newActiveLeftTabId = leftTabs[0]?.id || null;
+      } else if (side === 'left' && activeRightTabId === tabId) {
+        // Moving from right to left, find new right active
+        const rightTabs = updatedTabs.filter(t => t.splitSide === 'right');
+        newActiveRightTabId = rightTabs[0]?.id || null;
+      }
+      
+      // Set the moved tab as active on its new side
+      if (side === 'right') {
+        newActiveRightTabId = tabId;
+      } else {
+        newActiveLeftTabId = tabId;
+      }
+      
+      set({
+        tabs: updatedTabs,
+        activeLeftTabId: newActiveLeftTabId,
+        activeRightTabId: newActiveRightTabId,
+      });
+    },
+
+    closeSplitView: () => {
+      const { tabs, activeLeftTabId, activeRightTabId } = get();
+      
+      // Clear splitSide from all tabs
+      const updatedTabs = tabs.map(t => ({ ...t, splitSide: undefined }));
+      
+      // Use the active left tab, or fall back to right, or first tab
+      const newActiveTabId = activeLeftTabId || activeRightTabId || updatedTabs[0]?.id || null;
+      
+      set({
+        tabs: updatedTabs,
+        isSplitView: false,
+        splitRatio: 0.5,
+        activeLeftTabId: null,
+        activeRightTabId: null,
+        activeTabId: newActiveTabId,
+      });
+    },
+
+    setSplitRatio: (ratio: number) => {
+      set({ splitRatio: Math.max(0.2, Math.min(0.8, ratio)) });
+    },
+
+    setActiveSideTab: (side: SplitSide, tabId: string) => {
+      if (side === 'left') {
+        set({ activeLeftTabId: tabId, activeTabId: tabId });
+      } else {
+        set({ activeRightTabId: tabId, activeTabId: tabId });
+      }
+    },
+  };
+});
+
+// Subscribe to tab changes and auto-save (debounced)
+let previousTabs: QueryTab[] = [];
+let previousActiveTabId: string | null = null;
+
+useTabsStore.subscribe((state) => {
+  // Filter out any legacy static tabs that might have been loaded
+  const filteredTabs = filterStaticTabs(state.tabs);
+  if (filteredTabs.length !== state.tabs.length) {
+    // Found static tabs, remove them
+    const validActiveTabId = filteredTabs.find(t => t.id === state.activeTabId)?.id || filteredTabs[0]?.id || null;
+    useTabsStore.setState({ tabs: filteredTabs, activeTabId: validActiveTabId });
+    return;
+  }
+  
+  // Check if tabs or activeTabId actually changed
+  const tabsChanged = state.tabs !== previousTabs || state.activeTabId !== previousActiveTabId;
+  
+  if (tabsChanged) {
+    previousTabs = state.tabs;
+    previousActiveTabId = state.activeTabId;
+    // Auto-save when tabs or activeTabId changes
+    debouncedSave(() => useTabsStore.getState().saveTabs());
+  }
+});
+
+// Track if initialization has been done to prevent multiple calls
+let isInitialized = false;
+
+// Initialize tabs loading - will be called from App.tsx when electronAPI is ready
+// This function can be called multiple times safely (idempotent)
+export function initializeTabsStore(): void {
+  if (isInitialized) {
+    return; // Already initialized
+  }
+
+  if (window.electronAPI?.tabs) {
+    isInitialized = true;
+    
+    useTabsStore.getState().loadTabs().then(() => {
+      // Initialize active tab after loading
+      const state = useTabsStore.getState();
+      if (!state.activeTabId && state.tabs.length > 0) {
+        useTabsStore.setState({ activeTabId: state.tabs[0].id });
+      }
+    }).catch((error) => {
+      console.error('Failed to initialize tabs:', error);
+      // Fallback: Initialize active tab on first load if loading fails
+      useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+    });
+
+    // Listen for before-close event to save tabs immediately
+    window.electronAPI.tabs.onBeforeClose(() => {
+      // Clear any pending debounced save and save immediately
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+      useTabsStore.getState().saveTabs();
+    });
+  } else {
+    // Fallback: Initialize active tab on first load if electronAPI is not available
+    useTabsStore.setState({ activeTabId: useTabsStore.getState().tabs[0]?.id || null });
+  }
+}
+
+// Try to initialize immediately if electronAPI is already available
+// Otherwise, it will be initialized from App.tsx
+if (typeof window !== 'undefined' && window.electronAPI?.tabs) {
+  initializeTabsStore();
 }
 ````
 
@@ -25846,109 +25970,6 @@ body {
   --badge-repeated-text: #af00db;
   --badge-partition-bg: rgba(4, 81, 165, 0.1);
   --badge-partition-text: #0451a5;
-}
-````
-
-## File: src/shared/types/query.ts
-````typescript
-/**
- * Query-related types
- */
-
-export type TabType = 'query' | 'explorer' | 'saved-queries';
-
-export interface QueryTab {
-  id: string;
-  title: string;
-  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
-  queryText: string;
-  isModified: boolean;
-  executionStatus: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
-  jobId?: string;
-  results?: QueryResult;
-  error?: string;
-  lastExecuted?: string; // ISO timestamp
-  lastExecutedQueryText?: string; // The query text that was last executed
-  savedQueryId?: string;
-}
-
-export interface SavedQuery {
-  id: string;
-  name: string;
-  sqlText: string;
-  description?: string;
-  createdAt: string; // ISO timestamp
-  updatedAt: string; // ISO timestamp
-  tags?: string[];
-}
-
-export interface SaveQueryInput {
-  name: string;
-  sqlText: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface UpdateQueryInput {
-  name?: string;
-  sqlText?: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface QueryResult {
-  columns: ColumnMetadata[];
-  rows: Row[];
-  totalRows: number;
-  rowsReturned: number;
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  jobId: string;
-  hasMore: boolean;
-}
-
-export interface ColumnMetadata {
-  name: string;
-  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
-  mode?: string; // NULLABLE, REQUIRED, REPEATED
-}
-
-export interface Row {
-  values: any[]; // Values matching column order
-}
-
-/**
- * Schema field with nested field support for RECORD/STRUCT types
- */
-export interface SchemaField extends ColumnMetadata {
-  fields?: SchemaField[];
-}
-
-/**
- * Stored schema record from the cache
- */
-export interface StoredSchema {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  fields: SchemaField[];
-  lastUpdated: number;
-}
-
-/**
- * Query history entry - tracks executed queries with metadata
- */
-export interface QueryHistoryEntry {
-  id: string;
-  queryText: string;
-  executedAt: string; // ISO timestamp
-  executionTimeMs: number;
-  bytesProcessed?: number;
-  totalRows?: number;
-  status: 'completed' | 'error' | 'cancelled';
-  errorMessage?: string;
-  projectId: string;
-  jobId?: string;
 }
 ````
 
@@ -26606,420 +26627,160 @@ describe('bigquery-formatter', () => {
 });
 ````
 
-## File: src/renderer/components/QueryEditor/QueryEditor.css
-````css
-.query-editor {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background-color: var(--bg-primary);
+## File: src/renderer/components/QueryEditor/EditorToolbar.tsx
+````typescript
+import React, { useRef, useEffect } from 'react';
+import './QueryEditor.css';
+
+interface EditorToolbarProps {
+  onExecute: () => void;
+  onCancel: () => void;
+  onFormat: () => void;
+  onExpandSelectStar: () => void;
+  onDbtify: () => void;
+  onOpenSaveDialog: () => void;
+  onToggleSplit: () => void;
+  isExecuting: boolean;
+  isConnected: boolean;
+  hasQuery: boolean;
+  hasDbtSyntax: boolean;
+  isQueryValid: boolean | null;
+  enableDbtSupport: boolean;
+  savedQueryId: string | null;
+  isSplit: boolean;
+  isSplitMode?: boolean; // Whether this toolbar is in a split pane
 }
 
-.query-editor-toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
-  align-items: center;
-  height: 35px;
-  position: relative;
-  z-index: 1; /* Lower z-index to allow tooltips to appear above */
-}
+export const EditorToolbar: React.FC<EditorToolbarProps> = ({
+  onExecute,
+  onCancel,
+  onFormat,
+  onExpandSelectStar,
+  onDbtify,
+  onOpenSaveDialog,
+  onToggleSplit,
+  isExecuting,
+  isConnected,
+  hasQuery,
+  hasDbtSyntax,
+  isQueryValid,
+  enableDbtSupport,
+  savedQueryId,
+  isSplit,
+  isSplitMode = false,
+}) => {
+  const [isToolsMenuOpen, setIsToolsMenuOpen] = React.useState(false);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
 
-.query-editor-toolbar button {
-  padding: 0.375rem 0.75rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
+  // Close tools menu on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (toolsMenuRef.current && target && !toolsMenuRef.current.contains(target)) {
+        setIsToolsMenuOpen(false);
+      }
+    };
 
-.query-editor-toolbar button:hover {
-  background-color: var(--accent-primary-hover);
-}
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-.query-editor-toolbar button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background-color: var(--button-secondary);
-  color: var(--text-disabled);
-}
+  const handleToolAction = (action: () => void) => {
+    action();
+    setIsToolsMenuOpen(false);
+  };
 
-.tools-dropdown {
-  position: relative;
-}
+  const shouldDisableRunButton = isExecuting || !isConnected;
 
-.query-editor-toolbar .tools-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.query-editor-toolbar .tools-button.open {
-  background-color: var(--button-secondary-hover);
-}
-
-.tools-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 4px;
-  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
-  min-width: 170px;
-  padding: 0.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  z-index: 5;
-}
-
-.tools-menu .tools-menu-item {
-  background: transparent;
-  color: var(--text-primary);
-  width: 100%;
-  justify-content: flex-start;
-  padding: 0.5rem 0.75rem;
-}
-
-.tools-menu .tools-menu-item:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.tools-menu .tools-menu-item:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
-
-.query-editor-toolbar .run-button {
-  background-color: var(--accent-primary);
-}
-
-.query-editor-toolbar .run-button:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.query-editor-toolbar .arrow-icon {
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
-.query-editor-toolbar .format-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .format-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .expand-button {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.query-editor-toolbar .expand-button:hover:not(:disabled) {
-  background-color: var(--button-secondary-hover);
-}
-
-.query-editor-toolbar .dbtify-button {
-  background-color: var(--accent-orange);
-  color: var(--text-white);
-}
-
-.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
-  background-color: var(--accent-orange-hover);
-}
-
-.query-editor-toolbar .save-button {
-  background-color: var(--accent-success);
-}
-
-.query-editor-toolbar .save-button:hover {
-  background-color: var(--accent-success-hover);
-}
-
-.query-editor-toolbar .cancel-button {
-  background-color: var(--accent-danger);
-}
-
-.query-editor-toolbar .cancel-button:hover {
-  background-color: var(--accent-danger-hover);
-}
-
-.connection-warning {
-  color: var(--text-warning);
-  background-color: var(--button-secondary);
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  margin-left: auto;
-  border: 1px solid #6a6a6a;
-}
-
-.error-message {
-  background-color: var(--bg-error);
-  color: var(--text-error);
-  padding: 0.75rem;
-  margin: 0.5rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-error);
-}
-
-.editor-container {
-  flex: 1;
-  border: none;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  overflow: visible; /* Allow tooltips to overflow container */
-}
-
-.editor-wrapper {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
-  overflow: visible; /* Allow tooltips to overflow */
-}
-
-/* Ensure Monaco editor tooltips/hovers render above toolbar */
-.editor-wrapper .monaco-editor .monaco-hover {
-  z-index: 1000 !important;
-}
-
-.editor-wrapper .monaco-editor .monaco-editor-hover {
-  z-index: 1000 !important;
-}
-
-/* Alternative: target Monaco's overflow widget container */
-.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
-  z-index: 1000 !important;
-}
-
-/* Error indicator in glyph margin - red dot */
-.monaco-editor .error-glyph-margin {
-  background-color: #f48771 !important;
-  width: 3px !important;
-  margin-left: 1px;
-}
-
-.monaco-editor .error-glyph-margin::before {
-  content: '●';
-  color: #f48771;
-  font-size: 14px;
-  line-height: 19px;
-  display: inline-block;
-  width: 16px;
-  text-align: center;
-  position: absolute;
-  left: 0;
-}
-
-.editor-status-bar {
-  background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-primary);
-  padding: 0.375rem 0.75rem;
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.editor-status-bar .status-right {
-  display: flex;
-  align-items: center;
-  margin-left: auto;
-}
-
-.editor-status-bar .status-text {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  max-width: 100%;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
-  margin-top: 5px;
-}
-
-.editor-status-bar .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.editor-status-bar .status-indicator-valid {
-  background-color: var(--text-success);
-}
-
-.editor-status-bar .status-indicator-invalid {
-  background-color: var(--text-error);
-}
-
-.editor-status-bar .status-valid {
-  color: var(--text-success);
-}
-
-.editor-status-bar .status-invalid {
-  color: var(--text-error);
-}
-
-.editor-status-bar .status-error-message {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
-  word-break: break-word;
-  line-height: 1.4;
-}
-
-.editor-status-bar .status-error-line {
-  font-weight: 600;
-  white-space: nowrap;
-  margin-right: 2px;
-}
-
-.no-tab-message {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
-  background-color: var(--bg-primary);
-}
-
-.save-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-
-.save-dialog {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  padding: 1.5rem;
-  min-width: 400px;
-  box-shadow: var(--shadow-dialog);
-  border: 1px solid var(--border-primary);
-  color: var(--text-primary);
-}
-
-.save-dialog h3 {
-  margin: 0 0 1rem 0;
-  color: var(--text-white);
-  font-size: 1.125rem;
-  font-weight: 400;
-}
-
-.save-dialog .form-group {
-  margin-bottom: 1rem;
-}
-
-.save-dialog .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-weight: 400;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-}
-
-.save-dialog .form-group input,
-.save-dialog .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border-primary);
-  border-radius: 3px;
-  font-size: 0.8125rem;
-  background-color: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.save-dialog .form-group input:focus,
-.save-dialog .form-group textarea:focus {
-  outline: 1px solid var(--accent-primary);
-  outline-offset: -1px;
-}
-
-.save-dialog .form-group textarea {
-  font-family: inherit;
-  resize: vertical;
-}
-
-.save-dialog .dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-
-.save-dialog .dialog-actions button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-}
-
-.save-dialog .dialog-actions button:first-child {
-  background-color: var(--button-secondary);
-  color: var(--text-primary);
-}
-
-.save-dialog .dialog-actions button:first-child:hover {
-  background-color: var(--button-secondary-hover);
-}
-
-.save-dialog .dialog-actions button:last-child {
-  background-color: var(--accent-primary);
-  color: var(--text-white);
-}
-
-.save-dialog .dialog-actions button:last-child:hover {
-  background-color: var(--accent-primary-hover);
-}
-
-.save-dialog .dialog-actions button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--text-disabled);
-}
+  return (
+    <div className="query-editor-toolbar">
+      <button
+        onClick={onExecute}
+        disabled={shouldDisableRunButton}
+        className="run-button"
+      >
+        {isExecuting ? (
+          'Executing...'
+        ) : (
+          <>
+            Run <span className="arrow-icon">→</span>
+          </>
+        )}
+      </button>
+      
+      {isExecuting && (
+        <button onClick={onCancel} className="cancel-button">
+          Cancel
+        </button>
+      )}
+      
+      <div className="tools-dropdown" ref={toolsMenuRef}>
+        <button
+          onClick={() => setIsToolsMenuOpen((prev) => !prev)}
+          className={`tools-button${isToolsMenuOpen ? ' open' : ''}`}
+          aria-haspopup="true"
+          aria-expanded={isToolsMenuOpen}
+        >
+          Tools <span className="arrow-icon">▾</span>
+        </button>
+        
+        {isToolsMenuOpen && (
+          <div className="tools-menu">
+            <button
+              onClick={() => handleToolAction(onFormat)}
+              disabled={!hasQuery}
+              className="tools-menu-item"
+              title="Format SQL query"
+            >
+              Format
+            </button>
+            <button
+              onClick={() => handleToolAction(onExpandSelectStar)}
+              disabled={!hasQuery || !isConnected}
+              className="tools-menu-item"
+              title="Expand SELECT * to columns (Cmd+B / Ctrl+B)"
+            >
+              Expand *
+            </button>
+            {enableDbtSupport && (
+              <button
+                onClick={() => handleToolAction(onDbtify)}
+                disabled={!hasQuery || (!hasDbtSyntax && isQueryValid !== true)}
+                className="tools-menu-item"
+                title={
+                  hasDbtSyntax
+                    ? 'Convert dbt source/ref syntax back to BigQuery table references'
+                    : 'Convert table references to dbt source syntax'
+                }
+              >
+                {hasDbtSyntax ? 'de-dbtify' : 'dbtify'}
+              </button>
+            )}
+            {!isSplitMode && (
+              <button
+                onClick={() => handleToolAction(onToggleSplit)}
+                className="tools-menu-item"
+                title={isSplit ? 'Close split view (Cmd+\\)' : 'Split editor (Cmd+\\)'}
+              >
+                {isSplit ? 'Close Split' : 'Split Editor'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      
+      <button
+        onClick={onOpenSaveDialog}
+        disabled={!hasQuery}
+        className="save-button"
+      >
+        {savedQueryId ? 'Update' : 'Save'}
+      </button>
+      
+      {!isConnected && <span className="connection-warning">Not connected</span>}
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/components/QueryResults/QueryResults.css
@@ -27358,1244 +27119,6 @@ describe('bigquery-formatter', () => {
   min-width: 100px;
   text-align: center;
 }
-````
-
-## File: src/renderer/components/QueryResults/CanvasTable.tsx
-````typescript
-import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
-import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
-import { ColumnSortMenu } from './ColumnSortMenu';
-
-// Helper to read CSS custom property values
-const getCSSVar = (name: string): string => {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-};
-
-// Theme colors derived from CSS variables
-const getThemeColors = () => ({
-  bgColor: getCSSVar('--bg-primary') || '#1e1e1e',
-  headerBgColor: getCSSVar('--bg-tertiary') || '#2d2d30',
-  borderColor: getCSSVar('--border-primary') || '#3e3e42',
-  textColor: getCSSVar('--text-primary') || '#cccccc',
-  headerTextColor: getCSSVar('--text-primary') || '#cccccc',
-  hoverColor: getCSSVar('--bg-hover') || '#2a2d2e',
-  evenRowColor: getCSSVar('--bg-secondary') || '#252526',
-  oddRowColor: getCSSVar('--bg-primary') || '#1e1e1e',
-  accentColor: getCSSVar('--accent-primary') || '#007acc',
-  secondaryTextColor: getCSSVar('--text-secondary') || '#858585',
-  scrollbarThumb: getCSSVar('--bg-scrollbar-thumb') || '#424242',
-  scrollbarTrack: getCSSVar('--bg-scrollbar') || '#1e1e1e',
-});
-
-interface CanvasTableProps {
-  results: QueryResult;
-  columnWidths: { [key: number]: number };
-  onColumnResize: (columnIndex: number, width: number) => void;
-  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
-  onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
-  formatValue: (value: any, columnType?: string, columnName?: string) => string;
-  currentPage: number;
-  rowsPerPage: number;
-  sortColumn: number | null;
-  sortDirection: 'asc' | 'desc' | null;
-  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
-}
-
-const ROW_HEIGHT = 24;
-const HEADER_HEIGHT = 28;
-const ROW_NUMBER_COLUMN_WIDTH = 80;
-const MIN_COLUMN_WIDTH = 50;
-const CELL_PADDING = 8;
-const RESIZE_HANDLE_WIDTH = 4;
-const SORT_ARROW_WIDTH = 16;
-const SORT_ARROW_HEIGHT = 16;
-
-export const CanvasTable: React.FC<CanvasTableProps> = ({
-  results,
-  columnWidths,
-  onColumnResize,
-  onRowContextMenu,
-  onColumnContextMenu,
-  formatValue,
-  currentPage,
-  rowsPerPage,
-  sortColumn,
-  sortDirection,
-  onSortColumn,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const canvasOverlayRef = useRef<HTMLDivElement>(null);
-  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
-  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
-  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
-  const resizeStartXRef = useRef(0);
-  const resizeStartWidthRef = useRef(0);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
-  
-  // Text selection state
-  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
-  const [isSelecting, setIsSelecting] = useState(false);
-  const selectionOverlayRef = useRef<HTMLDivElement>(null);
-  
-  // Sort menu state
-  const [sortMenu, setSortMenu] = useState<{
-    columnIndex: number;
-    x: number;
-    y: number;
-  } | null>(null);
-
-  // Results already contain only the current page rows (loaded from cache)
-  // Calculate startIndex for row numbering
-  const startIndex = (currentPage - 1) * rowsPerPage;
-  const paginatedRows = useMemo(() => {
-    // Results.rows already contains only the current page, so use it directly
-    return results.rows || [];
-  }, [results.rows]);
-
-  // Theme colors state - re-read when theme changes
-  const [themeColors, setThemeColors] = useState(getThemeColors);
-  
-  // Watch for theme changes via data-theme attribute
-  useEffect(() => {
-    const updateColors = () => {
-      setThemeColors(getThemeColors());
-    };
-    
-    // Initial update
-    updateColors();
-    
-    // Watch for attribute changes on document.documentElement
-    const observer = new MutationObserver(updateColors);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    
-    return () => observer.disconnect();
-  }, []);
-
-  // Memory management: Limit cache size and clear when data changes significantly
-  const formattedCellsRef = useRef<Map<string, string>>(new Map());
-  const MAX_FORMATTED_CACHE_SIZE = 100000; // Limit to 10k cells to prevent memory issues
-  
-  // Pre-format all cell values to avoid expensive formatting during render
-  // This is the key optimization - format values once when data changes, not on every render
-  const formattedCells = useMemo(() => {
-    const formatted = new Map<string, string>();
-    paginatedRows.forEach((row, rowIdx) => {
-      row.values.forEach((value, colIdx) => {
-        const column = results.columns[colIdx];
-        const key = `${rowIdx}-${colIdx}`;
-        // Only format if within cache size limit
-        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
-          formatted.set(key, formatValue(value, column?.type, column?.name));
-        }
-      });
-    });
-    // Update ref for cleanup tracking
-    formattedCellsRef.current = formatted;
-    return formatted;
-  }, [paginatedRows, results.columns, formatValue]);
-  
-  // Clear caches when results change significantly (new jobId)
-  useEffect(() => {
-    formattedCellsRef.current.clear();
-    textMeasurementCache.current.clear();
-  }, [results.jobId]);
-
-  // Helper to get formatted value (with fallback for safety)
-  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
-    const key = `${rowIdx}-${colIdx}`;
-    const column = results.columns[colIdx];
-    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
-  }, [formattedCells, formatValue, results.columns]);
-
-  // Calculate column widths
-  const getColumnWidth = useCallback(
-    (columnIndex: number): number => {
-      if (columnIndex === -1) {
-        return columnWidths[-1] || ROW_NUMBER_COLUMN_WIDTH;
-      }
-      return columnWidths[columnIndex] || 150;
-    },
-    [columnWidths]
-  );
-
-  // Calculate total width - ensure it's at least as wide as viewport to enable scrolling
-  const totalWidth = useMemo(() => {
-    let width = getColumnWidth(-1);
-    results.columns.forEach((_, idx) => {
-      width += getColumnWidth(idx);
-    });
-    // Ensure minimum width to enable horizontal scrolling when content is wide
-    return Math.max(width, 100);
-  }, [results.columns, getColumnWidth]);
-
-  const totalHeight = HEADER_HEIGHT + paginatedRows.length * ROW_HEIGHT;
-
-  // Track container dimensions to determine if scrolling is needed
-  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
-
-  // Update container dimensions when it changes
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const updateDimensions = () => {
-      setContainerDimensions({
-        width: container.clientWidth,
-        height: container.clientHeight,
-      });
-    };
-
-    updateDimensions();
-    const resizeObserver = new ResizeObserver(updateDimensions);
-    resizeObserver.observe(container);
-
-    return () => resizeObserver.disconnect();
-  }, []);
-
-  // Cache for text measurements to avoid repeated measureText calls
-  const textMeasurementCache = useRef<Map<string, number>>(new Map());
-  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
-
-  // Measure text width with caching
-  const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
-    // Update context ref if changed
-    if (measureTextContextRef.current !== ctx) {
-      measureTextContextRef.current = ctx;
-      // Clear cache when context changes (e.g., font changes)
-      textMeasurementCache.current.clear();
-    }
-
-    // Use cache key based on text content
-    const cacheKey = text;
-    if (textMeasurementCache.current.has(cacheKey)) {
-      return textMeasurementCache.current.get(cacheKey)!;
-    }
-
-    const width = ctx.measureText(text).width;
-    // Limit cache size to prevent memory issues (keep last 1000 measurements)
-    if (textMeasurementCache.current.size > 1000) {
-      const firstKey = textMeasurementCache.current.keys().next().value;
-      if (firstKey !== undefined) {
-        textMeasurementCache.current.delete(firstKey);
-      }
-    }
-    textMeasurementCache.current.set(cacheKey, width);
-    return width;
-  }, []);
-
-  // Convert viewport coordinates to cell position
-  const getCellFromCoordinates = useCallback(
-    (x: number, y: number): { row: number; col: number } | null => {
-      // Don't allow selection in header
-      if (y < HEADER_HEIGHT) return null;
-      
-      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-      if (row < 0 || row >= paginatedRows.length) return null;
-
-      // Find column
-      let currentX = 0;
-      
-      // Check row number column
-      const rowNumWidth = getColumnWidth(-1);
-      if (x >= currentX && x < currentX + rowNumWidth) {
-        return { row, col: -1 };
-      }
-      currentX += rowNumWidth;
-
-      // Check data columns
-      for (let idx = 0; idx < results.columns.length; idx++) {
-        const colWidth = getColumnWidth(idx);
-        if (x >= currentX && x < currentX + colWidth) {
-          return { row, col: idx };
-        }
-        currentX += colWidth;
-      }
-
-      return null;
-    },
-    [paginatedRows.length, getColumnWidth, results.columns]
-  );
-
-  // Draw cell text with ellipsis - optimized with binary search for truncation
-  const drawCellText = useCallback(
-    (
-      ctx: CanvasRenderingContext2D,
-      text: string,
-      x: number,
-      y: number,
-      width: number,
-      color: string = '#cccccc',
-      align: 'left' | 'right' = 'left',
-      isNull: boolean = false
-    ) => {
-      ctx.fillStyle = isNull ? '#888888' : color;
-      ctx.font = isNull 
-        ? 'italic 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-        : '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      const maxWidth = width - CELL_PADDING * 2;
-      const ellipsis = '...';
-      const ellipsisWidth = measureText(ellipsis, ctx);
-      
-      // Quick check - if text fits, draw it directly
-      const textWidth = measureText(text, ctx);
-      if (textWidth <= maxWidth) {
-        // Calculate x position based on alignment
-        const textX = align === 'right' 
-          ? x + width - CELL_PADDING - textWidth 
-          : x + CELL_PADDING;
-        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
-        return;
-      }
-      
-      // Binary search for optimal truncation point (much faster than linear character-by-character)
-      let left = 0;
-      let right = text.length;
-      let bestFit = 0;
-      
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        const testText = text.substring(0, mid);
-        const testWidth = measureText(testText, ctx);
-        
-        if (testWidth + ellipsisWidth <= maxWidth) {
-          bestFit = mid;
-          left = mid + 1;
-        } else {
-          right = mid - 1;
-        }
-      }
-      
-      const truncated = text.substring(0, bestFit);
-      const truncatedWidth = measureText(truncated + ellipsis, ctx);
-      // Calculate x position based on alignment for truncated text
-      const truncatedX = align === 'right'
-        ? x + width - CELL_PADDING - truncatedWidth
-        : x + CELL_PADDING;
-      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
-    },
-    [measureText]
-  );
-
-  // Render the canvas
-  const render = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const container = containerRef.current;
-    const wrapper = wrapperRef.current;
-    if (!container || !wrapper) return;
-
-    // Get viewport size from the scrolling container (accounts for scrollbars)
-    // Use clientWidth/clientHeight which excludes scrollbar width
-    const containerWidth = Math.max(1, container.clientWidth);
-    const containerHeight = Math.max(1, container.clientHeight);
-    
-    // Early return if dimensions are invalid
-    if (containerWidth <= 0 || containerHeight <= 0) {
-      return;
-    }
-
-    // Always set canvas size to match viewport exactly
-    const dpr = window.devicePixelRatio || 1;
-    const canvasWidth = Math.ceil(containerWidth * dpr);
-    const canvasHeight = Math.ceil(containerHeight * dpr);
-    
-    // Set canvas internal resolution and display size
-    // Only update if size actually changed to avoid unnecessary redraws
-    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
-      canvas.width = canvasWidth;
-      canvas.height = canvasHeight;
-    }
-    canvas.style.width = `${containerWidth}px`;
-    canvas.style.height = `${containerHeight}px`;
-    
-    // Update canvas overlay size to match canvas (excludes scrollbar area)
-    const canvasOverlay = canvasOverlayRef.current;
-    if (canvasOverlay) {
-      canvasOverlay.style.width = `${containerWidth}px`;
-      canvasOverlay.style.height = `${containerHeight}px`;
-    }
-    
-    // Update selection overlay size to match container
-    const selectionOverlay = selectionOverlayRef.current;
-    if (selectionOverlay) {
-      selectionOverlay.style.width = `${containerWidth}px`;
-      selectionOverlay.style.height = `${containerHeight}px`;
-    }
-    
-    // Reset transform and scale for high DPI
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-
-    // Clear canvas and fill with background color
-    ctx.fillStyle = themeColors.bgColor;
-    ctx.fillRect(0, 0, containerWidth, containerHeight);
-
-    // Use theme colors
-    const { bgColor, headerBgColor, borderColor, textColor, headerTextColor, hoverColor, evenRowColor, oddRowColor, accentColor, secondaryTextColor } = themeColors;
-
-    // Calculate visible area - account for header height
-    // Only rows that would be visible below the header should be considered
-    // Add small buffer (2 rows) for smoother scrolling
-    const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
-    const bufferRows = 2;
-    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
-    const visibleEndRow = Math.min(
-      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
-      paginatedRows.length
-    );
-
-    // Calculate column positions (relative to scroll position)
-    let currentX = 0;
-    const columnPositions: { [key: number]: number } = {};
-    
-    // Row number column
-    columnPositions[-1] = currentX - scrollLeft;
-    currentX += getColumnWidth(-1);
-
-    results.columns.forEach((_, idx) => {
-      columnPositions[idx] = currentX - scrollLeft;
-      currentX += getColumnWidth(idx);
-    });
-
-    // Draw rows first - ensure they never draw above the header
-    for (let rowIdx = visibleStartRow; rowIdx < visibleEndRow; rowIdx++) {
-      const row = paginatedRows[rowIdx];
-      if (!row) continue;
-
-      // Calculate row Y position relative to the canvas
-      const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
-      const actualRowNumber = startIndex + rowIdx + 1;
-      
-      // Skip rows that would be drawn above or overlapping the header
-      if (rowY < HEADER_HEIGHT) continue;
-
-      // Row background
-      const isEven = rowIdx % 2 === 0;
-      const isHovered = hoveredRow === rowIdx;
-      ctx.fillStyle = isHovered ? hoverColor : isEven ? evenRowColor : oddRowColor;
-      ctx.fillRect(0, rowY, containerWidth, ROW_HEIGHT);
-
-      // Row number cell
-      const rowNumX = columnPositions[-1];
-      if (rowNumX + getColumnWidth(-1) > 0 && rowNumX < containerWidth) {
-        ctx.strokeStyle = borderColor;
-        ctx.beginPath();
-        ctx.moveTo(rowNumX + getColumnWidth(-1), rowY);
-        ctx.lineTo(rowNumX + getColumnWidth(-1), rowY + ROW_HEIGHT);
-        ctx.stroke();
-
-        ctx.fillStyle = textColor;
-        drawCellText(
-          ctx,
-          actualRowNumber.toLocaleString(),
-          rowNumX,
-          rowY,
-          getColumnWidth(-1),
-          textColor,
-          'right' // Right-align row numbers
-        );
-      }
-
-      // Data cells - draw all columns that are at least partially visible
-      row.values.forEach((value, colIdx) => {
-        const colX = columnPositions[colIdx];
-        const colWidth = getColumnWidth(colIdx);
-
-        // Column is visible if any part of it is in the viewport
-        // Check if right edge is to the right of left edge of viewport AND
-        // left edge is to the left of right edge of viewport
-        if (colX + colWidth > 0 && colX < containerWidth) {
-          // Calculate visible portion of column
-          const visibleX = Math.max(0, colX);
-          const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
-          
-          // Draw vertical border on the right side of the cell
-          ctx.strokeStyle = borderColor;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(colX + colWidth, rowY);
-          ctx.lineTo(colX + colWidth, rowY + ROW_HEIGHT);
-          ctx.stroke();
-
-          // Draw left border if column starts off-screen
-          if (colX < 0 && colIdx === 0) {
-            ctx.beginPath();
-            ctx.moveTo(0, rowY);
-            ctx.lineTo(0, rowY + ROW_HEIGHT);
-            ctx.stroke();
-          }
-
-          // Draw cell content - use pre-formatted value
-          const column = results.columns[colIdx];
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
-          const isNullValue = value === null || value === undefined;
-          ctx.fillStyle = textColor;
-          // Check if column is INTEGER type for right alignment
-          const columnType = (column?.type || '').toUpperCase();
-          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
-          const textAlign = isIntegerColumn ? 'right' : 'left';
-          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign, isNullValue);
-        }
-      });
-
-      // Draw bottom border
-      ctx.strokeStyle = borderColor;
-      ctx.beginPath();
-      ctx.moveTo(0, rowY + ROW_HEIGHT);
-      ctx.lineTo(containerWidth, rowY + ROW_HEIGHT);
-      ctx.stroke();
-    }
-
-    // Draw selection highlights
-    if (selectionStart && selectionEnd) {
-      const startRow = Math.min(selectionStart.row, selectionEnd.row);
-      const endRow = Math.max(selectionStart.row, selectionEnd.row);
-      const startCol = Math.min(selectionStart.col, selectionEnd.col);
-      const endCol = Math.max(selectionStart.col, selectionEnd.col);
-
-      // Only draw selection for visible rows
-      const visibleStart = Math.max(startRow, visibleStartRow);
-      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
-
-      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
-        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
-        if (rowY < HEADER_HEIGHT) continue;
-
-        // Draw selection for each selected column in this row
-        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
-          const colX = columnPositions[colIdx];
-          const colWidth = getColumnWidth(colIdx);
-
-          // Only draw if column is visible
-          if (colX + colWidth > 0 && colX < containerWidth) {
-            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
-            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
-          }
-        }
-      }
-    }
-
-    // Draw header last so it's always on top (fixed position)
-    // Draw header background
-    ctx.fillStyle = headerBgColor;
-    ctx.fillRect(0, 0, containerWidth, HEADER_HEIGHT);
-
-    // Draw header border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, HEADER_HEIGHT);
-    ctx.lineTo(containerWidth, HEADER_HEIGHT);
-    ctx.stroke();
-
-    // Draw header cells
-    ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = headerTextColor;
-
-    // Row number header
-    const rowNumX = columnPositions[-1];
-    const rowNumWidth = getColumnWidth(-1);
-    // Check if column is visible (any part of it is in viewport)
-    if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
-      ctx.fillStyle = headerTextColor;
-      ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      // Draw header text at correct vertical position, right-aligned
-      const rowHeaderText = 'Row';
-      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
-      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
-      
-      // Draw resize handle
-      if (resizingColumn === -1 || hoveredColumn === -1) {
-        ctx.fillStyle = resizingColumn === -1 ? accentColor : `${accentColor}80`;
-        ctx.fillRect(
-          rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
-          0,
-          RESIZE_HANDLE_WIDTH,
-          HEADER_HEIGHT
-        );
-      }
-    }
-
-    // Column headers - draw all columns that are at least partially visible
-    results.columns.forEach((col, idx) => {
-      const colX = columnPositions[idx];
-      const colWidth = getColumnWidth(idx);
-
-      // Column is visible if any part of it is in the viewport
-      // Check if right edge is to the right of left edge of viewport AND
-      // left edge is to the left of right edge of viewport
-      if (colX + colWidth > 0 && colX < containerWidth) {
-        // Calculate visible portion of column
-        const visibleX = Math.max(0, colX);
-        const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
-        
-        // Draw vertical border on the right side of the header
-        ctx.strokeStyle = borderColor;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(colX + colWidth, 0);
-        ctx.lineTo(colX + colWidth, HEADER_HEIGHT);
-        ctx.stroke();
-
-        // Draw left border if column starts off-screen
-        if (colX < 0) {
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(0, HEADER_HEIGHT);
-          ctx.stroke();
-        }
-
-        ctx.fillStyle = headerTextColor;
-        ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        // Column headers are always left-aligned regardless of data type
-        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
-        
-        // Draw header text directly with proper alignment and truncation
-        // Reserve space for dropdown arrow
-        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
-        const textWidth = measureText(col.name, ctx);
-        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
-        
-        if (textWidth <= maxWidth) {
-          // Text fits - always left-aligned
-          const textX = colX + CELL_PADDING;
-          ctx.fillText(col.name, textX, headerTextY);
-        } else {
-          // Truncate with ellipsis
-          const ellipsis = '...';
-          const ellipsisWidth = measureText(ellipsis, ctx);
-          let truncated = col.name;
-          let truncatedWidth = textWidth;
-          
-          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
-            truncated = truncated.slice(0, -1);
-            truncatedWidth = measureText(truncated, ctx);
-          }
-          
-          const finalWidth = truncatedWidth + ellipsisWidth;
-          // Always left-aligned
-          const textX = colX + CELL_PADDING;
-          ctx.fillText(truncated + ellipsis, textX, headerTextY);
-        }
-        
-        // Draw dropdown arrow indicator (always visible)
-        ctx.fillStyle = sortColumn === idx ? accentColor : secondaryTextColor;
-        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        const dropdownIcon = sortColumn === idx 
-          ? (sortDirection === 'asc' ? '↑' : '↓')
-          : '▼';
-        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
-        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
-
-        // Draw resize handle
-        if (resizingColumn === idx || hoveredColumn === idx) {
-          ctx.fillStyle = resizingColumn === idx ? accentColor : `${accentColor}80`;
-          const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
-          ctx.fillRect(
-            handleX,
-            0,
-            RESIZE_HANDLE_WIDTH,
-            HEADER_HEIGHT
-          );
-        }
-      }
-    });
-  }, [
-    paginatedRows,
-    results.columns,
-    scrollTop,
-    scrollLeft,
-    hoveredRow,
-    hoveredColumn,
-    resizingColumn,
-    getColumnWidth,
-    getFormattedValue,
-    startIndex,
-    drawCellText,
-    selectionStart,
-    selectionEnd,
-    themeColors,
-    sortColumn,
-    sortDirection,
-  ]);
-
-  // Handle scroll
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-    setScrollLeft(e.currentTarget.scrollLeft);
-    // Close sort menu when scrolling (position would be incorrect)
-    setSortMenu(null);
-  }, []);
-
-  // Handle mouse move
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      // Check if over header
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        // Check which column
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        // Check row number column
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          foundColumn = -1;
-        }
-        currentX += rowNumWidth;
-
-        // Check data columns
-        if (foundColumn === null) {
-          results.columns.forEach((_, idx) => {
-            const colWidth = getColumnWidth(idx);
-            if (x >= currentX && x < currentX + colWidth) {
-              foundColumn = idx;
-            }
-            currentX += colWidth;
-          });
-        }
-
-        setHoveredColumn(foundColumn);
-        setHoveredRow(null);
-
-        // Update cursor for resize or sort
-        if (foundColumn !== null) {
-          let colX = 0;
-          if (foundColumn === -1) {
-            colX = 0;
-          } else {
-            colX = getColumnWidth(-1);
-            for (let i = 0; i < foundColumn; i++) {
-              colX += getColumnWidth(i);
-            }
-          }
-          const colWidth = getColumnWidth(foundColumn);
-          const handleX = colX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-          
-          if (x >= handleX - 5 && x <= handleX + 5) {
-            container.style.cursor = 'col-resize';
-          } else if (foundColumn !== -1) {
-            // Show pointer cursor for data column headers (to indicate sortable)
-            container.style.cursor = 'pointer';
-          } else {
-            container.style.cursor = 'default';
-          }
-        } else {
-          container.style.cursor = 'default';
-        }
-      } else if (y >= HEADER_HEIGHT) {
-        // Check which row
-        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          setHoveredRow(rowIndex);
-        } else {
-          setHoveredRow(null);
-        }
-        setHoveredColumn(null);
-        container.style.cursor = 'default';
-      }
-    },
-    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length]
-  );
-
-  // Handle mouse leave
-  const handleMouseLeave = useCallback(() => {
-    setHoveredRow(null);
-    setHoveredColumn(null);
-    const container = containerRef.current;
-    if (container) {
-      container.style.cursor = 'default';
-    }
-  }, []);
-
-  // Handle mouse down for resizing and selection
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      // Don't handle right-click (context menu) - let handleContextMenu deal with it
-      if (e.button === 2) return;
-      
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      // Handle selection in data area (not header)
-      if (y >= HEADER_HEIGHT) {
-        // Check if this is a data cell click (not a scrollbar click)
-        const cell = getCellFromCoordinates(x, y);
-        if (cell) {
-          setIsSelecting(true);
-          const cellPos = { ...cell, x, y };
-          setSelectionStart(cellPos);
-          setSelectionEnd(cellPos);
-          // Don't prevent default - allow normal behavior
-          return;
-        } else {
-          // Click outside cells - clear selection
-          setSelectionStart(null);
-          setSelectionEnd(null);
-          return;
-        }
-      }
-
-      // Handle sort menu click in header (but not on resize handle)
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        // Check row number column
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          // Row number column doesn't have sort menu
-          return;
-        }
-        currentX += rowNumWidth;
-
-        // Check data columns
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          if (x >= currentX && x < currentX + colWidth) {
-            // Check if click is on resize handle
-            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-            if (x < handleX - 5 || x > handleX + 5) {
-              // Not on resize handle - show sort menu for any click on header
-              foundColumn = idx;
-            }
-          }
-          currentX += colWidth;
-        });
-
-        if (foundColumn !== null) {
-          e.preventDefault();
-          e.stopPropagation();
-          const container = containerRef.current;
-          if (container) {
-            const rect = container.getBoundingClientRect();
-            // Calculate position for sort menu
-            // colX is in scroll coordinates, need to convert to viewport coordinates
-            let colX = getColumnWidth(-1);
-            for (let i = 0; i < foundColumn; i++) {
-              colX += getColumnWidth(i);
-            }
-            const colWidth = getColumnWidth(foundColumn);
-            // Convert scroll coordinates to viewport coordinates
-            const viewportColX = colX - scrollLeft;
-            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
-            const menuY = rect.top + HEADER_HEIGHT + 2;
-            setSortMenu({
-              columnIndex: foundColumn,
-              x: menuX,
-              y: menuY,
-            });
-          }
-          return;
-        }
-      }
-
-      // Only handle resize in header
-
-      // Check which column
-      let currentX = 0;
-      let foundColumn: number | null = null;
-
-      // Check row number column
-      const rowNumWidth = getColumnWidth(-1);
-      if (x >= currentX && x < currentX + rowNumWidth) {
-        const handleX = currentX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2;
-        if (x >= handleX - 5 && x <= handleX + 5) {
-          foundColumn = -1;
-        }
-      }
-      currentX += rowNumWidth;
-
-      // Check data columns
-      if (foundColumn === null) {
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
-          if (x >= handleX - 5 && x <= handleX + 5) {
-            foundColumn = idx;
-          }
-          currentX += colWidth;
-        });
-      }
-
-      if (foundColumn !== null) {
-        e.preventDefault();
-        resizeStartXRef.current = e.clientX;
-        resizeStartWidthRef.current = getColumnWidth(foundColumn);
-        setResizingColumn(foundColumn);
-        // Clear selection when starting resize
-        setSelectionStart(null);
-        setSelectionEnd(null);
-        setIsSelecting(false);
-      } else {
-        // Click on header but not on resize handle - clear selection
-        setSelectionStart(null);
-        setSelectionEnd(null);
-        setIsSelecting(false);
-      }
-    },
-    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
-  );
-
-  // Handle context menu
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left + scrollLeft;
-      const y = e.clientY - rect.top + scrollTop;
-
-      if (y >= 0 && y < HEADER_HEIGHT) {
-        // Header context menu
-        let currentX = 0;
-        let foundColumn: number | null = null;
-
-        const rowNumWidth = getColumnWidth(-1);
-        if (x >= currentX && x < currentX + rowNumWidth) {
-          // Row number column doesn't have context menu
-          return;
-        }
-        currentX += rowNumWidth;
-
-        results.columns.forEach((_, idx) => {
-          const colWidth = getColumnWidth(idx);
-          if (x >= currentX && x < currentX + colWidth) {
-            foundColumn = idx;
-          }
-          currentX += colWidth;
-        });
-
-        if (foundColumn !== null) {
-          onColumnContextMenu(e, foundColumn);
-        }
-      } else if (y >= HEADER_HEIGHT) {
-        // Row context menu
-        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
-        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
-          // Check if click is on the row number column
-          const rowNumWidth = getColumnWidth(-1);
-          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
-          onRowContextMenu(e, rowIndex, isRowNumberColumn);
-        }
-      }
-    },
-    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
-  );
-
-  // Extract selected text
-  const getSelectedText = useCallback((): string => {
-    if (!selectionStart || !selectionEnd) return '';
-
-    const startRow = Math.min(selectionStart.row, selectionEnd.row);
-    const endRow = Math.max(selectionStart.row, selectionEnd.row);
-    const startCol = Math.min(selectionStart.col, selectionEnd.col);
-    const endCol = Math.max(selectionStart.col, selectionEnd.col);
-
-    const selectedCells: string[] = [];
-
-    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
-      const row = paginatedRows[rowIdx];
-      if (!row) continue;
-
-      const rowValues: string[] = [];
-      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
-        if (colIdx === -1) {
-          // Row number
-          const actualRowNumber = startIndex + rowIdx + 1;
-          rowValues.push(actualRowNumber.toLocaleString());
-        } else {
-          const value = row.values[colIdx];
-          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
-          rowValues.push(formattedValue);
-        }
-      }
-      selectedCells.push(rowValues.join('\t'));
-    }
-
-    return selectedCells.join('\n');
-  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
-
-  // Handle copy to clipboard
-  useEffect(() => {
-    const handleCopy = (e: KeyboardEvent) => {
-      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (selectionStart && selectionEnd) {
-          // Check if user is trying to copy from an input field or Monaco editor
-          const target = e.target as HTMLElement;
-          const isInputField = 
-            target.tagName === 'INPUT' || 
-            target.tagName === 'TEXTAREA' || 
-            target.isContentEditable ||
-            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
-            target.closest('.monaco-editor') !== null ||
-            target.closest('.editor-container') !== null;
-          
-          // Only handle copy from canvas if not copying from an input/editor
-          if (!isInputField) {
-            const text = getSelectedText();
-            if (text) {
-              e.preventDefault();
-              navigator.clipboard.writeText(text).catch((err) => {
-                console.error('Failed to copy to clipboard:', err);
-              });
-            }
-          }
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleCopy);
-    return () => window.removeEventListener('keydown', handleCopy);
-  }, [selectionStart, selectionEnd, getSelectedText]);
-
-
-  // Handle selection mouse move
-  const handleSelectionMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isSelecting || resizingColumn !== null) return;
-
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const viewportX = e.clientX - rect.left;
-      const viewportY = e.clientY - rect.top;
-      const x = viewportX + scrollLeft;
-      const y = viewportY + scrollTop;
-
-      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
-      const edgeThreshold = 20;
-      const isNearTop = viewportY < edgeThreshold;
-      const isNearBottom = viewportY > rect.height - edgeThreshold;
-      const isNearLeft = viewportX < edgeThreshold;
-      const isNearRight = viewportX > rect.width - edgeThreshold;
-
-      // Update selection if we can determine a cell
-      const cell = getCellFromCoordinates(x, y);
-      if (cell && selectionStart) {
-        setSelectionEnd({ ...cell, x, y });
-      } else if (selectionStart) {
-        // If outside cells but still selecting, extend selection to edge
-        // This allows selection to continue when dragging outside viewport
-        const lastCell = selectionEnd || selectionStart;
-        setSelectionEnd(lastCell);
-      }
-    },
-    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
-  );
-
-  // Handle selection mouse up
-  const handleSelectionMouseUp = useCallback(() => {
-    setIsSelecting(false);
-  }, []);
-
-  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
-  useEffect(() => {
-    if (!isSelecting) return;
-
-    const handleDocumentMouseUp = () => {
-      setIsSelecting(false);
-    };
-
-    document.addEventListener('mouseup', handleDocumentMouseUp);
-    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
-  }, [isSelecting]);
-
-  // Handle selection mouse leave
-  const handleSelectionMouseLeave = useCallback(() => {
-    setIsSelecting(false);
-  }, []);
-
-  // Handle resize mouse move
-  useEffect(() => {
-    if (resizingColumn === null) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const diff = e.clientX - resizeStartXRef.current;
-      const newWidth = Math.max(MIN_COLUMN_WIDTH, resizeStartWidthRef.current + diff);
-      onColumnResize(resizingColumn, newWidth);
-    };
-
-    const handleMouseUp = () => {
-      setResizingColumn(null);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove, { passive: false });
-    document.addEventListener('mouseup', handleMouseUp, { passive: false });
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [resizingColumn, onColumnResize]);
-
-  // Initial render when component mounts
-  useEffect(() => {
-    // Small delay to ensure DOM is ready
-    const timer = setTimeout(() => {
-      render();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Render on changes (including scroll) with throttling to reduce CPU usage
-  const renderTimeoutRef = useRef<number | null>(null);
-  useEffect(() => {
-    // Clear any pending render
-    if (renderTimeoutRef.current !== null) {
-      cancelAnimationFrame(renderTimeoutRef.current);
-    }
-
-    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
-    // but batch rapid scroll events
-    renderTimeoutRef.current = requestAnimationFrame(() => {
-      render();
-      renderTimeoutRef.current = null;
-    });
-
-    return () => {
-      if (renderTimeoutRef.current !== null) {
-        cancelAnimationFrame(renderTimeoutRef.current);
-        renderTimeoutRef.current = null;
-      }
-    };
-  }, [render, scrollTop, scrollLeft]);
-
-  // Handle window resize
-  useEffect(() => {
-    const handleResize = () => {
-      render();
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [render]);
-
-  return (
-    <div
-      ref={wrapperRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        position: 'relative',
-        overflow: 'hidden',
-        backgroundColor: themeColors.bgColor,
-      }}
-    >
-      {/* Scrollable container - this handles all scrolling */}
-      {/* Ensure scrollbars are always visible when content overflows */}
-      <div
-        ref={containerRef}
-        className="canvas-table-container"
-        onScroll={handleScroll}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-        onMouseDown={handleMouseDown}
-        onContextMenu={handleContextMenu}
-        style={{
-          width: '100%',
-          height: '100%',
-          overflowX: 'scroll',
-          overflowY: 'scroll',
-          position: 'relative',
-          // Ensure scrollbars are always visible
-          scrollbarWidth: 'thin',
-          scrollbarColor: `${themeColors.scrollbarThumb} ${themeColors.scrollbarTrack}`,
-          // Force scrollbars to be visible (especially on macOS)
-          WebkitOverflowScrolling: 'touch',
-        }}
-      >
-        {/* Spacer div to create scrollable area - this scrolls */}
-        <div
-          style={{
-            width: totalWidth,
-            height: totalHeight,
-            position: 'relative',
-            pointerEvents: 'none',
-          }}
-        />
-      </div>
-      {/* Canvas overlay - positioned fixed to outer container, does NOT scroll */}
-      {/* pointerEvents: 'none' allows scrolling and scrollbar interaction to work through it */}
-      {/* Size matches container.clientWidth/Height to exclude scrollbar area */}
-      <div
-        ref={canvasOverlayRef}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: 'none',
-          overflow: 'hidden',
-          backgroundColor: themeColors.bgColor,
-        }}
-      >
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            pointerEvents: 'none',
-            width: '100%',
-            height: '100%',
-          }}
-        />
-      </div>
-      {/* Selection overlay - captures mouse events for text selection */}
-      {/* Only active when actively selecting to allow scrolling otherwise */}
-      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
-      <div
-        ref={selectionOverlayRef}
-        onMouseMove={handleSelectionMouseMove}
-        onMouseUp={handleSelectionMouseUp}
-        onMouseLeave={handleSelectionMouseLeave}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
-          cursor: isSelecting ? 'text' : 'default',
-          userSelect: 'none',
-        }}
-      />
-      {/* Sort menu */}
-      {sortMenu && (
-        <ColumnSortMenu
-          x={sortMenu.x}
-          y={sortMenu.y}
-          columnIndex={sortMenu.columnIndex}
-          currentSortColumn={sortColumn}
-          currentSortDirection={sortDirection}
-          onClose={() => setSortMenu(null)}
-          onSort={onSortColumn}
-        />
-      )}
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/utils/bigquery-completions.ts
@@ -31256,501 +29779,2016 @@ export function registerBigQueryLanguage(
 }
 ````
 
-## File: src/renderer/App.tsx
+## File: src/renderer/components/QueryResults/CanvasTable.tsx
 ````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { QueryEditor } from './components/QueryEditor/QueryEditor';
-import { QueryResults } from './components/QueryResults/QueryResults';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { QueryHistory } from './components/QueryHistory/QueryHistory';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
-import './themes.css';
-import './App.css';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import type { QueryResult, ColumnMetadata } from '../../../shared/types/query';
+import { ColumnSortMenu } from './ColumnSortMenu';
 
-type Theme = 'dark' | 'light';
+// Helper to read CSS custom property values
+const getCSSVar = (name: string): string => {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+};
 
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [showSchemaSearch, setShowSchemaSearch] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(350);
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+// Theme colors derived from CSS variables
+const getThemeColors = () => ({
+  bgColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  headerBgColor: getCSSVar('--bg-tertiary') || '#2d2d30',
+  borderColor: getCSSVar('--border-primary') || '#3e3e42',
+  textColor: getCSSVar('--text-primary') || '#cccccc',
+  headerTextColor: getCSSVar('--text-primary') || '#cccccc',
+  hoverColor: getCSSVar('--bg-hover') || '#2a2d2e',
+  evenRowColor: getCSSVar('--bg-secondary') || '#252526',
+  oddRowColor: getCSSVar('--bg-primary') || '#1e1e1e',
+  accentColor: getCSSVar('--accent-primary') || '#007acc',
+  secondaryTextColor: getCSSVar('--text-secondary') || '#858585',
+  scrollbarThumb: getCSSVar('--bg-scrollbar-thumb') || '#424242',
+  scrollbarTrack: getCSSVar('--bg-scrollbar') || '#1e1e1e',
+});
 
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
+interface CanvasTableProps {
+  results: QueryResult;
+  columnWidths: { [key: number]: number };
+  onColumnResize: (columnIndex: number, width: number) => void;
+  onRowContextMenu: (e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => void;
+  onColumnContextMenu: (e: React.MouseEvent, columnIndex: number) => void;
+  formatValue: (value: any, columnType?: string, columnName?: string) => string;
+  currentPage: number;
+  rowsPerPage: number;
+  sortColumn: number | null;
+  sortDirection: 'asc' | 'desc' | null;
+  onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
+}
 
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
+const ROW_HEIGHT = 24;
+const HEADER_HEIGHT = 28;
+const ROW_NUMBER_COLUMN_WIDTH = 80;
+const MIN_COLUMN_WIDTH = 50;
+const CELL_PADDING = 8;
+const RESIZE_HANDLE_WIDTH = 4;
+const SORT_ARROW_WIDTH = 16;
+const SORT_ARROW_HEIGHT = 16;
+
+export const CanvasTable: React.FC<CanvasTableProps> = ({
+  results,
+  columnWidths,
+  onColumnResize,
+  onRowContextMenu,
+  onColumnContextMenu,
+  formatValue,
+  currentPage,
+  rowsPerPage,
+  sortColumn,
+  sortDirection,
+  onSortColumn,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasOverlayRef = useRef<HTMLDivElement>(null);
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
+  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  
+  // Text selection state
+  const [selectionStart, setSelectionStart] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const selectionOverlayRef = useRef<HTMLDivElement>(null);
+  
+  // Sort menu state
+  const [sortMenu, setSortMenu] = useState<{
+    columnIndex: number;
+    x: number;
+    y: number;
   } | null>(null);
 
+  // Results already contain only the current page rows (loaded from cache)
+  // Calculate startIndex for row numbering
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const paginatedRows = useMemo(() => {
+    // Results.rows already contains only the current page, so use it directly
+    return results.rows || [];
+  }, [results.rows]);
+
+  // Theme colors state - re-read when theme changes
+  const [themeColors, setThemeColors] = useState(getThemeColors);
+  
+  // Watch for theme changes via data-theme attribute
   useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
+    const updateColors = () => {
+      setThemeColors(getThemeColors());
+    };
+    
+    // Initial update
+    updateColors();
+    
+    // Watch for attribute changes on document.documentElement
+    const observer = new MutationObserver(updateColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    
+    return () => observer.disconnect();
   }, []);
 
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
+  // Memory management: Limit cache size and clear when data changes significantly
+  const formattedCellsRef = useRef<Map<string, string>>(new Map());
+  const MAX_FORMATTED_CACHE_SIZE = 100000; // Limit to 10k cells to prevent memory issues
+  
+  // Pre-format all cell values to avoid expensive formatting during render
+  // This is the key optimization - format values once when data changes, not on every render
+  const formattedCells = useMemo(() => {
+    const formatted = new Map<string, string>();
+    paginatedRows.forEach((row, rowIdx) => {
+      row.values.forEach((value, colIdx) => {
+        const column = results.columns[colIdx];
+        const key = `${rowIdx}-${colIdx}`;
+        // Only format if within cache size limit
+        if (formatted.size < MAX_FORMATTED_CACHE_SIZE) {
+          formatted.set(key, formatValue(value, column?.type, column?.name));
         }
       });
-    } else {
-      setShowConnectionDialog(true);
-    }
+    });
+    // Update ref for cleanup tracking
+    formattedCellsRef.current = formatted;
+    return formatted;
+  }, [paginatedRows, results.columns, formatValue]);
+  
+  // Clear caches when results change significantly (new jobId)
+  useEffect(() => {
+    formattedCellsRef.current.clear();
+    textMeasurementCache.current.clear();
+  }, [results.jobId]);
+
+  // Helper to get formatted value (with fallback for safety)
+  const getFormattedValue = useCallback((rowIdx: number, colIdx: number, value: any, columnType?: string): string => {
+    const key = `${rowIdx}-${colIdx}`;
+    const column = results.columns[colIdx];
+    return formattedCells.get(key) ?? formatValue(value, columnType, column?.name);
+  }, [formattedCells, formatValue, results.columns]);
+
+  // Calculate column widths
+  const getColumnWidth = useCallback(
+    (columnIndex: number): number => {
+      if (columnIndex === -1) {
+        return columnWidths[-1] || ROW_NUMBER_COLUMN_WIDTH;
+      }
+      return columnWidths[columnIndex] || 150;
+    },
+    [columnWidths]
+  );
+
+  // Calculate total width - ensure it's at least as wide as viewport to enable scrolling
+  const totalWidth = useMemo(() => {
+    let width = getColumnWidth(-1);
+    results.columns.forEach((_, idx) => {
+      width += getColumnWidth(idx);
+    });
+    // Ensure minimum width to enable horizontal scrolling when content is wide
+    return Math.max(width, 100);
+  }, [results.columns, getColumnWidth]);
+
+  const totalHeight = HEADER_HEIGHT + paginatedRows.length * ROW_HEIGHT;
+
+  // Track container dimensions to determine if scrolling is needed
+  const [containerDimensions, setContainerDimensions] = useState({ width: 0, height: 0 });
+
+  // Update container dimensions when it changes
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateDimensions = () => {
+      setContainerDimensions({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    };
+
+    updateDimensions();
+    const resizeObserver = new ResizeObserver(updateDimensions);
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
   }, []);
 
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-      const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
-        setShowSchemaSearch(true);
-      });
+  // Cache for text measurements to avoid repeated measureText calls
+  const textMeasurementCache = useRef<Map<string, number>>(new Map());
+  const measureTextContextRef = useRef<CanvasRenderingContext2D | null>(null);
 
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-        removeSearchSchemaListener();
-      };
+  // Measure text width with caching
+  const measureText = useCallback((text: string, ctx: CanvasRenderingContext2D): number => {
+    // Update context ref if changed
+    if (measureTextContextRef.current !== ctx) {
+      measureTextContextRef.current = ctx;
+      // Clear cache when context changes (e.g., font changes)
+      textMeasurementCache.current.clear();
     }
-  }, [handleToggleTheme]);
 
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = editorHeight;
-  }, [editorHeight]);
+    // Use cache key based on text content
+    const cacheKey = text;
+    if (textMeasurementCache.current.has(cacheKey)) {
+      return textMeasurementCache.current.get(cacheKey)!;
+    }
 
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientY - resizeStartYRef.current;
-      const newHeight = Math.max(200, Math.min(800, resizeStartHeightRef.current + diff)); // Min 200px, max 800px
-      setEditorHeight(newHeight);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
+    const width = ctx.measureText(text).width;
+    // Limit cache size to prevent memory issues (keep last 1000 measurements)
+    if (textMeasurementCache.current.size > 1000) {
+      const firstKey = textMeasurementCache.current.keys().next().value;
+      if (firstKey !== undefined) {
+        textMeasurementCache.current.delete(firstKey);
       }
-      rafId = null;
-    };
+    }
+    textMeasurementCache.current.set(cacheKey, width);
+    return width;
+  }, []);
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
+  // Convert viewport coordinates to cell position
+  const getCellFromCoordinates = useCallback(
+    (x: number, y: number): { row: number; col: number } | null => {
+      // Don't allow selection in header
+      if (y < HEADER_HEIGHT) return null;
       
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
+      const row = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+      if (row < 0 || row >= paginatedRows.length) return null;
 
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
+      // Find column
+      let currentX = 0;
       
-      // Schema search: CMD/CTRL + P
-      if (isModifierPressed && e.key.toLowerCase() === 'p') {
-        e.preventDefault();
-        setShowSchemaSearch(true);
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        return { row, col: -1 };
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      for (let idx = 0; idx < results.columns.length; idx++) {
+        const colWidth = getColumnWidth(idx);
+        if (x >= currentX && x < currentX + colWidth) {
+          return { row, col: idx };
+        }
+        currentX += colWidth;
+      }
+
+      return null;
+    },
+    [paginatedRows.length, getColumnWidth, results.columns]
+  );
+
+  // Draw cell text with ellipsis - optimized with binary search for truncation
+  const drawCellText = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      text: string,
+      x: number,
+      y: number,
+      width: number,
+      color: string = '#cccccc',
+      align: 'left' | 'right' = 'left',
+      isNull: boolean = false
+    ) => {
+      ctx.fillStyle = isNull ? '#888888' : color;
+      ctx.font = isNull 
+        ? 'italic 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        : '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      const maxWidth = width - CELL_PADDING * 2;
+      const ellipsis = '...';
+      const ellipsisWidth = measureText(ellipsis, ctx);
+      
+      // Quick check - if text fits, draw it directly
+      const textWidth = measureText(text, ctx);
+      if (textWidth <= maxWidth) {
+        // Calculate x position based on alignment
+        const textX = align === 'right' 
+          ? x + width - CELL_PADDING - textWidth 
+          : x + CELL_PADDING;
+        ctx.fillText(text, textX, y + ROW_HEIGHT / 2 + 4);
         return;
       }
       
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
+      // Binary search for optimal truncation point (much faster than linear character-by-character)
+      let left = 0;
+      let right = text.length;
+      let bestFit = 0;
       
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        const testText = text.substring(0, mid);
+        const testWidth = measureText(testText, ctx);
         
-        if (isInputField) {
-          return;
+        if (testWidth + ellipsisWidth <= maxWidth) {
+          bestFit = mid;
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
+      }
+      
+      const truncated = text.substring(0, bestFit);
+      const truncatedWidth = measureText(truncated + ellipsis, ctx);
+      // Calculate x position based on alignment for truncated text
+      const truncatedX = align === 'right'
+        ? x + width - CELL_PADDING - truncatedWidth
+        : x + CELL_PADDING;
+      ctx.fillText(truncated + ellipsis, truncatedX, y + ROW_HEIGHT / 2 + 4);
+    },
+    [measureText]
+  );
+
+  // Render the canvas
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const container = containerRef.current;
+    const wrapper = wrapperRef.current;
+    if (!container || !wrapper) return;
+
+    // Get viewport size from the scrolling container (accounts for scrollbars)
+    // Use clientWidth/clientHeight which excludes scrollbar width
+    const containerWidth = Math.max(1, container.clientWidth);
+    const containerHeight = Math.max(1, container.clientHeight);
+    
+    // Early return if dimensions are invalid
+    if (containerWidth <= 0 || containerHeight <= 0) {
+      return;
+    }
+
+    // Always set canvas size to match viewport exactly
+    const dpr = window.devicePixelRatio || 1;
+    const canvasWidth = Math.ceil(containerWidth * dpr);
+    const canvasHeight = Math.ceil(containerHeight * dpr);
+    
+    // Set canvas internal resolution and display size
+    // Only update if size actually changed to avoid unnecessary redraws
+    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+    }
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerHeight}px`;
+    
+    // Update canvas overlay size to match canvas (excludes scrollbar area)
+    const canvasOverlay = canvasOverlayRef.current;
+    if (canvasOverlay) {
+      canvasOverlay.style.width = `${containerWidth}px`;
+      canvasOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Update selection overlay size to match container
+    const selectionOverlay = selectionOverlayRef.current;
+    if (selectionOverlay) {
+      selectionOverlay.style.width = `${containerWidth}px`;
+      selectionOverlay.style.height = `${containerHeight}px`;
+    }
+    
+    // Reset transform and scale for high DPI
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+
+    // Clear canvas and fill with background color
+    ctx.fillStyle = themeColors.bgColor;
+    ctx.fillRect(0, 0, containerWidth, containerHeight);
+
+    // Use theme colors
+    const { bgColor, headerBgColor, borderColor, textColor, headerTextColor, hoverColor, evenRowColor, oddRowColor, accentColor, secondaryTextColor } = themeColors;
+
+    // Calculate visible area - account for header height
+    // Only rows that would be visible below the header should be considered
+    // Add small buffer (2 rows) for smoother scrolling
+    const scrollableAreaHeight = containerHeight - HEADER_HEIGHT;
+    const bufferRows = 2;
+    const visibleStartRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - bufferRows);
+    const visibleEndRow = Math.min(
+      visibleStartRow + Math.ceil(scrollableAreaHeight / ROW_HEIGHT) + bufferRows * 2,
+      paginatedRows.length
+    );
+
+    // Calculate column positions (relative to scroll position)
+    let currentX = 0;
+    const columnPositions: { [key: number]: number } = {};
+    
+    // Row number column
+    columnPositions[-1] = currentX - scrollLeft;
+    currentX += getColumnWidth(-1);
+
+    results.columns.forEach((_, idx) => {
+      columnPositions[idx] = currentX - scrollLeft;
+      currentX += getColumnWidth(idx);
+    });
+
+    // Draw rows first - ensure they never draw above the header
+    for (let rowIdx = visibleStartRow; rowIdx < visibleEndRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
+
+      // Calculate row Y position relative to the canvas
+      const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+      const actualRowNumber = startIndex + rowIdx + 1;
+      
+      // Skip rows that would be drawn above or overlapping the header
+      if (rowY < HEADER_HEIGHT) continue;
+
+      // Row background
+      const isEven = rowIdx % 2 === 0;
+      const isHovered = hoveredRow === rowIdx;
+      ctx.fillStyle = isHovered ? hoverColor : isEven ? evenRowColor : oddRowColor;
+      ctx.fillRect(0, rowY, containerWidth, ROW_HEIGHT);
+
+      // Row number cell
+      const rowNumX = columnPositions[-1];
+      if (rowNumX + getColumnWidth(-1) > 0 && rowNumX < containerWidth) {
+        ctx.strokeStyle = borderColor;
+        ctx.beginPath();
+        ctx.moveTo(rowNumX + getColumnWidth(-1), rowY);
+        ctx.lineTo(rowNumX + getColumnWidth(-1), rowY + ROW_HEIGHT);
+        ctx.stroke();
+
+        ctx.fillStyle = textColor;
+        drawCellText(
+          ctx,
+          actualRowNumber.toLocaleString(),
+          rowNumX,
+          rowY,
+          getColumnWidth(-1),
+          textColor,
+          'right' // Right-align row numbers
+        );
+      }
+
+      // Data cells - draw all columns that are at least partially visible
+      row.values.forEach((value, colIdx) => {
+        const colX = columnPositions[colIdx];
+        const colWidth = getColumnWidth(colIdx);
+
+        // Column is visible if any part of it is in the viewport
+        // Check if right edge is to the right of left edge of viewport AND
+        // left edge is to the left of right edge of viewport
+        if (colX + colWidth > 0 && colX < containerWidth) {
+          // Calculate visible portion of column
+          const visibleX = Math.max(0, colX);
+          const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
+          
+          // Draw vertical border on the right side of the cell
+          ctx.strokeStyle = borderColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(colX + colWidth, rowY);
+          ctx.lineTo(colX + colWidth, rowY + ROW_HEIGHT);
+          ctx.stroke();
+
+          // Draw left border if column starts off-screen
+          if (colX < 0 && colIdx === 0) {
+            ctx.beginPath();
+            ctx.moveTo(0, rowY);
+            ctx.lineTo(0, rowY + ROW_HEIGHT);
+            ctx.stroke();
+          }
+
+          // Draw cell content - use pre-formatted value
+          const column = results.columns[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
+          const isNullValue = value === null || value === undefined;
+          ctx.fillStyle = textColor;
+          // Check if column is INTEGER type for right alignment
+          const columnType = (column?.type || '').toUpperCase();
+          const isIntegerColumn = columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT');
+          const textAlign = isIntegerColumn ? 'right' : 'left';
+          drawCellText(ctx, formattedValue, colX, rowY, colWidth, textColor, textAlign, isNullValue);
+        }
+      });
+
+      // Draw bottom border
+      ctx.strokeStyle = borderColor;
+      ctx.beginPath();
+      ctx.moveTo(0, rowY + ROW_HEIGHT);
+      ctx.lineTo(containerWidth, rowY + ROW_HEIGHT);
+      ctx.stroke();
+    }
+
+    // Draw selection highlights
+    if (selectionStart && selectionEnd) {
+      const startRow = Math.min(selectionStart.row, selectionEnd.row);
+      const endRow = Math.max(selectionStart.row, selectionEnd.row);
+      const startCol = Math.min(selectionStart.col, selectionEnd.col);
+      const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+      // Only draw selection for visible rows
+      const visibleStart = Math.max(startRow, visibleStartRow);
+      const visibleEnd = Math.min(endRow + 1, visibleEndRow);
+
+      for (let rowIdx = visibleStart; rowIdx < visibleEnd; rowIdx++) {
+        const rowY = HEADER_HEIGHT + rowIdx * ROW_HEIGHT - scrollTop;
+        if (rowY < HEADER_HEIGHT) continue;
+
+        // Draw selection for each selected column in this row
+        for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+          const colX = columnPositions[colIdx];
+          const colWidth = getColumnWidth(colIdx);
+
+          // Only draw if column is visible
+          if (colX + colWidth > 0 && colX < containerWidth) {
+            ctx.fillStyle = 'rgba(0, 122, 204, 0.3)';
+            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
+          }
+        }
+      }
+    }
+
+    // Draw header last so it's always on top (fixed position)
+    // Draw header background
+    ctx.fillStyle = headerBgColor;
+    ctx.fillRect(0, 0, containerWidth, HEADER_HEIGHT);
+
+    // Draw header border
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, HEADER_HEIGHT);
+    ctx.lineTo(containerWidth, HEADER_HEIGHT);
+    ctx.stroke();
+
+    // Draw header cells
+    ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillStyle = headerTextColor;
+
+    // Row number header
+    const rowNumX = columnPositions[-1];
+    const rowNumWidth = getColumnWidth(-1);
+    // Check if column is visible (any part of it is in viewport)
+    if (rowNumX + rowNumWidth > 0 && rowNumX < containerWidth) {
+      ctx.fillStyle = headerTextColor;
+      ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      // Draw header text at correct vertical position, right-aligned
+      const rowHeaderText = 'Row';
+      const rowHeaderTextWidth = measureText(rowHeaderText, ctx);
+      ctx.fillText(rowHeaderText, rowNumX + getColumnWidth(-1) - CELL_PADDING - rowHeaderTextWidth, HEADER_HEIGHT / 2 + 4);
+      
+      // Draw resize handle
+      if (resizingColumn === -1 || hoveredColumn === -1) {
+        ctx.fillStyle = resizingColumn === -1 ? accentColor : `${accentColor}80`;
+        ctx.fillRect(
+          rowNumX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2,
+          0,
+          RESIZE_HANDLE_WIDTH,
+          HEADER_HEIGHT
+        );
+      }
+    }
+
+    // Column headers - draw all columns that are at least partially visible
+    results.columns.forEach((col, idx) => {
+      const colX = columnPositions[idx];
+      const colWidth = getColumnWidth(idx);
+
+      // Column is visible if any part of it is in the viewport
+      // Check if right edge is to the right of left edge of viewport AND
+      // left edge is to the left of right edge of viewport
+      if (colX + colWidth > 0 && colX < containerWidth) {
+        // Calculate visible portion of column
+        const visibleX = Math.max(0, colX);
+        const visibleWidth = Math.min(colX + colWidth, containerWidth) - visibleX;
+        
+        // Draw vertical border on the right side of the header
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(colX + colWidth, 0);
+        ctx.lineTo(colX + colWidth, HEADER_HEIGHT);
+        ctx.stroke();
+
+        // Draw left border if column starts off-screen
+        if (colX < 0) {
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, HEADER_HEIGHT);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = headerTextColor;
+        ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        // Column headers are always left-aligned regardless of data type
+        const headerTextY = HEADER_HEIGHT / 2 + 4; // Same vertical position as row header
+        
+        // Draw header text directly with proper alignment and truncation
+        // Reserve space for dropdown arrow
+        const dropdownArrowSpace = SORT_ARROW_WIDTH + 4; // Arrow width + spacing
+        const textWidth = measureText(col.name, ctx);
+        const maxWidth = colWidth - CELL_PADDING * 2 - dropdownArrowSpace;
+        
+        if (textWidth <= maxWidth) {
+          // Text fits - always left-aligned
+          const textX = colX + CELL_PADDING;
+          ctx.fillText(col.name, textX, headerTextY);
+        } else {
+          // Truncate with ellipsis
+          const ellipsis = '...';
+          const ellipsisWidth = measureText(ellipsis, ctx);
+          let truncated = col.name;
+          let truncatedWidth = textWidth;
+          
+          while (truncatedWidth + ellipsisWidth > maxWidth && truncated.length > 0) {
+            truncated = truncated.slice(0, -1);
+            truncatedWidth = measureText(truncated, ctx);
+          }
+          
+          const finalWidth = truncatedWidth + ellipsisWidth;
+          // Always left-aligned
+          const textX = colX + CELL_PADDING;
+          ctx.fillText(truncated + ellipsis, textX, headerTextY);
         }
         
-        // Prevent default browser behavior (e.g., browser tab switching)
+        // Draw dropdown arrow indicator (always visible)
+        ctx.fillStyle = sortColumn === idx ? accentColor : secondaryTextColor;
+        ctx.font = '0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const dropdownIcon = sortColumn === idx 
+          ? (sortDirection === 'asc' ? '↑' : '↓')
+          : '▼';
+        const dropdownIconX = colX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH / 2;
+        ctx.fillText(dropdownIcon, dropdownIconX, headerTextY);
+
+        // Draw resize handle
+        if (resizingColumn === idx || hoveredColumn === idx) {
+          ctx.fillStyle = resizingColumn === idx ? accentColor : `${accentColor}80`;
+          const handleX = Math.max(0, colX + colWidth - RESIZE_HANDLE_WIDTH / 2);
+          ctx.fillRect(
+            handleX,
+            0,
+            RESIZE_HANDLE_WIDTH,
+            HEADER_HEIGHT
+          );
+        }
+      }
+    });
+  }, [
+    paginatedRows,
+    results.columns,
+    scrollTop,
+    scrollLeft,
+    hoveredRow,
+    hoveredColumn,
+    resizingColumn,
+    getColumnWidth,
+    getFormattedValue,
+    startIndex,
+    drawCellText,
+    selectionStart,
+    selectionEnd,
+    themeColors,
+    sortColumn,
+    sortDirection,
+  ]);
+
+  // Handle scroll
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+    setScrollLeft(e.currentTarget.scrollLeft);
+    // Close sort menu when scrolling (position would be incorrect)
+    setSortMenu(null);
+  }, []);
+
+  // Handle mouse move
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      // Check if over header
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        // Check which column
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          foundColumn = -1;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        if (foundColumn === null) {
+          results.columns.forEach((_, idx) => {
+            const colWidth = getColumnWidth(idx);
+            if (x >= currentX && x < currentX + colWidth) {
+              foundColumn = idx;
+            }
+            currentX += colWidth;
+          });
+        }
+
+        setHoveredColumn(foundColumn);
+        setHoveredRow(null);
+
+        // Update cursor for resize or sort
+        if (foundColumn !== null) {
+          let colX = 0;
+          if (foundColumn === -1) {
+            colX = 0;
+          } else {
+            colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+          }
+          const colWidth = getColumnWidth(foundColumn);
+          const handleX = colX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+          
+          if (x >= handleX - 5 && x <= handleX + 5) {
+            container.style.cursor = 'col-resize';
+          } else if (foundColumn !== -1) {
+            // Show pointer cursor for data column headers (to indicate sortable)
+            container.style.cursor = 'pointer';
+          } else {
+            container.style.cursor = 'default';
+          }
+        } else {
+          container.style.cursor = 'default';
+        }
+      } else if (y >= HEADER_HEIGHT) {
+        // Check which row
+        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
+          setHoveredRow(rowIndex);
+        } else {
+          setHoveredRow(null);
+        }
+        setHoveredColumn(null);
+        container.style.cursor = 'default';
+      }
+    },
+    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length]
+  );
+
+  // Handle mouse leave
+  const handleMouseLeave = useCallback(() => {
+    setHoveredRow(null);
+    setHoveredColumn(null);
+    const container = containerRef.current;
+    if (container) {
+      container.style.cursor = 'default';
+    }
+  }, []);
+
+  // Handle mouse down for resizing and selection
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // Don't handle right-click (context menu) - let handleContextMenu deal with it
+      if (e.button === 2) return;
+      
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      // Handle selection in data area (not header)
+      if (y >= HEADER_HEIGHT) {
+        // Check if this is a data cell click (not a scrollbar click)
+        const cell = getCellFromCoordinates(x, y);
+        if (cell) {
+          setIsSelecting(true);
+          const cellPos = { ...cell, x, y };
+          setSelectionStart(cellPos);
+          setSelectionEnd(cellPos);
+          // Don't prevent default - allow normal behavior
+          return;
+        } else {
+          // Click outside cells - clear selection
+          setSelectionStart(null);
+          setSelectionEnd(null);
+          return;
+        }
+      }
+
+      // Handle sort menu click in header (but not on resize handle)
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        // Check row number column
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have sort menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        // Check data columns
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            // Check if click is on resize handle
+            const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+            if (x < handleX - 5 || x > handleX + 5) {
+              // Not on resize handle - show sort menu for any click on header
+              foundColumn = idx;
+            }
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          const container = containerRef.current;
+          if (container) {
+            const rect = container.getBoundingClientRect();
+            // Calculate position for sort menu
+            // colX is in scroll coordinates, need to convert to viewport coordinates
+            let colX = getColumnWidth(-1);
+            for (let i = 0; i < foundColumn; i++) {
+              colX += getColumnWidth(i);
+            }
+            const colWidth = getColumnWidth(foundColumn);
+            // Convert scroll coordinates to viewport coordinates
+            const viewportColX = colX - scrollLeft;
+            const menuX = rect.left + viewportColX + colWidth - CELL_PADDING - SORT_ARROW_WIDTH;
+            const menuY = rect.top + HEADER_HEIGHT + 2;
+            setSortMenu({
+              columnIndex: foundColumn,
+              x: menuX,
+              y: menuY,
+            });
+          }
+          return;
+        }
+      }
+
+      // Only handle resize in header
+
+      // Check which column
+      let currentX = 0;
+      let foundColumn: number | null = null;
+
+      // Check row number column
+      const rowNumWidth = getColumnWidth(-1);
+      if (x >= currentX && x < currentX + rowNumWidth) {
+        const handleX = currentX + rowNumWidth - RESIZE_HANDLE_WIDTH / 2;
+        if (x >= handleX - 5 && x <= handleX + 5) {
+          foundColumn = -1;
+        }
+      }
+      currentX += rowNumWidth;
+
+      // Check data columns
+      if (foundColumn === null) {
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          const handleX = currentX + colWidth - RESIZE_HANDLE_WIDTH / 2;
+          if (x >= handleX - 5 && x <= handleX + 5) {
+            foundColumn = idx;
+          }
+          currentX += colWidth;
+        });
+      }
+
+      if (foundColumn !== null) {
         e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
+        resizeStartXRef.current = e.clientX;
+        resizeStartWidthRef.current = getColumnWidth(foundColumn);
+        setResizingColumn(foundColumn);
+        // Clear selection when starting resize
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      } else {
+        // Click on header but not on resize handle - clear selection
+        setSelectionStart(null);
+        setSelectionEnd(null);
+        setIsSelecting(false);
+      }
+    },
+    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
+  );
+
+  // Handle context menu
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left + scrollLeft;
+      const y = e.clientY - rect.top + scrollTop;
+
+      if (y >= 0 && y < HEADER_HEIGHT) {
+        // Header context menu
+        let currentX = 0;
+        let foundColumn: number | null = null;
+
+        const rowNumWidth = getColumnWidth(-1);
+        if (x >= currentX && x < currentX + rowNumWidth) {
+          // Row number column doesn't have context menu
+          return;
+        }
+        currentX += rowNumWidth;
+
+        results.columns.forEach((_, idx) => {
+          const colWidth = getColumnWidth(idx);
+          if (x >= currentX && x < currentX + colWidth) {
+            foundColumn = idx;
+          }
+          currentX += colWidth;
+        });
+
+        if (foundColumn !== null) {
+          onColumnContextMenu(e, foundColumn);
+        }
+      } else if (y >= HEADER_HEIGHT) {
+        // Row context menu
+        const rowIndex = Math.floor((y - HEADER_HEIGHT) / ROW_HEIGHT);
+        if (rowIndex >= 0 && rowIndex < paginatedRows.length) {
+          // Check if click is on the row number column
+          const rowNumWidth = getColumnWidth(-1);
+          const isRowNumberColumn = x >= 0 && x < rowNumWidth;
+          onRowContextMenu(e, rowIndex, isRowNumberColumn);
+        }
+      }
+    },
+    [scrollTop, scrollLeft, getColumnWidth, results.columns, paginatedRows.length, onRowContextMenu, onColumnContextMenu]
+  );
+
+  // Extract selected text
+  const getSelectedText = useCallback((): string => {
+    if (!selectionStart || !selectionEnd) return '';
+
+    const startRow = Math.min(selectionStart.row, selectionEnd.row);
+    const endRow = Math.max(selectionStart.row, selectionEnd.row);
+    const startCol = Math.min(selectionStart.col, selectionEnd.col);
+    const endCol = Math.max(selectionStart.col, selectionEnd.col);
+
+    const selectedCells: string[] = [];
+
+    for (let rowIdx = startRow; rowIdx <= endRow; rowIdx++) {
+      const row = paginatedRows[rowIdx];
+      if (!row) continue;
+
+      const rowValues: string[] = [];
+      for (let colIdx = startCol; colIdx <= endCol; colIdx++) {
+        if (colIdx === -1) {
+          // Row number
+          const actualRowNumber = startIndex + rowIdx + 1;
+          rowValues.push(actualRowNumber.toLocaleString());
+        } else {
+          const value = row.values[colIdx];
+          const formattedValue = getFormattedValue(rowIdx, colIdx, value, results.columns[colIdx]?.type);
+          rowValues.push(formattedValue);
+        }
+      }
+      selectedCells.push(rowValues.join('\t'));
+    }
+
+    return selectedCells.join('\n');
+  }, [selectionStart, selectionEnd, paginatedRows, results.columns, formatValue, startIndex]);
+
+  // Handle copy to clipboard
+  useEffect(() => {
+    const handleCopy = (e: KeyboardEvent) => {
+      // Check for Ctrl+C (Windows/Linux) or Cmd+C (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectionStart && selectionEnd) {
+          // Check if user is trying to copy from an input field or Monaco editor
+          const target = e.target as HTMLElement;
+          const isInputField = 
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' || 
+            target.isContentEditable ||
+            // Check if Monaco editor is focused (Monaco editor uses a textarea internally)
+            target.closest('.monaco-editor') !== null ||
+            target.closest('.editor-container') !== null;
+          
+          // Only handle copy from canvas if not copying from an input/editor
+          if (!isInputField) {
+            const text = getSelectedText();
+            if (text) {
+              e.preventDefault();
+              navigator.clipboard.writeText(text).catch((err) => {
+                console.error('Failed to copy to clipboard:', err);
+              });
+            }
+          }
         }
       }
     };
 
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleCopy);
+    return () => window.removeEventListener('keydown', handleCopy);
+  }, [selectionStart, selectionEnd, getSelectedText]);
+
+
+  // Handle selection mouse move
+  const handleSelectionMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isSelecting || resizingColumn !== null) return;
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const viewportX = e.clientX - rect.left;
+      const viewportY = e.clientY - rect.top;
+      const x = viewportX + scrollLeft;
+      const y = viewportY + scrollTop;
+
+      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
+      const edgeThreshold = 20;
+      const isNearTop = viewportY < edgeThreshold;
+      const isNearBottom = viewportY > rect.height - edgeThreshold;
+      const isNearLeft = viewportX < edgeThreshold;
+      const isNearRight = viewportX > rect.width - edgeThreshold;
+
+      // Update selection if we can determine a cell
+      const cell = getCellFromCoordinates(x, y);
+      if (cell && selectionStart) {
+        setSelectionEnd({ ...cell, x, y });
+      } else if (selectionStart) {
+        // If outside cells but still selecting, extend selection to edge
+        // This allows selection to continue when dragging outside viewport
+        const lastCell = selectionEnd || selectionStart;
+        setSelectionEnd(lastCell);
+      }
+    },
+    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
+  );
+
+  // Handle selection mouse up
+  const handleSelectionMouseUp = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle mouse up at document level to ensure selection ends even if mouse leaves component
+  useEffect(() => {
+    if (!isSelecting) return;
+
+    const handleDocumentMouseUp = () => {
+      setIsSelecting(false);
     };
-  }, [tabs, setActiveTab]);
+
+    document.addEventListener('mouseup', handleDocumentMouseUp);
+    return () => document.removeEventListener('mouseup', handleDocumentMouseUp);
+  }, [isSelecting]);
+
+  // Handle selection mouse leave
+  const handleSelectionMouseLeave = useCallback(() => {
+    setIsSelecting(false);
+  }, []);
+
+  // Handle resize mouse move
+  useEffect(() => {
+    if (resizingColumn === null) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      e.preventDefault();
+      const diff = e.clientX - resizeStartXRef.current;
+      const newWidth = Math.max(MIN_COLUMN_WIDTH, resizeStartWidthRef.current + diff);
+      onColumnResize(resizingColumn, newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setResizingColumn(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove, { passive: false });
+    document.addEventListener('mouseup', handleMouseUp, { passive: false });
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [resizingColumn, onColumnResize]);
+
+  // Initial render when component mounts
+  useEffect(() => {
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      render();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Render on changes (including scroll) with throttling to reduce CPU usage
+  const renderTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    // Clear any pending render
+    if (renderTimeoutRef.current !== null) {
+      cancelAnimationFrame(renderTimeoutRef.current);
+    }
+
+    // Throttle renders during scrolling - use requestAnimationFrame for smooth updates
+    // but batch rapid scroll events
+    renderTimeoutRef.current = requestAnimationFrame(() => {
+      render();
+      renderTimeoutRef.current = null;
+    });
+
+    return () => {
+      if (renderTimeoutRef.current !== null) {
+        cancelAnimationFrame(renderTimeoutRef.current);
+        renderTimeoutRef.current = null;
+      }
+    };
+  }, [render, scrollTop, scrollLeft]);
+
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      render();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [render]);
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        <TabBar />
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : sidebarView === 'history' ? (
-              <QueryHistory 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <div className="query-section" style={{ height: `${editorHeight}px` }}>
-              <QueryEditor theme={theme} />
-            </div>
-            <div
-              className="resize-handle-horizontal"
-              onMouseDown={handleResizeStart}
-            />
-            <div className="results-section" style={{ height: `calc(100% - ${editorHeight}px - 4px)` }}>
-              <QueryResults />
-            </div>
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-      {showSchemaSearch && (
-        <SchemaSearchModal
-          onClose={() => setShowSchemaSearch(false)}
-          onShowSchema={handleShowSchema}
+    <div
+      ref={wrapperRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        position: 'relative',
+        overflow: 'hidden',
+        backgroundColor: themeColors.bgColor,
+      }}
+    >
+      {/* Scrollable container - this handles all scrolling */}
+      {/* Ensure scrollbars are always visible when content overflows */}
+      <div
+        ref={containerRef}
+        className="canvas-table-container"
+        onScroll={handleScroll}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        onMouseDown={handleMouseDown}
+        onContextMenu={handleContextMenu}
+        style={{
+          width: '100%',
+          height: '100%',
+          overflowX: 'scroll',
+          overflowY: 'scroll',
+          position: 'relative',
+          // Ensure scrollbars are always visible
+          scrollbarWidth: 'thin',
+          scrollbarColor: `${themeColors.scrollbarThumb} ${themeColors.scrollbarTrack}`,
+          // Force scrollbars to be visible (especially on macOS)
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        {/* Spacer div to create scrollable area - this scrolls */}
+        <div
+          style={{
+            width: totalWidth,
+            height: totalHeight,
+            position: 'relative',
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
+      {/* Canvas overlay - positioned fixed to outer container, does NOT scroll */}
+      {/* pointerEvents: 'none' allows scrolling and scrollbar interaction to work through it */}
+      {/* Size matches container.clientWidth/Height to exclude scrollbar area */}
+      <div
+        ref={canvasOverlayRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: 'none',
+          overflow: 'hidden',
+          backgroundColor: themeColors.bgColor,
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          style={{
+            display: 'block',
+            pointerEvents: 'none',
+            width: '100%',
+            height: '100%',
+          }}
+        />
+      </div>
+      {/* Selection overlay - captures mouse events for text selection */}
+      {/* Only active when actively selecting to allow scrolling otherwise */}
+      {/* Positioned to match canvas overlay (excludes scrollbar area) */}
+      <div
+        ref={selectionOverlayRef}
+        onMouseMove={handleSelectionMouseMove}
+        onMouseUp={handleSelectionMouseUp}
+        onMouseLeave={handleSelectionMouseLeave}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          pointerEvents: resizingColumn !== null || !isSelecting ? 'none' : 'auto',
+          cursor: isSelecting ? 'text' : 'default',
+          userSelect: 'none',
+        }}
+      />
+      {/* Sort menu */}
+      {sortMenu && (
+        <ColumnSortMenu
+          x={sortMenu.x}
+          y={sortMenu.y}
+          columnIndex={sortMenu.columnIndex}
+          currentSortColumn={sortColumn}
+          currentSortDirection={sortDirection}
+          onClose={() => setSortMenu(null)}
+          onSort={onSortColumn}
         />
       )}
     </div>
   );
 };
+````
 
-export default App;
+## File: src/renderer/components/QueryResults/QueryResults.tsx
+````typescript
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useTabsStore } from '../../stores/tabs-store';
+import { RowContextMenu } from './RowContextMenu';
+import { ExportMenu, type ExportFormat } from './ExportMenu';
+import { CanvasTable } from './CanvasTable';
+import type { QueryTab, QueryResult, ColumnMetadata, Row, ExecutionStatus } from '../../../shared/types/query';
+import { formatBigQueryValue } from '../../utils/bigquery-formatter';
+import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
+import './QueryResults.css';
+import './ExportMenu.css';
+
+const ROWS_PER_PAGE = 200;
+
+interface QueryResultsProps {
+  tabId?: string; // If provided, override the active tab
+}
+
+export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) => {
+  // Use separate selectors to ensure reactivity for each property
+  const activeTabId = useTabsStore((state) => propTabId || state.activeTabId);
+  const activeTab = useTabsStore((state) => {
+    const targetId = propTabId || state.activeTabId;
+    if (!targetId) return null;
+    return state.tabs.find((t) => t.id === targetId) || null;
+  });
+  
+  // Get error, execution status, and jobId from the tab
+  const error = activeTab?.error;
+  const executionStatus: ExecutionStatus = activeTab?.executionStatus || 'idle';
+  const jobId = activeTab?.jobId;
+  
+  // Cache key uses tab ID
+  const cacheKey = activeTabId;
+  
+  // All hooks must be called before any conditional returns
+  const [columnWidths, setColumnWidths] = useState<{ [key: number]: number }>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rowIndex?: number;
+    columnIndex?: number;
+    isRowNumberColumn?: boolean;
+  } | null>(null);
+  const [exportMenu, setExportMenu] = useState<{ x: number; y: number } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  
+  // Store metadata and current page separately for efficient cache access
+  const [resultsMetadata, setResultsMetadata] = useState<{
+    columns: any[];
+    totalRows: number;
+    rowsReturned: number;
+    executionTimeMs: number;
+    bytesProcessed?: number;
+    jobId: string;
+    hasMore: boolean;
+  } | null>(null);
+  const [currentPageRows, setCurrentPageRows] = useState<any[]>([]);
+  const [isLoadingCache, setIsLoadingCache] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [isBackgroundFetching, setIsBackgroundFetching] = useState(false);
+  
+  // Listen for progress events during query execution AND background fetching
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onProgress) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onProgress((data) => {
+      // Show progress during initial execution or background page fetching
+      if (data.jobId === jobId) {
+        setProgressMessage(data.message);
+        setIsBackgroundFetching(!data.isComplete);
+      }
+    });
+    
+    return unsubscribe;
+  }, [jobId]);
+  
+  // Clear progress when execution status changes to idle or error
+  useEffect(() => {
+    if (executionStatus === 'idle' || executionStatus === 'error') {
+      setProgressMessage(null);
+      setIsBackgroundFetching(false);
+    }
+  }, [executionStatus]);
+  
+  // Listen for rows updates (background fetching of additional pages)
+  // Data is saved directly to SQLite by the main process - we just reload from cache
+  useEffect(() => {
+    if (!window.electronAPI?.bigquery?.onRowsUpdate || !cacheKey) return;
+    
+    const unsubscribe = window.electronAPI.bigquery.onRowsUpdate(async (data) => {
+      // Only process updates for the current job
+      if (data.jobId !== jobId) return;
+      
+      // Data is already in SQLite cache - just reload metadata and current page
+      if (window.electronAPI?.resultsCache) {
+        // Reload metadata to reflect final row count
+        const metadata = await window.electronAPI.resultsCache.getMetadata(cacheKey);
+        if (metadata) {
+          setResultsMetadata(metadata);
+        }
+        
+        // Reload current page to ensure we have latest data
+        const pageRows = await window.electronAPI.resultsCache.getPage(cacheKey, currentPage);
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        }
+        
+        // Clear loading indicators
+        setProgressMessage(null);
+        setIsBackgroundFetching(false);
+      }
+    });
+    
+    return unsubscribe;
+  }, [cacheKey, jobId, currentPage]);
+  
+  // Load metadata from cache when tab changes or when execution completes
+  useEffect(() => {
+    if (!cacheKey || !window.electronAPI?.resultsCache) {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // If query is running, don't load from cache (wait for new results)
+    if (executionStatus === 'running') {
+      setResultsMetadata(null);
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    // Load metadata from cache
+    setIsLoadingCache(true);
+    window.electronAPI.resultsCache
+      .getMetadata(cacheKey)
+      .then((metadata: {
+        columns: ColumnMetadata[];
+        totalRows: number;
+        rowsReturned: number;
+        executionTimeMs: number;
+        bytesProcessed?: number;
+        jobId: string;
+        hasMore: boolean;
+      } | null) => {
+        if (metadata) {
+          setResultsMetadata(metadata);
+          setIsLoadingCache(false);
+        } else {
+          setResultsMetadata(null);
+          setCurrentPageRows([]);
+          setIsLoadingCache(false);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load results metadata from cache:', err);
+        setResultsMetadata(null);
+        setCurrentPageRows([]);
+        setIsLoadingCache(false);
+      });
+  }, [cacheKey, executionStatus]);
+  
+  // Load current page from cache when metadata or page changes
+  useEffect(() => {
+    if (!cacheKey || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      setCurrentPageRows([]);
+      return;
+    }
+    
+    setIsLoadingPage(true);
+    window.electronAPI.resultsCache
+      .getPage(cacheKey, currentPage)
+      .then((pageRows: Row[] | null) => {
+        if (pageRows) {
+          setCurrentPageRows(pageRows);
+        } else {
+          setCurrentPageRows([]);
+        }
+        setIsLoadingPage(false);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load page from cache:', err);
+        setCurrentPageRows([]);
+        setIsLoadingPage(false);
+      });
+  }, [cacheKey, currentPage, resultsMetadata]);
+  
+  // Prefetch adjacent pages for smoother navigation
+  useEffect(() => {
+    if (!cacheKey || !resultsMetadata || !window.electronAPI?.resultsCache) {
+      return;
+    }
+    
+    const totalPages = Math.ceil(resultsMetadata.rowsReturned / ROWS_PER_PAGE);
+    
+    // Prefetch next page if available
+    if (currentPage < totalPages) {
+      window.electronAPI.resultsCache.getPage(cacheKey, currentPage + 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+    
+    // Prefetch previous page if available
+    if (currentPage > 1) {
+      window.electronAPI.resultsCache.getPage(cacheKey, currentPage - 1).catch(() => {
+        // Silently fail prefetch
+      });
+    }
+  }, [cacheKey, currentPage, resultsMetadata]);
+  
+  // Reset column widths when results change (use jobId as stable identifier)
+  const resultsJobId = resultsMetadata?.jobId;
+  const resultsColumnCount = resultsMetadata?.columns?.length;
+  
+  useEffect(() => {
+    if (resultsJobId !== undefined) {
+      setColumnWidths({});
+      setCurrentPage(1); // Reset to first page when results change
+      setSortColumn(null); // Reset sorting when results change
+      setSortDirection(null);
+    }
+  }, [resultsJobId, activeTab?.id, resultsColumnCount]);
+
+  // Sort rows based on selected column and direction
+  const sortedRows = React.useMemo(() => {
+    if (sortColumn === null || sortDirection === null || !currentPageRows.length) {
+      return currentPageRows;
+    }
+
+    const sorted = [...currentPageRows].sort((a, b) => {
+      const aValue = a.values[sortColumn];
+      const bValue = b.values[sortColumn];
+      const column = resultsMetadata?.columns[sortColumn];
+      const columnType = (column?.type || '').toUpperCase();
+
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) {
+        return bValue === null || bValue === undefined ? 0 : 1;
+      }
+      if (bValue === null || bValue === undefined) {
+        return -1;
+      }
+
+      let comparison = 0;
+
+      // Compare based on column type
+      if (columnType === 'INTEGER' || columnType === 'INT' || columnType.includes('INT')) {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'FLOAT' || columnType === 'NUMERIC' || columnType === 'BIGNUMERIC') {
+        comparison = Number(aValue) - Number(bValue);
+      } else if (columnType === 'BOOLEAN' || columnType === 'BOOL') {
+        comparison = (aValue ? 1 : 0) - (bValue ? 1 : 0);
+      } else if (columnType === 'DATE' || columnType === 'DATETIME' || columnType === 'TIMESTAMP') {
+        const aDate = new Date(aValue).getTime();
+        const bDate = new Date(bValue).getTime();
+        comparison = aDate - bDate;
+      } else {
+        // String comparison (case-insensitive)
+        const aStr = String(aValue).toLowerCase();
+        const bStr = String(bValue).toLowerCase();
+        comparison = aStr.localeCompare(bStr);
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Create a QueryResult-like object for compatibility with existing code
+  const results: QueryResult | null = resultsMetadata
+    ? {
+        columns: resultsMetadata.columns,
+        rows: sortedRows, // Use sorted rows instead of currentPageRows
+        totalRows: resultsMetadata.totalRows,
+        rowsReturned: resultsMetadata.rowsReturned,
+        executionTimeMs: resultsMetadata.executionTimeMs,
+        bytesProcessed: resultsMetadata.bytesProcessed,
+        jobId: resultsMetadata.jobId,
+        hasMore: resultsMetadata.hasMore,
+      }
+    : null;
+
+  const handleColumnResize = useCallback((columnIndex: number, width: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [columnIndex]: width,
+    }));
+  }, []);
+
+  const handleRowContextMenu = useCallback((e: React.MouseEvent, rowIndex: number, isRowNumberColumn?: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      rowIndex,
+      isRowNumberColumn,
+    });
+  }, []);
+
+  const formatValue = useCallback((value: any, columnType?: string, columnName?: string): string => {
+    // Pass both type and name to formatter for better date detection
+    return formatBigQueryValue(value, columnType, columnName);
+  }, []);
+
+  const formatCSVValue = useCallback((val: any, columnType?: string, columnName?: string): string => {
+    const formatted = formatValue(val, columnType, columnName);
+    // Escape commas, quotes, and newlines in values
+    if (formatted.includes(',') || formatted.includes('"') || formatted.includes('\n')) {
+      return `"${formatted.replace(/"/g, '""')}"`;
+    }
+    return formatted;
+  }, [formatValue]);
+
+  const handleCopyRowValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.rowIndex === undefined) return;
+
+    // Use sorted rows from results (which matches what's displayed)
+    const rowIndex = contextMenu.rowIndex;
+    const row = results.rows[rowIndex];
+    
+    if (!row) return;
+
+    const headers = results.columns.map((col: any) => formatCSVValue(col.name));
+    const values = row.values.map((val: any, idx: number) => {
+      const col = results.columns[idx];
+      return formatCSVValue(val, col?.type, col?.name);
+    });
+
+    // Format: header1,header2,header3\nvalue1,value2,value3
+    const csvText = [headers.join(','), values.join(',')].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleCopyColumnValues = useCallback(() => {
+    if (!results || !contextMenu || contextMenu.columnIndex === undefined) return;
+
+    const columnIndex = contextMenu.columnIndex;
+    const column = results.columns[columnIndex];
+    
+    if (!column) return;
+
+    // Get header
+    const header = formatCSVValue(column.name);
+    
+    // Get all values for this column from sorted rows (matches what's displayed)
+    const values = results.rows.map(row => formatCSVValue(row.values[columnIndex], column.type, column.name));
+
+    // Format: header\nvalue1\nvalue2\nvalue3...
+    const csvText = [header, ...values].join('\n');
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(csvText).catch((err) => {
+      console.error('Failed to copy to clipboard:', err);
+    });
+  }, [results, contextMenu, formatCSVValue]);
+
+  const handleColumnContextMenu = useCallback((e: React.MouseEvent, columnIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      columnIndex,
+    });
+  }, []);
+
+  const handleSortColumn = useCallback((columnIndex: number, direction: 'asc' | 'desc') => {
+    setSortColumn(columnIndex);
+    setSortDirection(direction);
+  }, []);
+
+  // Export button click handler
+  const handleExportClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setExportMenu({
+      x: rect.left,
+      y: rect.bottom + 4,
+    });
+  }, []);
+
+  // Handle export action - fetches all rows from cache
+  const handleExport = useCallback(async (format: ExportFormat) => {
+    if (!cacheKey || !resultsMetadata || isExporting) return;
+
+    setIsExporting(true);
+    setExportMenu(null);
+
+    try {
+      // Fetch all rows from cache for export
+      const allResults = await window.electronAPI?.resultsCache?.get(cacheKey);
+      
+      if (!allResults) {
+        console.error('Failed to fetch results for export');
+        return;
+      }
+
+      const columns = allResults.columns;
+      const rows = allResults.rows;
+
+      if (format === 'csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        const result = await window.electronAPI.export.saveFile(csvContent, {
+          format: 'csv',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        const result = await window.electronAPI.export.saveFile(jsonContent, {
+          format: 'json',
+          defaultFilename: `query-results-${new Date().toISOString().slice(0, 10)}`,
+        });
+        if (result.error) {
+          console.error('Export failed:', result.error);
+        }
+      } else if (format === 'clipboard-csv') {
+        const csvContent = resultsToCSV(columns, rows);
+        await navigator.clipboard.writeText(csvContent);
+      } else if (format === 'clipboard-json') {
+        const jsonContent = resultsToJSON(columns, rows);
+        await navigator.clipboard.writeText(jsonContent);
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [cacheKey, resultsMetadata, isExporting]);
+
+  // Pagination calculations - use metadata for total rows, current page rows are already loaded
+  const totalRows = resultsMetadata?.rowsReturned || 0;
+  const totalPages = Math.ceil(totalRows / ROWS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  // Now we can do conditional returns after all hooks
+  if (error) {
+    return (
+      <div className="query-results">
+        <div className="error-results">
+          <strong>Error:</strong> {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!resultsMetadata) {
+    // Show progress message if available, otherwise show default messages
+    const message = executionStatus === 'running' 
+      ? (progressMessage || 'Executing query...')
+      : isLoadingCache
+      ? 'Loading results...'
+      : 'Execute a query to see results here.';
+    
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>{message}</div>
+          {(executionStatus === 'running' || isLoadingCache) && (
+            <div className="query-spinner-container">
+              <div className="query-spinner"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  
+  // Show loading indicator while page is loading
+  if (isLoadingPage && currentPageRows.length === 0) {
+    return (
+      <div className="query-results">
+        <div className="no-results">
+          <div>Loading page {currentPage}...</div>
+          <div className="query-spinner-container">
+            <div className="query-spinner"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check if we have columns and rows to display
+  const hasColumns = resultsMetadata.columns && resultsMetadata.columns.length > 0;
+  const hasRows = currentPageRows && currentPageRows.length > 0;
+
+  // Determine how to display row count
+  // - If totalRows === rowsReturned, we have all rows (or hit our limit exactly)
+  // - If totalRows > rowsReturned, show "X of Y rows" to indicate we're limited
+  // - hasMore indicates if there are more rows beyond our limit
+  const displayRowCount = () => {
+    if (resultsMetadata.totalRows > resultsMetadata.rowsReturned) {
+      // We hit the limit - show how many we have of the total
+      return `${resultsMetadata.rowsReturned.toLocaleString()} of ${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else if (resultsMetadata.hasMore) {
+      // Still loading more rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    } else {
+      // We have all rows
+      return `${resultsMetadata.totalRows.toLocaleString()} rows`;
+    }
+  };
+
+  if (!hasColumns && !hasRows) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">No data to display (empty result set).</div>
+      </div>
+    );
+  }
+
+  if (!hasColumns) {
+    return (
+      <div className="query-results">
+        <div className="results-header">
+          <div className="results-info">
+            <span>{displayRowCount()}</span>
+            <span> • {resultsMetadata.executionTimeMs}ms</span>
+            {resultsMetadata.bytesProcessed && (
+              <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+            )}
+            {progressMessage && (
+              <span className="loading-indicator"> • {progressMessage}</span>
+            )}
+          </div>
+        </div>
+        <div className="no-results">Error: No column information available.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="query-results">
+      <div className="results-header">
+        <div className="results-info">
+          <span>{displayRowCount()}</span>
+          <span> • {resultsMetadata.executionTimeMs}ms</span>
+          {resultsMetadata.bytesProcessed && (
+            <span> • {(resultsMetadata.bytesProcessed / 1024 / 1024).toFixed(2)} MB processed</span>
+          )}
+          {progressMessage && (
+            <span className="loading-indicator"> • {progressMessage}</span>
+          )}
+        </div>
+        <button
+          className="export-button"
+          onClick={handleExportClick}
+          disabled={isExporting || !hasRows}
+          title="Export results"
+        >
+          <span className="export-button-icon">⬇</span>
+          <span className="export-button-text">Export</span>
+        </button>
+      </div>
+      <div className="results-table-container">
+        {hasRows && results ? (
+          <CanvasTable
+            results={results}
+            columnWidths={columnWidths}
+            onColumnResize={handleColumnResize}
+            onRowContextMenu={handleRowContextMenu}
+            onColumnContextMenu={handleColumnContextMenu}
+            formatValue={formatValue}
+            currentPage={currentPage}
+            rowsPerPage={ROWS_PER_PAGE}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSortColumn={handleSortColumn}
+          />
+        ) : (
+          <div className="no-rows-message">No rows returned</div>
+        )}
+      </div>
+      {hasRows && totalPages > 1 && (
+        <div className="results-pagination">
+          <button
+            className="pagination-button"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+            title="Previous page"
+          >
+            ‹
+          </button>
+          <span className="pagination-info">
+            {startIndex + 1}-{endIndex} of {totalRows.toLocaleString()}
+          </span>
+          <button
+            className="pagination-button"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+            title="Next page"
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {contextMenu && (
+        <RowContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onCopyValues={contextMenu.columnIndex !== undefined ? handleCopyColumnValues : handleCopyRowValues}
+          menuLabel={
+            contextMenu.columnIndex !== undefined 
+              ? 'Copy column values (with header)' 
+              : contextMenu.isRowNumberColumn 
+                ? 'Copy row as CSV' 
+                : 'Copy values (with headers)'
+          }
+        />
+      )}
+      {exportMenu && (
+        <ExportMenu
+          x={exportMenu.x}
+          y={exportMenu.y}
+          onClose={() => setExportMenu(null)}
+          onExport={handleExport}
+          isExporting={isExporting}
+        />
+      )}
+    </div>
+  );
+};
+````
+
+## File: src/shared/types/query.ts
+````typescript
+/**
+ * Query-related types
+ */
+
+export type TabType = 'query' | 'explorer' | 'saved-queries';
+
+export type ExecutionStatus = 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+
+/**
+ * Which side of the split view a tab belongs to
+ */
+export type SplitSide = 'left' | 'right';
+
+export interface QueryTab {
+  id: string;
+  title: string;
+  type?: TabType; // 'query' by default, 'explorer' for Explorer tab
+  queryText: string;
+  isModified: boolean;
+  executionStatus: ExecutionStatus;
+  jobId?: string;
+  results?: QueryResult;
+  error?: string;
+  lastExecuted?: string; // ISO timestamp
+  lastExecutedQueryText?: string; // The query text that was last executed
+  savedQueryId?: string;
+  // Split view - which side this tab belongs to (undefined = left/main by default)
+  splitSide?: SplitSide;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  sqlText: string;
+  description?: string;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  tags?: string[];
+}
+
+export interface SaveQueryInput {
+  name: string;
+  sqlText: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateQueryInput {
+  name?: string;
+  sqlText?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface QueryResult {
+  columns: ColumnMetadata[];
+  rows: Row[];
+  totalRows: number;
+  rowsReturned: number;
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  jobId: string;
+  hasMore: boolean;
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type: string; // BigQuery type: STRING, INTEGER, FLOAT, etc.
+  mode?: string; // NULLABLE, REQUIRED, REPEATED
+}
+
+export interface Row {
+  values: any[]; // Values matching column order
+}
+
+/**
+ * Schema field with nested field support for RECORD/STRUCT types
+ */
+export interface SchemaField extends ColumnMetadata {
+  fields?: SchemaField[];
+}
+
+/**
+ * Stored schema record from the cache
+ */
+export interface StoredSchema {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  fields: SchemaField[];
+  lastUpdated: number;
+}
+
+/**
+ * Query history entry - tracks executed queries with metadata
+ */
+export interface QueryHistoryEntry {
+  id: string;
+  queryText: string;
+  executedAt: string; // ISO timestamp
+  executionTimeMs: number;
+  bytesProcessed?: number;
+  totalRows?: number;
+  status: 'completed' | 'error' | 'cancelled';
+  errorMessage?: string;
+  projectId: string;
+  jobId?: string;
+}
 ````
 
 ## File: README.md
@@ -32042,6 +32080,422 @@ If you find QueryForge useful, please consider supporting its development:
 ## License
 
 MIT
+````
+
+## File: src/renderer/components/QueryEditor/QueryEditor.css
+````css
+.query-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--bg-primary);
+}
+
+.query-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+  height: 35px;
+  position: relative;
+  z-index: 1; /* Lower z-index to allow tooltips to appear above */
+}
+
+.query-editor-toolbar button {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--button-secondary);
+  color: var(--text-disabled);
+}
+
+.tools-dropdown {
+  position: relative;
+}
+
+.query-editor-toolbar .tools-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.query-editor-toolbar .tools-button.open {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  box-shadow: var(--shadow-popover, 0 8px 20px rgba(0, 0, 0, 0.35));
+  min-width: 170px;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  z-index: 5;
+}
+
+.tools-menu .tools-menu-item {
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0.5rem 0.75rem;
+}
+
+.tools-menu .tools-menu-item:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.tools-menu .tools-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
+
+.query-editor-toolbar .run-button {
+  background-color: var(--accent-primary);
+}
+
+.query-editor-toolbar .run-button:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.query-editor-toolbar .arrow-icon {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.query-editor-toolbar .format-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .format-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .expand-button {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.query-editor-toolbar .expand-button:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.query-editor-toolbar .dbtify-button {
+  background-color: var(--accent-orange);
+  color: var(--text-white);
+}
+
+.query-editor-toolbar .dbtify-button:hover:not(:disabled) {
+  background-color: var(--accent-orange-hover);
+}
+
+.query-editor-toolbar .save-button {
+  background-color: var(--accent-success);
+}
+
+.query-editor-toolbar .save-button:hover {
+  background-color: var(--accent-success-hover);
+}
+
+.query-editor-toolbar .cancel-button {
+  background-color: var(--accent-danger);
+}
+
+.query-editor-toolbar .cancel-button:hover {
+  background-color: var(--accent-danger-hover);
+}
+
+.connection-warning {
+  color: var(--text-warning);
+  background-color: var(--button-secondary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  margin-left: auto;
+  border: 1px solid #6a6a6a;
+}
+
+.error-message {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  margin: 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+}
+
+.editor-container {
+  flex: 1;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  overflow: visible; /* Allow tooltips to overflow container */
+}
+
+.editor-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-top: 8px; /* Add padding to prevent tooltips from being hidden under toolbar */
+  overflow: visible; /* Allow tooltips to overflow */
+}
+
+/* Ensure Monaco editor tooltips/hovers render above toolbar */
+.editor-wrapper .monaco-editor .monaco-hover {
+  z-index: 1000 !important;
+}
+
+.editor-wrapper .monaco-editor .monaco-editor-hover {
+  z-index: 1000 !important;
+}
+
+/* Alternative: target Monaco's overflow widget container */
+.editor-wrapper .monaco-editor .monaco-editor-overlaymessage {
+  z-index: 1000 !important;
+}
+
+/* Error indicator in glyph margin - red dot */
+.monaco-editor .error-glyph-margin {
+  background-color: #f48771 !important;
+  width: 3px !important;
+  margin-left: 1px;
+}
+
+.monaco-editor .error-glyph-margin::before {
+  content: '●';
+  color: #f48771;
+  font-size: 14px;
+  line-height: 19px;
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  position: absolute;
+  left: 0;
+}
+
+.editor-status-bar {
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  padding: 0.375rem 0.75rem;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-status-bar .status-right {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.editor-status-bar .status-text {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.editor-status-bar .status-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.editor-status-bar .status-indicator-valid {
+  background-color: var(--text-success);
+}
+
+.editor-status-bar .status-indicator-invalid {
+  background-color: var(--text-error);
+}
+
+.editor-status-bar .status-valid {
+  color: var(--text-success);
+}
+
+.editor-status-bar .status-invalid {
+  color: var(--text-error);
+}
+
+.editor-status-bar .status-error-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-height: 2.8em; /* Approximately 2 lines at line-height 1.4 */
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.editor-status-bar .status-error-line {
+  font-weight: 600;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.no-tab-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+.save-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-dialog {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 1.5rem;
+  min-width: 400px;
+  box-shadow: var(--shadow-dialog);
+  border: 1px solid var(--border-primary);
+  color: var(--text-primary);
+}
+
+.save-dialog h3 {
+  margin: 0 0 1rem 0;
+  color: var(--text-white);
+  font-size: 1.125rem;
+  font-weight: 400;
+}
+
+.save-dialog .form-group {
+  margin-bottom: 1rem;
+}
+
+.save-dialog .form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-group input,
+.save-dialog .form-group textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.save-dialog .form-group input:focus,
+.save-dialog .form-group textarea:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group textarea {
+  font-family: inherit;
+  resize: vertical;
+}
+
+.save-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.save-dialog .dialog-actions button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.save-dialog .dialog-actions button:first-child {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.save-dialog .dialog-actions button:first-child:hover {
+  background-color: var(--button-secondary-hover);
+}
+
+.save-dialog .dialog-actions button:last-child {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.save-dialog .dialog-actions button:last-child:hover {
+  background-color: var(--accent-primary-hover);
+}
+
+.save-dialog .dialog-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  color: var(--text-disabled);
+}
 ````
 
 ## File: tests/unit/renderer/utils/sql-validation.test.ts
@@ -33262,6 +33716,461 @@ app.on('will-quit', () => {
   closeSchemaCacheDatabase();
   closeHistoryDatabase();
 });
+````
+
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { SplitEditorContainer } from './components/SplitEditorContainer/SplitEditorContainer';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { QueryHistory } from './components/QueryHistory/QueryHistory';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
+import './themes.css';
+import './App.css';
+
+type Theme = 'dark' | 'light';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [showSchemaSearch, setShowSchemaSearch] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId, isSplitView } = useTabsStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths and theme on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+      // Load saved theme
+      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
+        setTheme(savedTheme);
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      });
+    }
+  }, []);
+
+  // Handle theme toggle
+  const handleToggleTheme = useCallback(() => {
+    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.setTheme(newTheme);
+    }
+  }, [theme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
+        handleToggleTheme();
+      });
+      const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
+        setShowSchemaSearch(true);
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeToggleThemeListener();
+        removeSearchSchemaListener();
+      };
+    }
+  }, [handleToggleTheme]);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Schema search: CMD/CTRL + P
+      if (isModifierPressed && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setShowSchemaSearch(true);
+        return;
+      }
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        {!isSplitView && <TabBar />}
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : sidebarView === 'history' ? (
+              <QueryHistory 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <SplitEditorContainer 
+              editorHeight={editorHeight}
+              onEditorResize={setEditorHeight}
+              theme={theme}
+            />
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+      {showSchemaSearch && (
+        <SchemaSearchModal
+          onClose={() => setShowSchemaSearch(false)}
+          onShowSchema={handleShowSchema}
+        />
+      )}
+    </div>
+  );
+};
+
+export default App;
 ````
 
 ## File: src/main/ipc/bigquery.ts
@@ -37864,9 +38773,11 @@ import './QueryEditor.css';
 
 interface QueryEditorProps {
   theme?: 'dark' | 'light';
+  tabId?: string; // If provided, override the active tab
+  onFocus?: () => void; // Called when editor gains focus (for split mode)
 }
 
-export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId: propTabId, onFocus }) => {
   // ============================================================================
   // State
   // ============================================================================
@@ -37897,22 +38808,55 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
   const [editorHeight, setEditorHeight] = useState(300);
   const executeHandlerRef = useRef<(() => void) | null>(null);
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
+  const toggleSplitHandlerRef = useRef<(() => void) | null>(null);
   const errorDecorationsRef = useRef<string[]>([]);
 
   // ============================================================================
   // Store Selectors
   // ============================================================================
 
+  // Get the tab (either from prop or from active tab)
   const activeTab = useTabsStore((state) => {
-    const tab = state.tabs.find((t) => t.id === state.activeTabId);
+    const targetTabId = propTabId || state.activeTabId;
+    const tab = state.tabs.find((t) => t.id === targetTabId);
     return tab || null;
   });
 
+  // Get store functions
+  const { 
+    setTabQuery, 
+    setTabResults, 
+    setTabError, 
+    setTabStatus, 
+    updateTab,
+  } = useTabsStore();
+
+  // Get query text and execution state from the tab
   const queryText = activeTab?.queryText || '';
   const isExecuting = activeTab?.executionStatus === 'running';
   const jobId = activeTab?.jobId || null;
 
-  const { setTabQuery, setTabResults, setTabError, setTabStatus, updateTab } = useTabsStore();
+  // Create wrapper functions that work with the current tab
+  const setQuery = useCallback((text: string) => {
+    if (!activeTab) return;
+    setTabQuery(activeTab.id, text);
+  }, [activeTab, setTabQuery]);
+
+  const setResults = useCallback((results: any) => {
+    if (!activeTab) return;
+    setTabResults(activeTab.id, results);
+  }, [activeTab, setTabResults]);
+
+  const setError = useCallback((error: string) => {
+    if (!activeTab) return;
+    setTabError(activeTab.id, error);
+  }, [activeTab, setTabError]);
+
+  const setStatus = useCallback((status: any) => {
+    if (!activeTab) return;
+    setTabStatus(activeTab.id, status);
+  }, [activeTab, setTabStatus]);
+
   const { saveQuery, updateQuery } = useQueriesStore();
   const { executeQuery, cancelQuery, isConnected } = useBigQuery();
   const connection = useConnectionStore((state) => state.connection);
@@ -38159,10 +39103,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const handleInsertTableReference = (event: CustomEvent) => {
       if (activeTab) {
         const tableRef = event.detail as string;
-        const currentText = activeTab.queryText || '';
+        const currentText = queryText;
         const newText =
           currentText + (currentText && !currentText.endsWith(' ') ? ' ' : '') + tableRef + ' ';
-        setTabQuery(activeTab.id, newText);
+        setQuery(newText);
 
         if (editorRef.current) {
           editorRef.current.focus();
@@ -38180,23 +39124,23 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     return () => {
       window.removeEventListener('insertTableReference', handleInsertTableReference as EventListener);
     };
-  }, [activeTab, setTabQuery]);
+  }, [activeTab, queryText, setQuery]);
 
   // ============================================================================
   // Handlers
   // ============================================================================
 
   const handleExecute = async () => {
-    const currentTab = useTabsStore
-      .getState()
-      .tabs.find((t) => t.id === useTabsStore.getState().activeTabId);
+    // Get the current tab's state
+    const targetTabId = propTabId || useTabsStore.getState().activeTabId;
+    const currentTab = useTabsStore.getState().tabs.find((t) => t.id === targetTabId);
     if (!currentTab) return;
 
     const currentConnection = useConnectionStore.getState().connection;
     const currentIsConnected = currentConnection !== null;
 
     if (!currentIsConnected) {
-      setTabError(currentTab.id, 'Not connected to BigQuery. Please configure a connection first.');
+      setError('Not connected to BigQuery. Please configure a connection first.');
       return;
     }
 
@@ -38209,17 +39153,18 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       if (selection && !selection.isEmpty() && model) {
         queryTextToExecute = model.getValueInRange(selection);
       } else {
-        queryTextToExecute = currentTab.queryText || '';
+        queryTextToExecute = queryText;
       }
     } else {
-      queryTextToExecute = currentTab.queryText || '';
+      queryTextToExecute = queryText;
     }
 
     if (!queryTextToExecute.trim()) {
-      setTabError(currentTab.id, 'Please enter a query or select text to execute');
+      setError('Please enter a query or select text to execute');
       return;
     }
 
+    // Update status to running
     useTabsStore.getState().updateTab(currentTab.id, {
       executionStatus: 'running',
       error: '',
@@ -38229,8 +39174,10 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     setCompletedQueryText(null);
     setCompletedQueryExecutionTime(null);
 
+    // Use tab ID as cache key
+    const cacheKey = currentTab.id;
     if (window.electronAPI?.resultsCache) {
-      await window.electronAPI.resultsCache.delete(currentTab.id).catch((err: unknown) => {
+      await window.electronAPI.resultsCache.delete(cacheKey).catch((err: unknown) => {
         console.error('Failed to clear cache:', err);
       });
     }
@@ -38238,10 +39185,12 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
     const executionStartTime = Date.now();
 
     try {
-      const result = await executeQuery(queryTextToExecute, currentTab.id);
+      const result = await executeQuery(queryTextToExecute, cacheKey);
+      
+      // Update job ID
       useTabsStore.getState().updateTab(currentTab.id, { jobId: result.jobId });
 
-      setTabResults(currentTab.id, result);
+      setResults(result);
 
       setCompletedQueryText(queryTextToExecute);
       setCompletedQueryExecutionTime(result.executionTimeMs);
@@ -38299,7 +39248,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       const electronPrefix = /^Error: Error invoking remote method 'bigquery:execute':\s*/i;
       errorMessage = errorMessage.replace(electronPrefix, '');
 
-      setTabError(currentTab.id, errorMessage);
+      setError(errorMessage);
 
       useQueryHistoryStore.getState().addEntry({
         queryText: queryTextToExecute,
@@ -38317,16 +39266,16 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
     try {
       await cancelQuery(jobId);
-      setTabStatus(activeTab.id, 'cancelled');
+      setStatus('cancelled');
     } catch (err: any) {
-      setTabError(activeTab.id, err.message || 'Failed to cancel query');
+      setError(err.message || 'Failed to cancel query');
     }
   };
 
   const handleQueryChange = (value: string | undefined) => {
     if (activeTab) {
       const newQueryText = value || '';
-      setTabQuery(activeTab.id, newQueryText);
+      setQuery(newQueryText);
 
       if (completedQueryText !== null && newQueryText !== completedQueryText) {
         setCompletedQueryText(null);
@@ -38401,9 +39350,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         keywordCase: 'upper',
         indentStyle: 'standard',
       });
-      setTabQuery(activeTab.id, formatted);
+      setQuery(formatted);
     } catch (err: any) {
-      setTabError(activeTab.id, `Formatting failed: ${err.message || 'Invalid SQL syntax'}`);
+      setError(`Formatting failed: ${err.message || 'Invalid SQL syntax'}`);
     }
   };
 
@@ -38417,7 +39366,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
 
       const selectStarMatch = trimmedQuery.match(/SELECT\s+\*\s+FROM/i);
       if (!selectStarMatch) {
-        setTabError(activeTab.id, 'No SELECT * FROM statement found');
+        setError('No SELECT * FROM statement found');
         return;
       }
 
@@ -38425,7 +39374,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         /FROM\s+([^\s]+(?:\s+AS\s+\w+)?)(?:\s|$|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP|ORDER|HAVING|LIMIT)/i
       );
       if (!fromMatch) {
-        setTabError(activeTab.id, 'Could not find table reference in FROM clause');
+        setError('Could not find table reference in FROM clause');
         return;
       }
 
@@ -38438,8 +39387,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       let tableId: string;
 
       if (parts.length === 1) {
-        setTabError(
-          activeTab.id,
+        setError(
           'Cannot determine dataset from table name. Please use dataset.table or project.dataset.table format.'
         );
         return;
@@ -38450,8 +39398,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         datasetId = parts[1];
         tableId = parts[2];
       } else {
-        setTabError(
-          activeTab.id,
+        setError(
           'Invalid table reference format. Expected: dataset.table or project.dataset.table'
         );
         return;
@@ -38460,7 +39407,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
       const schemaResult = await window.electronAPI.bigquery.getTableSchema(datasetId, tableId);
 
       if (!schemaResult.fields || schemaResult.fields.length === 0) {
-        setTabError(activeTab.id, 'No columns found in table schema');
+        setError('No columns found in table schema');
         return;
       }
 
@@ -38484,18 +39431,17 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           keywordCase: 'upper',
           indentStyle: 'standard',
         });
-        setTabQuery(activeTab.id, formatted);
+        setQuery(formatted);
       } catch (formatError: any) {
-        setTabQuery(activeTab.id, expandedQuery);
-        setTabError(
-          activeTab.id,
+        setQuery(expandedQuery);
+        setError(
           `Expanded SELECT * but formatting failed: ${formatError.message || 'Invalid SQL syntax'}`
         );
       }
     } catch (err: any) {
-      setTabError(activeTab.id, `Failed to expand SELECT *: ${err.message || 'Unknown error'}`);
+      setError(`Failed to expand SELECT *: ${err.message || 'Unknown error'}`);
     }
-  }, [activeTab, queryText, connection, setTabQuery, setTabError]);
+  }, [activeTab, queryText, connection, setQuery, setError]);
 
   const handleDbtify = () => {
     if (!activeTab || !queryText.trim()) {
@@ -38509,24 +39455,42 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         connection?.projectId || 'project',
         getAllTables
       );
-      setTabQuery(activeTab.id, bigQuerySyntax);
+      setQuery(bigQuerySyntax);
     } else {
       if (sqlValidationStatus.isValid !== true) {
         return;
       }
       const dbtSyntax = convertToDbtSyntax(queryText);
-      setTabQuery(activeTab.id, dbtSyntax);
+      setQuery(dbtSyntax);
     }
   };
 
-  // Update handler refs
+  // Update handler refs - must update on every render to capture current paneId and queryText
   useEffect(() => {
     executeHandlerRef.current = handleExecute;
-  }, [executeQuery, setTabError, setTabStatus, setTabResults]);
+  });
 
   useEffect(() => {
     expandSelectStarHandlerRef.current = handleExpandSelectStar;
   }, [handleExpandSelectStar]);
+
+  // Handle split toggle - now using global split state
+  const { isSplitView, splitTabToRight, closeSplitView } = useTabsStore();
+  
+  const handleToggleSplit = useCallback(() => {
+    if (activeTab) {
+      if (isSplitView) {
+        closeSplitView();
+      } else {
+        splitTabToRight(activeTab.id);
+      }
+    }
+  }, [activeTab, isSplitView, splitTabToRight, closeSplitView]);
+
+  // Update handler ref for split toggle
+  useEffect(() => {
+    toggleSplitHandlerRef.current = handleToggleSplit;
+  }, [handleToggleSplit]);
 
   // ============================================================================
   // Render
@@ -38544,6 +39508,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         onExpandSelectStar={handleExpandSelectStar}
         onDbtify={handleDbtify}
         onOpenSaveDialog={handleOpenSaveDialog}
+        onToggleSplit={handleToggleSplit}
         isExecuting={isExecuting}
         isConnected={isConnected}
         hasQuery={!!queryText.trim()}
@@ -38551,6 +39516,8 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
         isQueryValid={sqlValidationStatus.isValid}
         enableDbtSupport={connection?.enableDbtSupport ?? false}
         savedQueryId={activeTab?.savedQueryId || null}
+        isSplit={isSplitView}
+        isSplitMode={false}
       />
 
       <SaveQueryDialog
@@ -38570,6 +39537,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
           <>
             <div className="editor-wrapper" ref={editorWrapperRef}>
               <Editor
+                key={propTabId || activeTab.id}
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
                 theme={theme === 'light' ? 'light' : 'vs-dark'}
@@ -38588,25 +39556,38 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                 onMount={(editor) => {
                   editorRef.current = editor;
 
-                  // Cmd+Enter / Ctrl+Enter to run query
-                  editor.addCommand(
-                    (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.Enter,
-                    () => {
+                  // Use onKeyDown instead of addCommand - addCommand is global and gets overwritten
+                  // when multiple editors exist. onKeyDown is instance-scoped.
+                  editor.onKeyDown((e) => {
+                    const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+                    
+                    // Cmd+Enter / Ctrl+Enter to run query
+                    if (isCmdOrCtrl && e.keyCode === (window as any).monaco.KeyCode.Enter) {
+                      e.preventDefault();
+                      e.stopPropagation();
                       if (executeHandlerRef.current) {
                         executeHandlerRef.current();
                       }
                     }
-                  );
-
-                  // Cmd+B / Ctrl+B to expand SELECT *
-                  editor.addCommand(
-                    (window as any).monaco.KeyMod.CtrlCmd | (window as any).monaco.KeyCode.KeyB,
-                    () => {
+                    
+                    // Cmd+B / Ctrl+B to expand SELECT *
+                    if (isCmdOrCtrl && e.keyCode === (window as any).monaco.KeyCode.KeyB) {
+                      e.preventDefault();
+                      e.stopPropagation();
                       if (expandSelectStarHandlerRef.current) {
                         expandSelectStarHandlerRef.current();
                       }
                     }
-                  );
+                    
+                    // Cmd+\ / Ctrl+\ to toggle split view
+                    if (isCmdOrCtrl && e.keyCode === (window as any).monaco.KeyCode.Backslash) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (toggleSplitHandlerRef.current) {
+                        toggleSplitHandlerRef.current();
+                      }
+                    }
+                  });
 
                   // Track selection changes for validation
                   editor.onDidChangeCursorSelection(() => {
@@ -38616,6 +39597,13 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark' }) => {
                       setSelectedText(model.getValueInRange(selection));
                     } else {
                       setSelectedText('');
+                    }
+                  });
+
+                  // Notify parent when editor gains focus (for split mode)
+                  editor.onDidFocusEditorText(() => {
+                    if (onFocus) {
+                      onFocus();
                     }
                   });
                 }}
