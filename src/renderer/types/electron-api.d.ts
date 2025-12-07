@@ -2,6 +2,7 @@ import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/typ
 import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../../shared/types/query';
 import type { Dataset, Table } from '../../shared/types/dataset';
 import type { JobDetails } from '../../shared/types/bigquery';
+import type { ThemeDefinition, StoredThemeSettings } from '../../shared/types/theme';
 
 /**
  * Electron API exposed to renderer process
@@ -57,6 +58,11 @@ export interface ElectronAPI {
     setRightSidebarWidth(width: number): Promise<void>;
     getTheme(): Promise<'dark' | 'light'>;
     setTheme(theme: 'dark' | 'light'): Promise<void>;
+    // Theme settings
+    getThemeSettings(): Promise<StoredThemeSettings>;
+    setActiveTheme(themeId: string): Promise<void>;
+    addCustomTheme(theme: ThemeDefinition): Promise<void>;
+    removeCustomTheme(themeId: string): Promise<void>;
   };
 
   // Tabs management
@@ -124,6 +130,7 @@ export interface ElectronAPI {
     onDisconnect(callback: () => void): () => void;
     onToggleTheme(callback: () => void): () => void;
     onSearchSchema(callback: () => void): () => void;
+    onShowThemeSettings(callback: () => void): () => void;
   };
 
   // Export operations

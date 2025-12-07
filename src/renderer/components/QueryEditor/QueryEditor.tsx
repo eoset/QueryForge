@@ -6,6 +6,8 @@ import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
 import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useConnectionStore } from '../../stores/connection-store';
+import { useThemeStore } from '../../stores/theme-store';
+import { getMonacoThemeName, registerAllThemes } from '../../themes/built-in-themes';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import {
@@ -24,7 +26,11 @@ interface QueryEditorProps {
   onFocus?: () => void; // Called when editor gains focus (for split mode)
 }
 
-export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId: propTabId, onFocus }) => {
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'dark', tabId: propTabId, onFocus }) => {
+  // Get theme from store (overrides prop if store is initialized)
+  const { activeTheme, isInitialized: themeInitialized } = useThemeStore();
+  const theme = themeInitialized ? activeTheme.type : themeProp;
+  const monacoThemeName = themeInitialized ? getMonacoThemeName(activeTheme) : (themeProp === 'light' ? 'vs' : 'vs-dark');
   // ============================================================================
   // State
   // ============================================================================
@@ -787,7 +793,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId:
                 key={propTabId || activeTab.id}
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
-                theme={theme === 'light' ? 'light' : 'vs-dark'}
+                theme={monacoThemeName}
                 value={queryText}
                 onChange={handleQueryChange}
                 beforeMount={(monaco) => {
@@ -799,6 +805,19 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId:
                   (window as any).__bigqueryGetProjectId = getProjectId;
                   setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
                   registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
+                  
+                  // Register all built-in themes from monaco-themes package
+                  registerAllThemes(monaco as typeof import('monaco-editor'));
+                  
+                  // Register custom theme if it has editor configuration (user-imported themes)
+                  if (activeTheme.editor && !activeTheme.isBuiltIn) {
+                    monaco.editor.defineTheme(activeTheme.id, {
+                      base: activeTheme.editor.base,
+                      inherit: activeTheme.editor.inherit,
+                      rules: activeTheme.editor.rules,
+                      colors: activeTheme.editor.colors,
+                    });
+                  }
                 }}
                 onMount={(editor) => {
                   editorRef.current = editor;

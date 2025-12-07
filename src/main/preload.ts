@@ -3,6 +3,7 @@ import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/
 import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../shared/types/query';
 import type { Dataset, Table } from '../shared/types/dataset';
 import type { JobDetails } from '../shared/types/bigquery';
+import type { ThemeDefinition, StoredThemeSettings } from '../shared/types/theme';
 
 /**
  * Electron API exposed to renderer process
@@ -58,6 +59,11 @@ export interface ElectronAPI {
     setRightSidebarWidth(width: number): Promise<void>;
     getTheme(): Promise<'dark' | 'light'>;
     setTheme(theme: 'dark' | 'light'): Promise<void>;
+    // Theme settings
+    getThemeSettings(): Promise<StoredThemeSettings>;
+    setActiveTheme(themeId: string): Promise<void>;
+    addCustomTheme(theme: ThemeDefinition): Promise<void>;
+    removeCustomTheme(themeId: string): Promise<void>;
   };
 
   // Tabs management
@@ -116,6 +122,7 @@ export interface ElectronAPI {
     onToggleTheme(callback: () => void): () => void;
     onSaveQuery(callback: () => void): () => void;
     onSearchSchema(callback: () => void): () => void;
+    onShowThemeSettings(callback: () => void): () => void;
   };
 
   // App info
@@ -192,6 +199,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
     getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
     setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+    // Theme settings
+    getThemeSettings: () => ipcRenderer.invoke('ui-settings:getThemeSettings'),
+    setActiveTheme: (themeId: string) => ipcRenderer.invoke('ui-settings:setActiveTheme', themeId),
+    addCustomTheme: (theme: ThemeDefinition) => ipcRenderer.invoke('ui-settings:addCustomTheme', theme),
+    removeCustomTheme: (themeId: string) => ipcRenderer.invoke('ui-settings:removeCustomTheme', themeId),
   },
   tabs: {
     getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
@@ -268,6 +280,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = () => callback();
       ipcRenderer.on('menu:search-schema', handler);
       return () => ipcRenderer.removeListener('menu:search-schema', handler);
+    },
+    onShowThemeSettings: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-theme-settings', handler);
+      return () => ipcRenderer.removeListener('menu:show-theme-settings', handler);
     },
   },
   app: {

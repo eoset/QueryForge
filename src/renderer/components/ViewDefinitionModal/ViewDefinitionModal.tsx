@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
+import { useThemeStore } from '../../stores/theme-store';
+import { getMonacoThemeName, registerAllThemes } from '../../themes/built-in-themes';
 import './ViewDefinitionModal.css';
 
 interface ViewDefinitionModalProps {
@@ -18,24 +20,10 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
   const [definition, setDefinition] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
-
-  // Listen for theme changes
-  useEffect(() => {
-    const updateTheme = () => {
-      const currentTheme = document.documentElement.getAttribute('data-theme');
-      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
-    };
-    
-    // Initial theme
-    updateTheme();
-    
-    // Watch for attribute changes
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    
-    return () => observer.disconnect();
-  }, []);
+  
+  // Get theme from store
+  const { activeTheme, isInitialized: themeInitialized } = useThemeStore();
+  const monacoThemeName = themeInitialized ? getMonacoThemeName(activeTheme) : 'vs-dark';
 
   useEffect(() => {
     const loadViewDefinition = async () => {
@@ -115,7 +103,21 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
                   height="400px"
                   language="sql"
                   value={definition}
-                  theme={editorTheme}
+                  theme={monacoThemeName}
+                  beforeMount={(monaco) => {
+                    // Register all built-in themes from monaco-themes package
+                    registerAllThemes(monaco as typeof import('monaco-editor'));
+                    
+                    // Register custom theme if it has editor configuration (user-imported themes)
+                    if (activeTheme.editor && !activeTheme.isBuiltIn) {
+                      monaco.editor.defineTheme(activeTheme.id, {
+                        base: activeTheme.editor.base,
+                        inherit: activeTheme.editor.inherit,
+                        rules: activeTheme.editor.rules,
+                        colors: activeTheme.editor.colors,
+                      });
+                    }
+                  }}
                   options={{
                     readOnly: true,
                     minimap: { enabled: false },
@@ -140,4 +142,3 @@ export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
     </div>
   );
 };
-

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useConnectionStore } from './stores/connection-store';
 import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { useThemeStore } from './stores/theme-store';
 import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
 import { SavedQueries } from './components/SavedQueries/SavedQueries';
 import { HelpDialog } from './components/HelpDialog/HelpDialog';
 import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { ThemeSettingsDialog } from './components/ThemeSettingsDialog/ThemeSettingsDialog';
 import { TabBar } from './components/TabBar/TabBar';
 import { SplitEditorContainer } from './components/SplitEditorContainer/SplitEditorContainer';
 import { DatasetTree } from './components/DatasetTree/DatasetTree';
@@ -17,15 +19,17 @@ import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchMo
 import './themes.css';
 import './App.css';
 
-type Theme = 'dark' | 'light';
-
 const App: React.FC = () => {
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [showSavedQueries, setShowSavedQueries] = useState(false);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
   const [showSchemaSearch, setShowSchemaSearch] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
+  const [showThemeSettings, setShowThemeSettings] = useState(false);
+  
+  // Theme store
+  const { initialize: initializeTheme, activeTheme } = useThemeStore();
+  const theme = activeTheme.type;
   const [editorHeight, setEditorHeight] = useState(350);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
@@ -64,7 +68,7 @@ const App: React.FC = () => {
   } | null>(null);
 
   useEffect(() => {
-    // Load saved sidebar widths and theme on mount
+    // Load saved sidebar widths on mount
     if (window.electronAPI) {
       window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
         // Ensure minimum width of 268px
@@ -77,23 +81,10 @@ const App: React.FC = () => {
         setRightSidebarWidth(width);
         resizeStartWidthRightRef.current = width;
       });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
     }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
+    // Initialize theme store (handles loading saved theme)
+    initializeTheme();
+  }, [initializeTheme]);
 
   // Handle sidebar collapse/expand
   const handleLeftSidebarToggle = useCallback(() => {
@@ -160,22 +151,22 @@ const App: React.FC = () => {
       const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
         useTabsStore.getState().createTab();
       });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
       const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
         setShowSchemaSearch(true);
+      });
+      const removeThemeSettingsListener = window.electronAPI.menu.onShowThemeSettings(() => {
+        setShowThemeSettings(true);
       });
 
       return () => {
         removeHelpListener();
         removeAboutListener();
         removeNewTabListener();
-        removeToggleThemeListener();
         removeSearchSchemaListener();
+        removeThemeSettingsListener();
       };
     }
-  }, [handleToggleTheme]);
+  }, []);
 
   const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -443,6 +434,9 @@ const App: React.FC = () => {
           onClose={() => setShowSchemaSearch(false)}
           onShowSchema={handleShowSchema}
         />
+      )}
+      {showThemeSettings && (
+        <ThemeSettingsDialog onClose={() => setShowThemeSettings(false)} />
       )}
     </div>
   );

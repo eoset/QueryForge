@@ -117,6 +117,14 @@ function createMenu(): void {
         { role: 'zoomOut', label: 'Zoom Out' },
         { type: 'separator' },
         { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+        { type: 'separator' },
+        {
+          label: 'Theme Settings...',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-theme-settings');
+          },
+        },
       ],
     },
     {
@@ -134,14 +142,6 @@ function createMenu(): void {
           accelerator: 'CmdOrCtrl+?',
           click: () => {
             mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
           },
         },
       ],

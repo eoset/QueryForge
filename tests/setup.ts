@@ -67,6 +67,10 @@ global.window = global.window || {};
     setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
     getTheme: jest.fn().mockResolvedValue('dark'),
     setTheme: jest.fn().mockResolvedValue(undefined),
+    getThemeSettings: jest.fn().mockResolvedValue({ activeThemeId: 'default-dark', customThemes: [] }),
+    setActiveTheme: jest.fn().mockResolvedValue(undefined),
+    addCustomTheme: jest.fn().mockResolvedValue(undefined),
+    removeCustomTheme: jest.fn().mockResolvedValue(undefined),
   },
   tabs: {
     getTabs: jest.fn().mockResolvedValue([]),
@@ -86,6 +90,7 @@ global.window = global.window || {};
     onDisconnect: jest.fn(() => () => {}),
     onToggleTheme: jest.fn(() => () => {}),
     onSearchSchema: jest.fn(() => () => {}),
+    onShowThemeSettings: jest.fn(() => () => {}),
   },
   resultsCache: {
     get: jest.fn().mockResolvedValue(null),
