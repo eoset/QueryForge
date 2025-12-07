@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useConnectionStore } from './stores/connection-store';
 import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
 import { useThemeStore } from './stores/theme-store';
+import { useLLMStore } from './stores/llm-store';
 import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
 import { SavedQueries } from './components/SavedQueries/SavedQueries';
 import { HelpDialog } from './components/HelpDialog/HelpDialog';
@@ -16,6 +17,8 @@ import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
 import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
 import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
 import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
+import { AIChatSidebar } from './components/AIChatSidebar/AIChatSidebar';
+import { LLMSettingsDialog } from './components/LLMSettingsDialog/LLMSettingsDialog';
 import './themes.css';
 import './App.css';
 
@@ -26,6 +29,8 @@ const App: React.FC = () => {
   const [showAboutDialog, setShowAboutDialog] = useState(false);
   const [showSchemaSearch, setShowSchemaSearch] = useState(false);
   const [showThemeSettings, setShowThemeSettings] = useState(false);
+  const [showLLMSettings, setShowLLMSettings] = useState(false);
+  const [showAIChatSidebar, setShowAIChatSidebar] = useState(false);
   
   // Theme store
   const { initialize: initializeTheme, activeTheme } = useThemeStore();
@@ -33,27 +38,38 @@ const App: React.FC = () => {
   const [editorHeight, setEditorHeight] = useState(350);
   const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [isResizingAISidebar, setIsResizingAISidebar] = useState(false);
   const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
   const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [aiSidebarWidth, setAiSidebarWidth] = useState(380);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
   const resizeStartXLeftRef = useRef(0);
   const resizeStartWidthLeftRef = useRef(250);
   const resizeStartXRightRef = useRef(0);
   const resizeStartWidthRightRef = useRef(300);
+  const resizeStartXAIRef = useRef(0);
+  const resizeStartWidthAIRef = useRef(380);
   const editorResultsRef = useRef<HTMLDivElement>(null);
   const connection = useConnectionStore((state) => state.connection);
   const { tabs, setActiveTab, activeTabId, isSplitView } = useTabsStore();
+  const { loadSettings: loadLLMSettings } = useLLMStore();
   const activeTab = tabs.find(t => t.id === activeTabId);
   const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
   const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
   const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+  const insertQueryRef = useRef<((query: string) => void) | null>(null);
 
   // Reset refresh function when switching views
   useEffect(() => {
     sidebarRefreshFnRef.current = null;
     setSidebarIsLoading(false);
   }, [sidebarView]);
+
+  // Load LLM settings on mount
+  useEffect(() => {
+    loadLLMSettings();
+  }, [loadLLMSettings]);
 
   // Stable callback that invokes the current refresh function
   const handleSidebarRefresh = useCallback(() => {
@@ -157,6 +173,9 @@ const App: React.FC = () => {
       const removeThemeSettingsListener = window.electronAPI.menu.onShowThemeSettings(() => {
         setShowThemeSettings(true);
       });
+      const removeToggleAIAssistantListener = window.electronAPI.menu.onToggleAIAssistant?.(() => {
+        setShowAIChatSidebar((prev) => !prev);
+      });
 
       return () => {
         removeHelpListener();
@@ -164,6 +183,7 @@ const App: React.FC = () => {
         removeNewTabListener();
         removeSearchSchemaListener();
         removeThemeSettingsListener();
+        removeToggleAIAssistantListener?.();
       };
     }
   }, []);
@@ -276,6 +296,50 @@ const App: React.FC = () => {
       document.body.style.userSelect = '';
     };
   }, [isResizingRightSidebar]);
+
+  // AI Sidebar resize handler
+  const handleAISidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingAISidebar(true);
+    resizeStartXAIRef.current = e.clientX;
+    resizeStartWidthAIRef.current = aiSidebarWidth;
+  }, [aiSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingAISidebar) return;
+
+    let currentWidth = resizeStartWidthAIRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXAIRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(300, Math.min(700, resizeStartWidthAIRef.current + diff)); // Min 300px, max 700px
+      setAiSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingAISidebar(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingAISidebar]);
+
+  // Handle inserting a query from AI chat
+  const handleInsertQueryFromAI = useCallback((query: string) => {
+    if (insertQueryRef.current) {
+      insertQueryRef.current(query);
+    }
+  }, []);
 
   useEffect(() => {
     // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
@@ -415,6 +479,21 @@ const App: React.FC = () => {
               </div>
             </>
           )}
+          {showAIChatSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleAISidebarResizeStart}
+              />
+              <div style={{ width: `${aiSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <AIChatSidebar
+                  onClose={() => setShowAIChatSidebar(false)}
+                  onOpenSettings={() => setShowLLMSettings(true)}
+                  onInsertQuery={handleInsertQueryFromAI}
+                />
+              </div>
+            </>
+          )}
         </div>
       </main>
       {showConnectionDialog && (
@@ -437,6 +516,9 @@ const App: React.FC = () => {
       )}
       {showThemeSettings && (
         <ThemeSettingsDialog onClose={() => setShowThemeSettings(false)} />
+      )}
+      {showLLMSettings && (
+        <LLMSettingsDialog onClose={() => setShowLLMSettings(false)} />
       )}
     </div>
   );

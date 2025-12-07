@@ -3,6 +3,15 @@ import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnM
 import type { Dataset, Table } from '../../shared/types/dataset';
 import type { JobDetails } from '../../shared/types/bigquery';
 import type { ThemeDefinition, StoredThemeSettings } from '../../shared/types/theme';
+import type {
+  LLMProvider,
+  LLMConfig,
+  LLMSettings,
+  ChatMessage,
+  ChatConversation,
+  ChatResponse,
+  SchemaContext,
+} from '../../shared/types/llm';
 
 /**
  * Electron API exposed to renderer process
@@ -131,6 +140,7 @@ export interface ElectronAPI {
     onToggleTheme(callback: () => void): () => void;
     onSearchSchema(callback: () => void): () => void;
     onShowThemeSettings(callback: () => void): () => void;
+    onToggleAIAssistant(callback: () => void): () => void;
   };
 
   // Export operations
@@ -148,6 +158,41 @@ export interface ElectronAPI {
     updateByJobId(jobId: string, totalRows: number): Promise<void>;
     clear(): Promise<void>;
     count(): Promise<number>;
+  };
+
+  // LLM / AI Chat operations
+  llm: {
+    // Settings
+    getSettings(): Promise<LLMSettings>;
+    saveSettings(settings: LLMSettings): Promise<void>;
+    configureProvider(config: LLMConfig): Promise<void>;
+    getProviderConfig(provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null>;
+    hasApiKey(provider: LLMProvider): Promise<boolean>;
+    deleteProviderConfig(provider: LLMProvider): Promise<void>;
+    setActiveProvider(provider: LLMProvider | null): Promise<void>;
+    getActiveProvider(): Promise<LLMProvider | null>;
+    saveSystemPrompt(prompt: string): Promise<void>;
+    getSystemPrompt(): Promise<string>;
+    testConnection(provider?: LLMProvider): Promise<boolean>;
+    isConfigured(): Promise<boolean>;
+    
+    // Chat
+    chat(messages: ChatMessage[], schemaContext?: SchemaContext): Promise<ChatResponse>;
+    chatStream(conversationId: string, messages: ChatMessage[], schemaContext?: SchemaContext): Promise<{ messageId: string }>;
+    onStreamChunk(callback: (data: { conversationId: string; messageId: string; content: string; isComplete: boolean }) => void): () => void;
+    onStreamComplete(callback: (data: { conversationId: string; messageId: string; fullContent: string; containsQuery: boolean; sqlQuery?: string }) => void): () => void;
+    onStreamError(callback: (data: { conversationId: string; error: string }) => void): () => void;
+    
+    // Conversations
+    createConversation(title?: string, tabId?: string): Promise<ChatConversation>;
+    getConversation(id: string): Promise<ChatConversation | null>;
+    listConversations(limit?: number, offset?: number): Promise<ChatConversation[]>;
+    updateConversation(id: string, updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>): Promise<ChatConversation | null>;
+    addMessage(conversationId: string, message: ChatMessage): Promise<ChatConversation | null>;
+    deleteConversation(id: string): Promise<void>;
+    clearConversations(): Promise<void>;
+    searchConversations(query: string, limit?: number): Promise<ChatConversation[]>;
+    getTabConversation(tabId: string): Promise<ChatConversation>;
   };
 }
 
