@@ -37,10 +37,15 @@ describe('JobInfoModal', () => {
     mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue(mockJobDetails);
   });
 
-  it('should render loading state initially', () => {
+  it('should render loading state initially', async () => {
     render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
 
     expect(screen.getByText('Loading job information...')).toBeInTheDocument();
+    
+    // Wait for async effects to complete to avoid act() warnings
+    await waitFor(() => {
+      expect(screen.queryByText('Loading job information...')).not.toBeInTheDocument();
+    });
   });
 
   it('should render job details after loading', async () => {
