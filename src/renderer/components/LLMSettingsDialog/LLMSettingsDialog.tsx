@@ -42,7 +42,7 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
   const [azureEndpoint, setAzureEndpoint] = useState('');
   const [azureDeployment, setAzureDeployment] = useState('');
   const [azureModel, setAzureModel] = useState(DEFAULT_MODELS.azure);
-  const [azureApiVersion, setAzureApiVersion] = useState('2024-02-15-preview');
+  const [azureApiVersion, setAzureApiVersion] = useState('2024-12-01-preview');
   const [azureHasKey, setAzureHasKey] = useState(false);
   
   // Gemini form state
@@ -75,7 +75,7 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
           setAzureEndpoint((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).endpoint || '');
           setAzureDeployment((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).deploymentName || '');
           setAzureModel((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).model || DEFAULT_MODELS.azure);
-          setAzureApiVersion((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).apiVersion || '2024-02-15-preview');
+          setAzureApiVersion((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).apiVersion || '2024-12-01-preview');
         }
         setAzureHasKey(await window.electronAPI.llm.hasApiKey('azure'));
         
@@ -208,10 +208,12 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
     setTestResult(null);
     
     try {
-      const success = await window.electronAPI.llm.testConnection(selectedTab);
+      const result = await window.electronAPI.llm.testConnection(selectedTab);
       setTestResult({
-        success,
-        message: success ? 'Connection successful!' : 'Connection failed. Please check your configuration.',
+        success: result.success,
+        message: result.success 
+          ? 'Connection successful!' 
+          : result.error || 'Connection failed. Please check your configuration.',
       });
     } catch (error: any) {
       setTestResult({ success: false, message: error.message || 'Connection test failed' });
@@ -385,7 +387,7 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
                 type="text"
                 value={azureApiVersion}
                 onChange={(e) => setAzureApiVersion(e.target.value)}
-                placeholder="2024-02-15-preview"
+                placeholder="2024-12-01-preview"
               />
             </div>
             

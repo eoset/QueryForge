@@ -57,36 +57,26 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
   // Load cached schemas from SQLite when sidebar opens (if not already in memory)
   useEffect(() => {
     const loadCachedSchemas = async () => {
-      if (!window.electronAPI?.schemaCache || !connection) {
-        console.log('AI Chat: Cannot load schemas - electronAPI:', !!window.electronAPI?.schemaCache, 'connection:', !!connection);
-        return;
-      }
-      
-      if (schemaLoadAttempted) {
-        console.log('AI Chat: Schema load already attempted, schemas in memory:', schemas.size);
+      if (!window.electronAPI?.schemaCache || !connection || schemaLoadAttempted) {
         return;
       }
       
       if (schemas.size > 0) {
         // Already have schemas in memory
-        console.log('AI Chat: Already have', schemas.size, 'schemas in memory');
         setSchemaLoadAttempted(true);
         return;
       }
 
       try {
         // Load all cached schemas for this project from SQLite
-        console.log('AI Chat: Loading schemas for project:', connection.projectId);
         const cachedSchemas = await window.electronAPI.schemaCache.getForProject(connection.projectId);
-        
-        console.log(`AI Chat: Got ${cachedSchemas.length} schemas from SQLite cache`);
         
         // Populate in-memory store with cached schemas
         for (const schema of cachedSchemas) {
           setSchema(schema.datasetId, schema.tableId, schema.fields);
         }
         
-        console.log(`AI Chat: Loaded ${cachedSchemas.length} schemas into memory store`);
+        console.log(`AI Chat: Loaded ${cachedSchemas.length} schemas from cache`);
       } catch (err) {
         console.warn('AI Chat: Failed to load cached schemas:', err);
       }
@@ -95,7 +85,8 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
     };
 
     loadCachedSchemas();
-  }, [connection, schemaLoadAttempted, schemas.size, setSchema]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection, schemaLoadAttempted]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -107,10 +98,21 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
     inputRef.current?.focus();
   }, []);
 
+  // Refocus input when sending completes (isSending goes from true to false)
+  const prevIsSendingRef = useRef(isSending);
+  useEffect(() => {
+    if (prevIsSendingRef.current && !isSending) {
+      // isSending just became false, refocus the input
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
+    }
+    prevIsSendingRef.current = isSending;
+  }, [isSending]);
+
   // Build schema context from cached schemas
   const buildSchemaContext = useCallback((): SchemaContext | undefined => {
     if (!connection?.projectId || schemas.size === 0) {
-      console.log('AI Chat: No schema context - projectId:', connection?.projectId, 'schemas size:', schemas.size);
       return undefined;
     }
 
@@ -136,13 +138,7 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
       tables,
     }));
 
-    // Log the full context available
-    const totalTables = datasets.reduce((sum, d) => sum + d.tables.length, 0);
-    const totalColumns = datasets.reduce((sum, d) => d.tables.reduce((tSum, t) => tSum + t.columns.length, sum), 0);
-    console.log(`AI Chat: Schema context has ${datasets.length} datasets, ${totalTables} tables, ${totalColumns} columns`);
-
-    // Increase limits to include more context - LLMs can handle large contexts
-    // Limit per dataset but allow many more datasets
+    // Limit context to avoid overwhelming the LLM
     const MAX_DATASETS = 50;
     const MAX_TABLES_PER_DATASET = 100;
     const MAX_COLUMNS_PER_TABLE = 100;
@@ -154,11 +150,6 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
         table.columns = table.columns.slice(0, MAX_COLUMNS_PER_TABLE);
       }
     }
-
-    // Log what we're actually sending
-    const sentTables = limitedDatasets.reduce((sum, d) => sum + d.tables.length, 0);
-    const sentColumns = limitedDatasets.reduce((sum, d) => d.tables.reduce((tSum, t) => tSum + t.columns.length, sum), 0);
-    console.log(`AI Chat: Sending ${limitedDatasets.length} datasets, ${sentTables} tables, ${sentColumns} columns to LLM`);
 
     return {
       projectId: connection.projectId,
@@ -175,6 +166,9 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
 
     const schemaContext = buildSchemaContext();
     await sendMessage(message, schemaContext);
+    
+    // Refocus the input after sending
+    inputRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

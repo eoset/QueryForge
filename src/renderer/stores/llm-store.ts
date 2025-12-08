@@ -31,6 +31,9 @@ interface LLMState {
   // Sidebar visibility
   sidebarVisible: boolean;
   
+  // Callback for when stream completes
+  onStreamCompleteCallback: (() => void) | null;
+  
   // Actions - Settings
   loadSettings: () => Promise<void>;
   setActiveProvider: (provider: LLMProvider | null) => Promise<void>;
@@ -55,6 +58,7 @@ interface LLMState {
   setError: (error: string | null) => void;
   toggleSidebar: () => void;
   setSidebarVisible: (visible: boolean) => void;
+  setOnStreamCompleteCallback: (callback: (() => void) | null) => void;
 }
 
 /**
@@ -77,6 +81,7 @@ export const useLLMStore = create<LLMState>((set, get) => ({
   streamingContent: '',
   streamingMessageId: null,
   sidebarVisible: false,
+  onStreamCompleteCallback: null,
 
   // Load settings from storage
   loadSettings: async () => {
@@ -279,6 +284,10 @@ export const useLLMStore = create<LLMState>((set, get) => ({
   setSidebarVisible: (visible) => {
     set({ sidebarVisible: visible });
   },
+
+  setOnStreamCompleteCallback: (callback) => {
+    set({ onStreamCompleteCallback: callback });
+  },
 }));
 
 /**
@@ -344,6 +353,12 @@ export function initializeLLMStore(): () => void {
             streamingMessageId: null,
           });
           
+          // Call the completion callback if set (with delay to ensure DOM updates complete)
+          const { onStreamCompleteCallback } = useLLMStore.getState();
+          if (onStreamCompleteCallback) {
+            setTimeout(() => onStreamCompleteCallback(), 50);
+          }
+          
           // Refresh conversations list
           state.loadConversations();
         }
@@ -361,6 +376,12 @@ export function initializeLLMStore(): () => void {
         streamingContent: '',
         streamingMessageId: null,
       });
+      
+      // Call the completion callback on error too (with delay)
+      const { onStreamCompleteCallback } = useLLMStore.getState();
+      if (onStreamCompleteCallback) {
+        setTimeout(() => onStreamCompleteCallback(), 50);
+      }
     }
   });
   

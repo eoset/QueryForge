@@ -173,7 +173,7 @@ export interface ElectronAPI {
     getActiveProvider(): Promise<LLMProvider | null>;
     saveSystemPrompt(prompt: string): Promise<void>;
     getSystemPrompt(): Promise<string>;
-    testConnection(provider?: LLMProvider): Promise<boolean>;
+    testConnection(provider?: LLMProvider): Promise<{ success: boolean; error?: string }>;
     isConfigured(): Promise<boolean>;
     
     // Chat

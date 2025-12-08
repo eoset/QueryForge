@@ -145,11 +145,29 @@ export function registerLLMHandlers(): void {
   });
 
   // Test provider connection
-  ipcMain.handle('llm:testConnection', async (_event, provider?: LLMProvider): Promise<boolean> => {
-    if (provider) {
-      return llmService.testProviderConnection(provider);
+  ipcMain.handle('llm:testConnection', async (_event, provider?: LLMProvider): Promise<{ success: boolean; error?: string }> => {
+    try {
+      let result: boolean;
+      if (provider) {
+        result = await llmService.testProviderConnection(provider);
+      } else {
+        result = await llmService.testConnection();
+      }
+      
+      if (!result) {
+        return { 
+          success: false, 
+          error: 'Connection test failed. Check the console for details (View > Toggle Developer Tools).' 
+        };
+      }
+      return { success: true };
+    } catch (error: any) {
+      console.error('LLM connection test error:', error);
+      return { 
+        success: false, 
+        error: error.message || 'Unknown error during connection test' 
+      };
     }
-    return llmService.testConnection();
   });
 
   // Check if LLM is configured

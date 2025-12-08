@@ -58,7 +58,6 @@ const App: React.FC = () => {
   const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
   const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
   const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-  const insertQueryRef = useRef<((query: string) => void) | null>(null);
 
   // Reset refresh function when switching views
   useEffect(() => {
@@ -334,11 +333,21 @@ const App: React.FC = () => {
     };
   }, [isResizingAISidebar]);
 
-  // Handle inserting a query from AI chat
+  // Handle inserting a query from AI chat into the active editor
   const handleInsertQueryFromAI = useCallback((query: string) => {
-    if (insertQueryRef.current) {
-      insertQueryRef.current(query);
-    }
+    const { activeTabId, tabs, setTabQuery } = useTabsStore.getState();
+    if (!activeTabId) return;
+    
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (!activeTab) return;
+    
+    // Append the query to the existing content (or replace if empty)
+    const existingQuery = activeTab.queryText || '';
+    const newQuery = existingQuery 
+      ? `${existingQuery}\n\n-- AI Generated Query\n${query}`
+      : query;
+    
+    setTabQuery(activeTabId, newQuery);
   }, []);
 
   useEffect(() => {

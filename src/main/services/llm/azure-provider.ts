@@ -49,28 +49,38 @@ export class AzureOpenAIProvider implements ILLMProvider {
 
   async testConnection(): Promise<boolean> {
     if (!this.isConfigured()) {
+      console.error('Azure OpenAI: Not configured - missing apiKey, endpoint, or deploymentName');
       return false;
     }
 
     try {
+      const url = this.getUrl();
+      console.log('Azure OpenAI: Testing connection to:', url);
+      
       // Try a simple completions request to test the connection
-      const response = await fetch(this.getUrl(), {
+      const response = await fetch(url, {
         method: 'POST',
         headers: this.getHeaders(),
         body: JSON.stringify({
           messages: [{ role: 'user', content: 'Hello' }],
-          max_tokens: 5,
+          max_completion_tokens: 5,
         }),
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Azure OpenAI: Test connection failed:', response.status, errorText);
+      }
+      
       return response.ok;
-    } catch {
+    } catch (error) {
+      console.error('Azure OpenAI: Test connection error:', error);
       return false;
     }
   }
 
   private getApiVersion(): string {
-    return this.config?.apiVersion || '2024-02-15-preview';
+    return this.config?.apiVersion || '2024-12-01-preview';
   }
 
   private getUrl(stream: boolean = false): string {
@@ -138,7 +148,7 @@ export class AzureOpenAIProvider implements ILLMProvider {
       body: JSON.stringify({
         messages: formattedMessages,
         temperature: this.config!.temperature ?? 0.7,
-        max_tokens: this.config!.maxTokens ?? 4096,
+        max_completion_tokens: this.config!.maxTokens ?? 4096,
       }),
     });
 
@@ -196,7 +206,7 @@ export class AzureOpenAIProvider implements ILLMProvider {
       body: JSON.stringify({
         messages: formattedMessages,
         temperature: this.config!.temperature ?? 0.7,
-        max_tokens: this.config!.maxTokens ?? 4096,
+        max_completion_tokens: this.config!.maxTokens ?? 4096,
         stream: true,
       }),
     });
