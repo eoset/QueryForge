@@ -87,14 +87,24 @@ src/
       bigquery.ts
       connection.ts
       export.ts
+      llm.ts
       queries.ts
       query-history.ts
       results-cache.ts
       schema-cache.ts
       tabs.ts
       ui-settings.ts
+    services/
+      llm/
+        azure-provider.ts
+        base-provider.ts
+        gemini-provider.ts
+        index.ts
+        openai-provider.ts
     storage/
+      chat-history-sqlite.ts
       connection-store.ts
+      llm-store.ts
       query-history-store.ts
       query-store.ts
       results-cache-sqlite.ts
@@ -109,6 +119,10 @@ src/
       AboutDialog/
         AboutDialog.css
         AboutDialog.tsx
+      AIChatSidebar/
+        AIChatSidebar.css
+        AIChatSidebar.tsx
+        index.ts
       ConnectionDialog/
         ConnectionDialog.css
         ConnectionDialog.tsx
@@ -124,6 +138,10 @@ src/
       JobInfoModal/
         JobInfoModal.css
         JobInfoModal.tsx
+      LLMSettingsDialog/
+        index.ts
+        LLMSettingsDialog.css
+        LLMSettingsDialog.tsx
       QueryEditor/
         EditorStatusBar.tsx
         EditorToolbar.tsx
@@ -176,6 +194,9 @@ src/
       TabBar/
         TabBar.css
         TabBar.tsx
+      ThemeSettingsDialog/
+        ThemeSettingsDialog.css
+        ThemeSettingsDialog.tsx
       ViewDefinitionModal/
         ViewDefinitionModal.css
         ViewDefinitionModal.tsx
@@ -184,10 +205,15 @@ src/
     stores/
       bigquery-metadata-store.ts
       connection-store.ts
+      llm-store.ts
       queries-store.ts
       query-history-store.ts
       schema-cache-store.ts
       tabs-store.ts
+      theme-store.ts
+    themes/
+      built-in-themes.ts
+      theme-colors.ts
     types/
       electron-api.d.ts
     utils/
@@ -208,7 +234,9 @@ src/
       bigquery.ts
       connection.ts
       dataset.ts
+      llm.ts
       query.ts
+      theme.ts
     utils/
       connection-validation.ts
 tests/
@@ -1719,6 +1747,55 @@ TypeScript 5.x, Node.js 18+: Follow standard conventions
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
+````
+
+## File: .github/workflows/repomix.yml
+````yaml
+name: Run Repomix on Main Push
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  run-repomix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install repomix
+        run: npm install -g repomix
+
+      - name: Run repomix
+        run: repomix --style markdown --output repomix-output.md
+
+      - name: Check if repomix output changed
+        run: |
+          if git diff --quiet; then
+            echo "no_changes=true" >> $GITHUB_ENV
+          else
+            echo "no_changes=false" >> $GITHUB_ENV
+          fi
+
+      - name: Commit and push changes
+        if: env.no_changes == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add repomix-output.md
+          git commit -m "Update repomix output"
+          git push origin main
 ````
 
 ## File: .specify/memory/constitution.md
@@ -8314,55 +8391,6 @@ pnpm-lock.yaml
 }
 ````
 
-## File: .github/workflows/repomix.yml
-````yaml
-name: Run Repomix on Main Push
-on:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: write
-
-jobs:
-  run-repomix:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      - name: Install repomix
-        run: npm install -g repomix
-
-      - name: Run repomix
-        run: repomix --style markdown --output repomix-output.md
-
-      - name: Check if repomix output changed
-        run: |
-          if git diff --quiet; then
-            echo "no_changes=true" >> $GITHUB_ENV
-          else
-            echo "no_changes=false" >> $GITHUB_ENV
-          fi
-
-      - name: Commit and push changes
-        if: env.no_changes == 'false'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add repomix-output.md
-          git commit -m "Update repomix output"
-          git push origin main
-````
-
 ## File: .github/workflows/test.yml
 ````yaml
 name: Tests
@@ -8946,43 +8974,1545 @@ export function closeSchemaCacheDatabase(): void {
 }
 ````
 
-## File: src/main/ipc/ui-settings.ts
+## File: src/main/services/llm/base-provider.ts
 ````typescript
-import { ipcMain } from 'electron';
+/**
+ * Base LLM provider interface and abstract class
+ */
+
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatStreamChunk,
+  SchemaContext,
+  LLMConfig,
+  DEFAULT_SYSTEM_PROMPT,
+} from '../../../shared/types/llm';
+
+/**
+ * Interface that all LLM providers must implement
+ */
+export interface ILLMProvider {
+  /**
+   * Provider name/identifier
+   */
+  readonly name: string;
+
+  /**
+   * Check if the provider is properly configured
+   */
+  isConfigured(): boolean;
+
+  /**
+   * Send a chat message and get a response
+   */
+  chat(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): Promise<ChatResponse>;
+
+  /**
+   * Send a chat message and stream the response
+   * Returns an async generator that yields chunks
+   */
+  chatStream(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): AsyncGenerator<ChatStreamChunk, void, unknown>;
+
+  /**
+   * Test the connection with current configuration
+   */
+  testConnection(): Promise<boolean>;
+
+  /**
+   * Get the current model being used
+   */
+  getModel(): string;
+
+  /**
+   * Update the configuration
+   */
+  updateConfig(config: Partial<LLMConfig>): void;
+}
+
+/**
+ * Format schema context into a readable string for the LLM
+ */
+export function formatSchemaContext(context: SchemaContext): string {
+  if (!context.datasets || context.datasets.length === 0) {
+    return '';
+  }
+
+  const lines: string[] = [
+    `\n\n--- Available BigQuery Schemas (Project: ${context.projectId}) ---\n`,
+  ];
+
+  for (const dataset of context.datasets) {
+    lines.push(`\nDataset: ${dataset.datasetId}`);
+    
+    for (const table of dataset.tables) {
+      lines.push(`  Table: ${context.projectId}.${dataset.datasetId}.${table.tableId}`);
+      lines.push('  Columns:');
+      
+      for (const column of table.columns) {
+        const desc = column.description ? ` -- ${column.description}` : '';
+        lines.push(`    - ${column.name} (${column.type})${desc}`);
+      }
+    }
+  }
+
+  lines.push('\n--- End of Schema Context ---\n');
+  
+  return lines.join('\n');
+}
+
+/**
+ * Build the system message with optional schema context
+ */
+export function buildSystemMessage(
+  systemPrompt: string,
+  schemaContext?: SchemaContext
+): string {
+  let message = systemPrompt;
+  
+  if (schemaContext) {
+    message += formatSchemaContext(schemaContext);
+  }
+  
+  return message;
+}
+
+/**
+ * Generate a unique message ID
+ */
+export function generateMessageId(): string {
+  return `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+}
+````
+
+## File: src/main/services/llm/gemini-provider.ts
+````typescript
+/**
+ * Google Gemini LLM Provider implementation
+ */
+
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatStreamChunk,
+  SchemaContext,
+  GeminiConfig,
+  LLMConfig,
+} from '../../../shared/types/llm';
 import {
-  getLeftSidebarWidth,
-  setLeftSidebarWidth,
-  getRightSidebarWidth,
-  setRightSidebarWidth,
-  getTheme,
-  setTheme,
-  type Theme,
-} from '../storage/ui-settings-store';
+  ILLMProvider,
+  buildSystemMessage,
+  generateMessageId,
+} from './base-provider';
 
-export function registerUISettingsHandlers(): void {
-  ipcMain.handle('ui-settings:getLeftSidebarWidth', async () => {
-    return getLeftSidebarWidth();
-  });
+/**
+ * Gemini provider implementation using native fetch
+ */
+export class GeminiProvider implements ILLMProvider {
+  readonly name = 'gemini';
+  private config: GeminiConfig | null = null;
 
-  ipcMain.handle('ui-settings:setLeftSidebarWidth', async (_event, width: number) => {
-    setLeftSidebarWidth(width);
-  });
+  constructor(config?: GeminiConfig) {
+    if (config) {
+      this.config = config;
+    }
+  }
 
-  ipcMain.handle('ui-settings:getRightSidebarWidth', async () => {
-    return getRightSidebarWidth();
-  });
+  isConfigured(): boolean {
+    return !!(this.config?.apiKey);
+  }
 
-  ipcMain.handle('ui-settings:setRightSidebarWidth', async (_event, width: number) => {
-    setRightSidebarWidth(width);
-  });
+  updateConfig(config: Partial<LLMConfig>): void {
+    if (config.provider === 'gemini') {
+      this.config = { ...this.config, ...config } as GeminiConfig;
+    }
+  }
 
-  ipcMain.handle('ui-settings:getTheme', async () => {
-    return getTheme();
-  });
+  getModel(): string {
+    return this.config?.model || 'gemini-2.0-flash';
+  }
 
-  ipcMain.handle('ui-settings:setTheme', async (_event, theme: Theme) => {
-    setTheme(theme);
-  });
+  setConfig(config: GeminiConfig): void {
+    this.config = config;
+  }
+
+  async testConnection(): Promise<boolean> {
+    if (!this.isConfigured()) {
+      return false;
+    }
+
+    try {
+      const model = this.config!.model || 'gemini-2.0-flash';
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}?key=${this.config!.apiKey}`,
+        { method: 'GET' }
+      );
+
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private getUrl(stream: boolean = false): string {
+    const model = this.config!.model || 'gemini-2.0-flash';
+    const action = stream ? 'streamGenerateContent' : 'generateContent';
+    return `https://generativelanguage.googleapis.com/v1beta/models/${model}:${action}?key=${this.config!.apiKey}`;
+  }
+
+  private formatMessages(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): { contents: Array<{ role: string; parts: Array<{ text: string }> }>; systemInstruction?: { parts: Array<{ text: string }> } } {
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+
+    // Build system instruction
+    const systemContent = buildSystemMessage(
+      systemPrompt || '',
+      schemaContext
+    );
+
+    // Add conversation messages
+    for (const msg of messages) {
+      if (msg.role !== 'system') {
+        contents.push({
+          role: msg.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: msg.content }],
+        });
+      }
+    }
+
+    const result: { contents: typeof contents; systemInstruction?: { parts: Array<{ text: string }> } } = {
+      contents,
+    };
+
+    if (systemContent) {
+      result.systemInstruction = {
+        parts: [{ text: systemContent }],
+      };
+    }
+
+    return result;
+  }
+
+  async chat(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): Promise<ChatResponse> {
+    if (!this.isConfigured()) {
+      throw new Error('Gemini provider is not configured');
+    }
+
+    const { contents, systemInstruction } = this.formatMessages(messages, schemaContext, systemPrompt);
+
+    const requestBody: any = {
+      contents,
+      generationConfig: {
+        temperature: this.config!.temperature ?? 0.7,
+        maxOutputTokens: this.config!.maxTokens ?? 4096,
+      },
+    };
+
+    if (systemInstruction) {
+      requestBody.systemInstruction = systemInstruction;
+    }
+
+    const response = await fetch(this.getUrl(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(error.error?.message || `Gemini API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const candidate = data.candidates?.[0];
+    const content = candidate?.content?.parts?.[0]?.text || '';
+
+    if (!content) {
+      throw new Error('No response from Gemini');
+    }
+
+    const messageId = generateMessageId();
+
+    // Check if the response contains SQL
+    const sqlMatch = content.match(/```sql\n([\s\S]*?)```/);
+    const sqlQuery = sqlMatch ? sqlMatch[1].trim() : undefined;
+
+    return {
+      message: {
+        id: messageId,
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
+        containsQuery: !!sqlQuery,
+        sqlQuery,
+      },
+      usage: data.usageMetadata ? {
+        promptTokens: data.usageMetadata.promptTokenCount || 0,
+        completionTokens: data.usageMetadata.candidatesTokenCount || 0,
+        totalTokens: data.usageMetadata.totalTokenCount || 0,
+      } : undefined,
+    };
+  }
+
+  async *chatStream(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): AsyncGenerator<ChatStreamChunk, void, unknown> {
+    if (!this.isConfigured()) {
+      throw new Error('Gemini provider is not configured');
+    }
+
+    const { contents, systemInstruction } = this.formatMessages(messages, schemaContext, systemPrompt);
+    const messageId = generateMessageId();
+
+    const requestBody: any = {
+      contents,
+      generationConfig: {
+        temperature: this.config!.temperature ?? 0.7,
+        maxOutputTokens: this.config!.maxTokens ?? 4096,
+      },
+    };
+
+    if (systemInstruction) {
+      requestBody.systemInstruction = systemInstruction;
+    }
+
+    const response = await fetch(this.getUrl(true) + '&alt=sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(error.error?.message || `Gemini API error: ${response.status}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response reader');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          yield { content: '', isComplete: true, messageId };
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          
+          if (trimmed.startsWith('data: ')) {
+            try {
+              const json = JSON.parse(trimmed.slice(6));
+              const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              if (text) {
+                yield { content: text, isComplete: false, messageId };
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
+````
+
+## File: src/main/services/llm/index.ts
+````typescript
+/**
+ * LLM Service - Main entry point for LLM operations
+ * Manages providers and handles chat operations
+ */
+
+import type {
+  LLMProvider,
+  LLMConfig,
+  LLMSettings,
+  ChatMessage,
+  ChatResponse,
+  ChatStreamChunk,
+  SchemaContext,
+  OpenAIConfig,
+  AzureOpenAIConfig,
+  GeminiConfig,
+  DEFAULT_SYSTEM_PROMPT,
+} from '../../../shared/types/llm';
+import { ILLMProvider } from './base-provider';
+import { OpenAIProvider } from './openai-provider';
+import { AzureOpenAIProvider } from './azure-provider';
+import { GeminiProvider } from './gemini-provider';
+
+/**
+ * LLM Service singleton that manages all LLM providers
+ */
+class LLMService {
+  private providers: Map<LLMProvider, ILLMProvider> = new Map();
+  private activeProvider: LLMProvider | null = null;
+  private systemPrompt: string = '';
+
+  constructor() {
+    // Initialize providers
+    this.providers.set('openai', new OpenAIProvider());
+    this.providers.set('azure', new AzureOpenAIProvider());
+    this.providers.set('gemini', new GeminiProvider());
+  }
+
+  /**
+   * Configure a specific provider
+   */
+  configureProvider(config: LLMConfig): void {
+    const provider = this.providers.get(config.provider);
+    if (!provider) {
+      throw new Error(`Unknown provider: ${config.provider}`);
+    }
+
+    switch (config.provider) {
+      case 'openai':
+        (provider as OpenAIProvider).setConfig(config as OpenAIConfig);
+        break;
+      case 'azure':
+        (provider as AzureOpenAIProvider).setConfig(config as AzureOpenAIConfig);
+        break;
+      case 'gemini':
+        (provider as GeminiProvider).setConfig(config as GeminiConfig);
+        break;
+    }
+  }
+
+  /**
+   * Set the active provider
+   */
+  setActiveProvider(provider: LLMProvider | null): void {
+    if (provider && !this.providers.has(provider)) {
+      throw new Error(`Unknown provider: ${provider}`);
+    }
+    this.activeProvider = provider;
+  }
+
+  /**
+   * Get the active provider
+   */
+  getActiveProvider(): ILLMProvider | null {
+    if (!this.activeProvider) {
+      return null;
+    }
+    return this.providers.get(this.activeProvider) || null;
+  }
+
+  /**
+   * Get the active provider name
+   */
+  getActiveProviderName(): LLMProvider | null {
+    return this.activeProvider;
+  }
+
+  /**
+   * Set the system prompt
+   */
+  setSystemPrompt(prompt: string): void {
+    this.systemPrompt = prompt;
+  }
+
+  /**
+   * Get the system prompt
+   */
+  getSystemPrompt(): string {
+    return this.systemPrompt;
+  }
+
+  /**
+   * Check if any provider is configured and active
+   */
+  isConfigured(): boolean {
+    const provider = this.getActiveProvider();
+    return provider?.isConfigured() ?? false;
+  }
+
+  /**
+   * Test connection for the active provider
+   */
+  async testConnection(): Promise<boolean> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      return false;
+    }
+    return provider.testConnection();
+  }
+
+  /**
+   * Test connection for a specific provider
+   */
+  async testProviderConnection(providerName: LLMProvider): Promise<boolean> {
+    const provider = this.providers.get(providerName);
+    if (!provider) {
+      return false;
+    }
+    return provider.testConnection();
+  }
+
+  /**
+   * Send a chat message and get a response
+   */
+  async chat(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext
+  ): Promise<ChatResponse> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No active LLM provider configured');
+    }
+
+    if (!provider.isConfigured()) {
+      throw new Error(`Provider ${this.activeProvider} is not properly configured`);
+    }
+
+    return provider.chat(messages, schemaContext, this.systemPrompt);
+  }
+
+  /**
+   * Send a chat message and stream the response
+   */
+  async *chatStream(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext
+  ): AsyncGenerator<ChatStreamChunk, void, unknown> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No active LLM provider configured');
+    }
+
+    if (!provider.isConfigured()) {
+      throw new Error(`Provider ${this.activeProvider} is not properly configured`);
+    }
+
+    yield* provider.chatStream(messages, schemaContext, this.systemPrompt);
+  }
+
+  /**
+   * Get the current model for the active provider
+   */
+  getCurrentModel(): string | null {
+    const provider = this.getActiveProvider();
+    return provider?.getModel() ?? null;
+  }
+
+  /**
+   * Check if a specific provider is configured
+   */
+  isProviderConfigured(providerName: LLMProvider): boolean {
+    const provider = this.providers.get(providerName);
+    return provider?.isConfigured() ?? false;
+  }
+}
+
+// Export singleton instance
+export const llmService = new LLMService();
+
+// Export types and classes for testing
+export { OpenAIProvider, AzureOpenAIProvider, GeminiProvider };
+export type { ILLMProvider };
+````
+
+## File: src/main/services/llm/openai-provider.ts
+````typescript
+/**
+ * OpenAI LLM Provider implementation
+ */
+
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatStreamChunk,
+  SchemaContext,
+  OpenAIConfig,
+  LLMConfig,
+  DEFAULT_SYSTEM_PROMPT,
+} from '../../../shared/types/llm';
+import {
+  ILLMProvider,
+  buildSystemMessage,
+  generateMessageId,
+} from './base-provider';
+
+/**
+ * OpenAI provider implementation using native fetch
+ */
+export class OpenAIProvider implements ILLMProvider {
+  readonly name = 'openai';
+  private config: OpenAIConfig | null = null;
+
+  constructor(config?: OpenAIConfig) {
+    if (config) {
+      this.config = config;
+    }
+  }
+
+  isConfigured(): boolean {
+    return !!(this.config?.apiKey);
+  }
+
+  updateConfig(config: Partial<LLMConfig>): void {
+    if (config.provider === 'openai') {
+      this.config = { ...this.config, ...config } as OpenAIConfig;
+    }
+  }
+
+  getModel(): string {
+    return this.config?.model || 'gpt-4o';
+  }
+
+  setConfig(config: OpenAIConfig): void {
+    this.config = config;
+  }
+
+  async testConnection(): Promise<boolean> {
+    if (!this.isConfigured()) {
+      return false;
+    }
+
+    try {
+      const response = await fetch(`${this.getBaseUrl()}/models`, {
+        method: 'GET',
+        headers: this.getHeaders(),
+      });
+
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private getBaseUrl(): string {
+    return this.config?.baseUrl || 'https://api.openai.com/v1';
+  }
+
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.config?.apiKey}`,
+    };
+
+    if (this.config?.organization) {
+      headers['OpenAI-Organization'] = this.config.organization;
+    }
+
+    return headers;
+  }
+
+  private formatMessages(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): Array<{ role: string; content: string }> {
+    const formattedMessages: Array<{ role: string; content: string }> = [];
+
+    // Add system message with schema context
+    const systemContent = buildSystemMessage(
+      systemPrompt || '',
+      schemaContext
+    );
+    
+    if (systemContent) {
+      formattedMessages.push({
+        role: 'system',
+        content: systemContent,
+      });
+    }
+
+    // Add conversation messages
+    for (const msg of messages) {
+      if (msg.role !== 'system') {
+        formattedMessages.push({
+          role: msg.role,
+          content: msg.content,
+        });
+      }
+    }
+
+    return formattedMessages;
+  }
+
+  async chat(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): Promise<ChatResponse> {
+    if (!this.isConfigured()) {
+      throw new Error('OpenAI provider is not configured');
+    }
+
+    const formattedMessages = this.formatMessages(messages, schemaContext, systemPrompt);
+
+    const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        model: this.config!.model || 'gpt-4o',
+        messages: formattedMessages,
+        temperature: this.config!.temperature ?? 0.7,
+        max_tokens: this.config!.maxTokens ?? 4096,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(error.error?.message || `OpenAI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const assistantMessage = data.choices[0]?.message;
+
+    if (!assistantMessage) {
+      throw new Error('No response from OpenAI');
+    }
+
+    const messageId = generateMessageId();
+    const content = assistantMessage.content || '';
+
+    // Check if the response contains SQL
+    const sqlMatch = content.match(/```sql\n([\s\S]*?)```/);
+    const sqlQuery = sqlMatch ? sqlMatch[1].trim() : undefined;
+
+    return {
+      message: {
+        id: messageId,
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
+        containsQuery: !!sqlQuery,
+        sqlQuery,
+      },
+      usage: data.usage ? {
+        promptTokens: data.usage.prompt_tokens,
+        completionTokens: data.usage.completion_tokens,
+        totalTokens: data.usage.total_tokens,
+      } : undefined,
+    };
+  }
+
+  async *chatStream(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): AsyncGenerator<ChatStreamChunk, void, unknown> {
+    if (!this.isConfigured()) {
+      throw new Error('OpenAI provider is not configured');
+    }
+
+    const formattedMessages = this.formatMessages(messages, schemaContext, systemPrompt);
+    const messageId = generateMessageId();
+
+    const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        model: this.config!.model || 'gpt-4o',
+        messages: formattedMessages,
+        temperature: this.config!.temperature ?? 0.7,
+        max_tokens: this.config!.maxTokens ?? 4096,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(error.error?.message || `OpenAI API error: ${response.status}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response reader');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          yield { content: '', isComplete: true, messageId };
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          
+          if (trimmed.startsWith('data: ')) {
+            try {
+              const json = JSON.parse(trimmed.slice(6));
+              const content = json.choices?.[0]?.delta?.content || '';
+              if (content) {
+                yield { content, isComplete: false, messageId };
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
+````
+
+## File: src/main/storage/chat-history-sqlite.ts
+````typescript
+/**
+ * SQLite-based storage for chat conversations
+ */
+
+import Database from 'better-sqlite3';
+import path from 'path';
+import { app } from 'electron';
+import type { ChatConversation, ChatMessage } from '../../shared/types/llm';
+
+// Database file location
+const DB_NAME = 'chat-history.db';
+
+let db: Database.Database | null = null;
+
+/**
+ * Initialize the database connection
+ */
+function getDatabase(): Database.Database {
+  if (db) return db;
+  
+  const userDataPath = app.getPath('userData');
+  const dbPath = path.join(userDataPath, DB_NAME);
+  
+  db = new Database(dbPath);
+  
+  // Enable WAL mode for better concurrent read/write performance
+  db.pragma('journal_mode = WAL');
+  
+  // Create tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      messages TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      tab_id TEXT
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_conversations_tab ON conversations(tab_id);
+  `);
+  
+  return db;
+}
+
+/**
+ * Generate a unique conversation ID
+ */
+export function generateConversationId(): string {
+  return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+}
+
+/**
+ * Create a new conversation
+ */
+export function createConversation(
+  title: string = 'New Chat',
+  tabId?: string
+): ChatConversation {
+  const database = getDatabase();
+  const now = Date.now();
+  
+  const conversation: ChatConversation = {
+    id: generateConversationId(),
+    title,
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+    tabId,
+  };
+  
+  const stmt = database.prepare(`
+    INSERT INTO conversations (id, title, messages, created_at, updated_at, tab_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  
+  stmt.run(
+    conversation.id,
+    conversation.title,
+    JSON.stringify(conversation.messages),
+    conversation.createdAt,
+    conversation.updatedAt,
+    conversation.tabId || null
+  );
+  
+  return conversation;
+}
+
+/**
+ * Get a conversation by ID
+ */
+export function getConversation(id: string): ChatConversation | null {
+  const database = getDatabase();
+  
+  const stmt = database.prepare(`
+    SELECT id, title, messages, created_at, updated_at, tab_id
+    FROM conversations
+    WHERE id = ?
+  `);
+  
+  const row = stmt.get(id) as {
+    id: string;
+    title: string;
+    messages: string;
+    created_at: number;
+    updated_at: number;
+    tab_id: string | null;
+  } | undefined;
+  
+  if (!row) return null;
+  
+  return {
+    id: row.id,
+    title: row.title,
+    messages: JSON.parse(row.messages),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    tabId: row.tab_id || undefined,
+  };
+}
+
+/**
+ * List all conversations (most recent first)
+ */
+export function listConversations(limit: number = 50, offset: number = 0): ChatConversation[] {
+  const database = getDatabase();
+  
+  const stmt = database.prepare(`
+    SELECT id, title, messages, created_at, updated_at, tab_id
+    FROM conversations
+    ORDER BY updated_at DESC
+    LIMIT ? OFFSET ?
+  `);
+  
+  const rows = stmt.all(limit, offset) as Array<{
+    id: string;
+    title: string;
+    messages: string;
+    created_at: number;
+    updated_at: number;
+    tab_id: string | null;
+  }>;
+  
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    messages: JSON.parse(row.messages),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    tabId: row.tab_id || undefined,
+  }));
+}
+
+/**
+ * Update conversation (messages, title, etc.)
+ */
+export function updateConversation(
+  id: string,
+  updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>
+): ChatConversation | null {
+  const database = getDatabase();
+  const existing = getConversation(id);
+  
+  if (!existing) return null;
+  
+  const updated: ChatConversation = {
+    ...existing,
+    ...updates,
+    updatedAt: Date.now(),
+  };
+  
+  const stmt = database.prepare(`
+    UPDATE conversations
+    SET title = ?, messages = ?, updated_at = ?, tab_id = ?
+    WHERE id = ?
+  `);
+  
+  stmt.run(
+    updated.title,
+    JSON.stringify(updated.messages),
+    updated.updatedAt,
+    updated.tabId || null,
+    id
+  );
+  
+  return updated;
+}
+
+/**
+ * Add a message to a conversation
+ */
+export function addMessageToConversation(
+  conversationId: string,
+  message: ChatMessage
+): ChatConversation | null {
+  const conversation = getConversation(conversationId);
+  if (!conversation) return null;
+  
+  const messages = [...conversation.messages, message];
+  return updateConversation(conversationId, { messages });
+}
+
+/**
+ * Update the last message in a conversation (useful for streaming)
+ */
+export function updateLastMessage(
+  conversationId: string,
+  content: string,
+  additionalProps?: Partial<ChatMessage>
+): ChatConversation | null {
+  const conversation = getConversation(conversationId);
+  if (!conversation || conversation.messages.length === 0) return null;
+  
+  const messages = [...conversation.messages];
+  const lastIndex = messages.length - 1;
+  messages[lastIndex] = {
+    ...messages[lastIndex],
+    content,
+    ...additionalProps,
+  };
+  
+  return updateConversation(conversationId, { messages });
+}
+
+/**
+ * Delete a conversation
+ */
+export function deleteConversation(id: string): void {
+  const database = getDatabase();
+  const stmt = database.prepare('DELETE FROM conversations WHERE id = ?');
+  stmt.run(id);
+}
+
+/**
+ * Delete all conversations
+ */
+export function clearAllConversations(): void {
+  const database = getDatabase();
+  database.exec('DELETE FROM conversations');
+}
+
+/**
+ * Get conversation count
+ */
+export function getConversationCount(): number {
+  const database = getDatabase();
+  const stmt = database.prepare('SELECT COUNT(*) as count FROM conversations');
+  const row = stmt.get() as { count: number };
+  return row.count;
+}
+
+/**
+ * Search conversations by title or message content
+ */
+export function searchConversations(query: string, limit: number = 20): ChatConversation[] {
+  const database = getDatabase();
+  const searchPattern = `%${query}%`;
+  
+  const stmt = database.prepare(`
+    SELECT id, title, messages, created_at, updated_at, tab_id
+    FROM conversations
+    WHERE title LIKE ? OR messages LIKE ?
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `);
+  
+  const rows = stmt.all(searchPattern, searchPattern, limit) as Array<{
+    id: string;
+    title: string;
+    messages: string;
+    created_at: number;
+    updated_at: number;
+    tab_id: string | null;
+  }>;
+  
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    messages: JSON.parse(row.messages),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    tabId: row.tab_id || undefined,
+  }));
+}
+
+/**
+ * Get or create conversation for a tab
+ */
+export function getOrCreateTabConversation(tabId: string): ChatConversation {
+  const database = getDatabase();
+  
+  // Try to find existing conversation for this tab
+  const stmt = database.prepare(`
+    SELECT id, title, messages, created_at, updated_at, tab_id
+    FROM conversations
+    WHERE tab_id = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `);
+  
+  const row = stmt.get(tabId) as {
+    id: string;
+    title: string;
+    messages: string;
+    created_at: number;
+    updated_at: number;
+    tab_id: string;
+  } | undefined;
+  
+  if (row) {
+    return {
+      id: row.id,
+      title: row.title,
+      messages: JSON.parse(row.messages),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      tabId: row.tab_id,
+    };
+  }
+  
+  // Create new conversation for this tab
+  return createConversation('New Chat', tabId);
+}
+
+/**
+ * Close the database connection
+ */
+export function closeChatHistoryDatabase(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
+}
+````
+
+## File: src/main/storage/llm-store.ts
+````typescript
+/**
+ * SQLite-based storage for LLM settings and API keys
+ * Uses secure electron-store for API keys and SQLite for other settings
+ */
+
+import Database from 'better-sqlite3';
+import path from 'path';
+import { app, safeStorage } from 'electron';
+import Store from 'electron-store';
+import type {
+  LLMProvider,
+  LLMSettings,
+  LLMConfig,
+  OpenAIConfig,
+  AzureOpenAIConfig,
+  GeminiConfig,
+} from '../../shared/types/llm';
+
+// Database file location
+const DB_NAME = 'llm-settings.db';
+
+// Store interface for API keys
+interface LLMSecretsStore {
+  'apiKey.openai'?: string;
+  'apiKey.azure'?: string;
+  'apiKey.gemini'?: string;
+}
+
+// Secure store for API keys (encrypted)
+const secureStore = new Store<LLMSecretsStore>({
+  name: 'llm-secrets',
+}) as Store<LLMSecretsStore> & {
+  get(key: keyof LLMSecretsStore): string | undefined;
+  set(key: keyof LLMSecretsStore, value: string): void;
+  delete(key: keyof LLMSecretsStore): void;
+};
+
+let db: Database.Database | null = null;
+
+/**
+ * Initialize the database connection
+ */
+function getDatabase(): Database.Database {
+  if (db) return db;
+  
+  const userDataPath = app.getPath('userData');
+  const dbPath = path.join(userDataPath, DB_NAME);
+  
+  db = new Database(dbPath);
+  
+  // Enable WAL mode for better concurrent read/write performance
+  db.pragma('journal_mode = WAL');
+  
+  // Create tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS chat_conversations (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      messages TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      tab_id TEXT
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_conversations_updated ON chat_conversations(updated_at DESC);
+  `);
+  
+  return db;
+}
+
+/**
+ * Get a setting value
+ */
+function getSetting(key: string): string | null {
+  const database = getDatabase();
+  const stmt = database.prepare('SELECT value FROM llm_settings WHERE key = ?');
+  const row = stmt.get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+/**
+ * Set a setting value
+ */
+function setSetting(key: string, value: string): void {
+  const database = getDatabase();
+  const stmt = database.prepare(`
+    INSERT OR REPLACE INTO llm_settings (key, value) VALUES (?, ?)
+  `);
+  stmt.run(key, value);
+}
+
+/**
+ * Save API key securely using Electron's safeStorage
+ */
+export function saveApiKey(provider: LLMProvider, apiKey: string): void {
+  const key = `apiKey.${provider}` as keyof LLMSecretsStore;
+  
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      const encrypted = safeStorage.encryptString(apiKey);
+      const base64Encrypted = encrypted.toString('base64');
+      secureStore.set(key, `encrypted:${base64Encrypted}`);
+      console.log(`Saved encrypted API key for ${provider}`);
+    } catch (error) {
+      console.error('Failed to encrypt API key:', error);
+      // Fall back to storing unencrypted (not ideal but functional)
+      secureStore.set(key, `plain:${apiKey}`);
+    }
+  } else {
+    // Fall back to storing unencrypted
+    console.log(`Encryption not available, saving plain API key for ${provider}`);
+    secureStore.set(key, `plain:${apiKey}`);
+  }
+}
+
+/**
+ * Get API key securely
+ */
+export function getApiKey(provider: LLMProvider): string | null {
+  const key = `apiKey.${provider}` as keyof LLMSecretsStore;
+  const stored = secureStore.get(key);
+  
+  if (!stored) {
+    console.log(`No stored API key found for ${provider}`);
+    return null;
+  }
+  
+  // Handle prefixed storage format
+  if (stored.startsWith('encrypted:')) {
+    const base64Data = stored.substring('encrypted:'.length);
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        const encrypted = Buffer.from(base64Data, 'base64');
+        const decrypted = safeStorage.decryptString(encrypted);
+        console.log(`Retrieved encrypted API key for ${provider}`);
+        return decrypted;
+      } catch (error) {
+        console.error(`Failed to decrypt API key for ${provider}:`, error);
+        return null;
+      }
+    } else {
+      console.error(`Cannot decrypt API key for ${provider}: encryption not available`);
+      return null;
+    }
+  } else if (stored.startsWith('plain:')) {
+    const plainKey = stored.substring('plain:'.length);
+    console.log(`Retrieved plain API key for ${provider}`);
+    return plainKey;
+  }
+  
+  // Legacy format without prefix - try to decrypt, fall back to plain
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      const encrypted = Buffer.from(stored, 'base64');
+      return safeStorage.decryptString(encrypted);
+    } catch {
+      // Might be stored unencrypted, return as-is
+      return stored;
+    }
+  }
+  
+  return stored;
+}
+
+/**
+ * Delete API key
+ */
+export function deleteApiKey(provider: LLMProvider): void {
+  const key = `apiKey.${provider}` as keyof LLMSecretsStore;
+  secureStore.delete(key);
+}
+
+/**
+ * Check if API key exists for a provider
+ */
+export function hasApiKey(provider: LLMProvider): boolean {
+  return !!getApiKey(provider);
+}
+
+/**
+ * Save LLM settings (excluding API keys)
+ */
+export function saveLLMSettings(settings: LLMSettings): void {
+  setSetting('llm_settings', JSON.stringify(settings));
+}
+
+/**
+ * Get LLM settings
+ */
+export function getLLMSettings(): LLMSettings {
+  const stored = getSetting('llm_settings');
+  
+  if (stored) {
+    try {
+      const settings = JSON.parse(stored) as LLMSettings;
+      // Update hasApiKey flags
+      if (settings.providers.openai) {
+        settings.providers.openai.hasApiKey = hasApiKey('openai');
+      }
+      if (settings.providers.azure) {
+        settings.providers.azure.hasApiKey = hasApiKey('azure');
+      }
+      if (settings.providers.gemini) {
+        settings.providers.gemini.hasApiKey = hasApiKey('gemini');
+      }
+      return settings;
+    } catch {
+      // Return default settings if parsing fails
+    }
+  }
+  
+  // Default settings
+  return {
+    activeProvider: null,
+    providers: {},
+    defaultTemperature: 0.7,
+    defaultMaxTokens: 4096,
+  };
+}
+
+/**
+ * Save provider configuration (including API key)
+ */
+export function saveProviderConfig(config: LLMConfig): void {
+  const settings = getLLMSettings();
+  
+  switch (config.provider) {
+    case 'openai': {
+      const openaiConfig = config as OpenAIConfig;
+      saveApiKey('openai', openaiConfig.apiKey);
+      settings.providers.openai = {
+        provider: 'openai',
+        model: openaiConfig.model,
+        temperature: openaiConfig.temperature,
+        maxTokens: openaiConfig.maxTokens,
+        organization: openaiConfig.organization,
+        baseUrl: openaiConfig.baseUrl,
+        hasApiKey: true,
+      };
+      break;
+    }
+    case 'azure': {
+      const azureConfig = config as AzureOpenAIConfig;
+      saveApiKey('azure', azureConfig.apiKey);
+      settings.providers.azure = {
+        provider: 'azure',
+        model: azureConfig.model,
+        temperature: azureConfig.temperature,
+        maxTokens: azureConfig.maxTokens,
+        endpoint: azureConfig.endpoint,
+        deploymentName: azureConfig.deploymentName,
+        apiVersion: azureConfig.apiVersion,
+        hasApiKey: true,
+      };
+      break;
+    }
+    case 'gemini': {
+      const geminiConfig = config as GeminiConfig;
+      saveApiKey('gemini', geminiConfig.apiKey);
+      settings.providers.gemini = {
+        provider: 'gemini',
+        model: geminiConfig.model,
+        temperature: geminiConfig.temperature,
+        maxTokens: geminiConfig.maxTokens,
+        hasApiKey: true,
+      };
+      break;
+    }
+  }
+  
+  saveLLMSettings(settings);
+}
+
+/**
+ * Get provider configuration with API key
+ */
+export function getProviderConfig(provider: LLMProvider): LLMConfig | null {
+  const settings = getLLMSettings();
+  const apiKey = getApiKey(provider);
+  
+  switch (provider) {
+    case 'openai': {
+      const config = settings.providers.openai;
+      if (!config || !apiKey) return null;
+      return {
+        ...config,
+        apiKey,
+      } as OpenAIConfig;
+    }
+    case 'azure': {
+      const config = settings.providers.azure;
+      if (!config || !apiKey) return null;
+      return {
+        ...config,
+        apiKey,
+      } as AzureOpenAIConfig;
+    }
+    case 'gemini': {
+      const config = settings.providers.gemini;
+      if (!config || !apiKey) return null;
+      return {
+        ...config,
+        apiKey,
+      } as GeminiConfig;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Set active provider
+ */
+export function setActiveProvider(provider: LLMProvider | null): void {
+  const settings = getLLMSettings();
+  settings.activeProvider = provider;
+  saveLLMSettings(settings);
+}
+
+/**
+ * Get active provider
+ */
+export function getActiveProvider(): LLMProvider | null {
+  const settings = getLLMSettings();
+  return settings.activeProvider;
+}
+
+/**
+ * Save system prompt
+ */
+export function saveSystemPrompt(prompt: string): void {
+  const settings = getLLMSettings();
+  settings.systemPrompt = prompt;
+  saveLLMSettings(settings);
+}
+
+/**
+ * Get system prompt
+ */
+export function getSystemPrompt(): string | undefined {
+  const settings = getLLMSettings();
+  return settings.systemPrompt;
+}
+
+/**
+ * Delete provider configuration
+ */
+export function deleteProviderConfig(provider: LLMProvider): void {
+  deleteApiKey(provider);
+  const settings = getLLMSettings();
+  delete settings.providers[provider];
+  
+  // If this was the active provider, clear it
+  if (settings.activeProvider === provider) {
+    settings.activeProvider = null;
+  }
+  
+  saveLLMSettings(settings);
+}
+
+/**
+ * Close the database connection
+ */
+export function closeLLMDatabase(): void {
+  if (db) {
+    db.close();
+    db = null;
+  }
 }
 ````
 
@@ -10022,81 +11552,6 @@ export function deleteDatabase(): void {
 }
 ````
 
-## File: src/main/storage/ui-settings-store.ts
-````typescript
-import Store from 'electron-store';
-
-interface WindowBounds {
-  width: number;
-  height: number;
-  x?: number;
-  y?: number;
-}
-
-export type Theme = 'dark' | 'light';
-
-interface UISettingsData {
-  leftSidebarWidth: number;
-  rightSidebarWidth: number;
-  windowBounds?: WindowBounds;
-  theme: Theme;
-}
-
-const store = new Store<UISettingsData>({
-  name: 'ui-settings',
-  defaults: {
-    leftSidebarWidth: 250,
-    rightSidebarWidth: 300,
-    windowBounds: {
-      width: 1200,
-      height: 800,
-    },
-    theme: 'dark',
-  },
-}) as Store<UISettingsData> & {
-  get(key: 'leftSidebarWidth'): number;
-  set(key: 'leftSidebarWidth', value: number): void;
-  get(key: 'rightSidebarWidth'): number;
-  set(key: 'rightSidebarWidth', value: number): void;
-  get(key: 'windowBounds'): WindowBounds | undefined;
-  set(key: 'windowBounds', value: WindowBounds): void;
-  get(key: 'theme'): Theme;
-  set(key: 'theme', value: Theme): void;
-};
-
-export function getLeftSidebarWidth(): number {
-  return store.get('leftSidebarWidth') || 250;
-}
-
-export function setLeftSidebarWidth(width: number): void {
-  store.set('leftSidebarWidth', width);
-}
-
-export function getRightSidebarWidth(): number {
-  return store.get('rightSidebarWidth') || 300;
-}
-
-export function setRightSidebarWidth(width: number): void {
-  store.set('rightSidebarWidth', width);
-}
-
-export function getWindowBounds(): WindowBounds | undefined {
-  return store.get('windowBounds');
-}
-
-export function setWindowBounds(bounds: WindowBounds): void {
-  store.set('windowBounds', bounds);
-}
-
-export function getTheme(): Theme {
-  return store.get('theme') || 'dark';
-}
-
-export function setTheme(theme: Theme): void {
-  store.set('theme', theme);
-}
-````
-
 ## File: src/renderer/components/AboutDialog/AboutDialog.css
 ````css
 .about-dialog-overlay {
@@ -10205,6 +11660,458 @@ export function setTheme(theme: Theme): void {
 .donation-button:hover {
   background-color: #0051cc;
 }
+````
+
+## File: src/renderer/components/AIChatSidebar/AIChatSidebar.css
+````css
+/**
+ * AI Chat Sidebar Styles
+ */
+
+.ai-chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+/* Header */
+.ai-chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.ai-chat-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.ai-chat-icon {
+  font-size: 16px;
+}
+
+.ai-chat-header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.ai-chat-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.ai-chat-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.ai-chat-close:hover {
+  background: var(--danger-bg);
+  color: var(--danger-color);
+}
+
+.ai-chat-btn-text {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.ai-chat-btn-text:hover {
+  color: var(--text-primary);
+}
+
+/* Setup Banner */
+.ai-chat-setup-banner {
+  padding: 16px;
+  background: var(--warning-bg, #4a3f00);
+  border-bottom: 1px solid var(--border-color);
+  text-align: center;
+}
+
+.ai-chat-setup-banner p {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--warning-color, #ffd700);
+}
+
+.ai-chat-setup-banner button {
+  padding: 6px 16px;
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ai-chat-setup-banner button:hover {
+  opacity: 0.9;
+}
+
+/* History Section */
+.ai-chat-history {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-color);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.ai-chat-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+}
+
+.chat-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-history-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background-color 0.2s;
+}
+
+.chat-history-item:hover {
+  background: var(--bg-hover);
+}
+
+.chat-history-item.active {
+  background: var(--bg-selected);
+  color: var(--text-primary);
+}
+
+.chat-history-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-history-delete {
+  width: 20px;
+  height: 20px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  font-size: 14px;
+}
+
+.chat-history-item:hover .chat-history-delete {
+  opacity: 1;
+}
+
+.chat-history-delete:hover {
+  color: var(--danger-color);
+}
+
+.chat-history-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Messages Area */
+.ai-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 95%;
+}
+
+.chat-message-user {
+  align-self: flex-end;
+}
+
+.chat-message-assistant {
+  align-self: flex-start;
+}
+
+.chat-message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 0 4px;
+}
+
+.chat-message-role {
+  font-weight: 600;
+}
+
+.chat-message-content {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-message-user .chat-message-content {
+  background: var(--accent-color);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-message-assistant .chat-message-content {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-bottom-left-radius: 4px;
+}
+
+/* Code blocks */
+.chat-code-block {
+  margin: 8px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+}
+
+.chat-code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.chat-code-insert-btn {
+  padding: 4px 12px;
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: none;
+}
+
+.chat-code-insert-btn:hover {
+  opacity: 0.9;
+}
+
+.chat-code-block pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.chat-code-block code {
+  color: var(--text-primary);
+}
+
+/* Typing indicator */
+.chat-typing {
+  display: flex;
+  gap: 4px;
+  padding: 12px 16px !important;
+}
+
+.chat-typing span {
+  animation: typingBounce 1.4s infinite ease-in-out;
+  color: var(--text-secondary);
+}
+
+.chat-typing span:nth-child(1) { animation-delay: 0s; }
+.chat-typing span:nth-child(2) { animation-delay: 0.2s; }
+.chat-typing span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingBounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Cursor for streaming */
+.chat-cursor {
+  animation: blink 1s infinite;
+  color: var(--accent-color);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Error message */
+.chat-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--danger-bg, #3a1212);
+  border: 1px solid var(--danger-border, #ff4d4d33);
+  border-radius: 8px;
+  color: var(--danger-color, #ff6b6b);
+  font-size: 13px;
+}
+
+.chat-error-icon {
+  font-size: 14px;
+}
+
+/* Input Area */
+.ai-chat-input-container {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.ai-chat-input {
+  flex: 1;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  resize: none;
+  line-height: 1.4;
+}
+
+.ai-chat-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.ai-chat-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.ai-chat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-chat-send-btn {
+  width: 40px;
+  height: 40px;
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+  align-self: flex-end;
+}
+
+.ai-chat-send-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.ai-chat-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Footer */
+.ai-chat-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.ai-chat-schema-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Scrollbar styling */
+.ai-chat-messages::-webkit-scrollbar,
+.ai-chat-history::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ai-chat-messages::-webkit-scrollbar-track,
+.ai-chat-history::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ai-chat-messages::-webkit-scrollbar-thumb,
+.ai-chat-history::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.ai-chat-messages::-webkit-scrollbar-thumb:hover,
+.ai-chat-history::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+````
+
+## File: src/renderer/components/AIChatSidebar/index.ts
+````typescript
+export { AIChatSidebar } from './AIChatSidebar';
 ````
 
 ## File: src/renderer/components/ConnectionDialog/ConnectionDialog.css
@@ -11883,6 +13790,299 @@ export const JobInfoModal: React.FC<JobInfoModalProps> = ({ jobId, onClose }) =>
     </div>
   );
 };
+````
+
+## File: src/renderer/components/LLMSettingsDialog/index.ts
+````typescript
+export { LLMSettingsDialog } from './LLMSettingsDialog';
+````
+
+## File: src/renderer/components/LLMSettingsDialog/LLMSettingsDialog.css
+````css
+/**
+ * LLM Settings Dialog Styles
+ */
+
+.llm-settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.llm-settings-dialog {
+  width: 600px;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.llm-settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.llm-settings-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.llm-settings-close {
+  width: 32px;
+  height: 32px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.llm-settings-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.llm-settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* Tabs */
+.llm-settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  background: var(--bg-secondary);
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.llm-settings-tab {
+  flex: 1;
+  padding: 10px 16px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.llm-settings-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.llm-settings-tab.active {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.llm-settings-tab.is-active-provider {
+  color: var(--accent-color);
+}
+
+/* Result message */
+.llm-settings-result {
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.llm-settings-result.success {
+  background: var(--success-bg, #1a3d1a);
+  color: var(--success-color, #4caf50);
+  border: 1px solid var(--success-border, #4caf5033);
+}
+
+.llm-settings-result.error {
+  background: var(--danger-bg, #3d1a1a);
+  color: var(--danger-color, #ff6b6b);
+  border: 1px solid var(--danger-border, #ff6b6b33);
+}
+
+/* Form */
+.llm-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.llm-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-settings-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-configured {
+  color: var(--success-color, #4caf50);
+  font-size: 11px;
+  font-weight: normal;
+}
+
+.llm-settings-field input,
+.llm-settings-field select {
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.llm-settings-field input:focus,
+.llm-settings-field select:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.llm-settings-field input::placeholder {
+  color: var(--text-secondary);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Actions */
+.llm-settings-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.llm-settings-actions button {
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.llm-settings-actions button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.llm-settings-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.llm-settings-actions button.btn-primary {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: white;
+}
+
+.llm-settings-actions button.btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.llm-settings-actions button.btn-danger {
+  color: var(--danger-color, #ff6b6b);
+  border-color: var(--danger-color, #ff6b6b);
+}
+
+.llm-settings-actions button.btn-danger:hover:not(:disabled) {
+  background: var(--danger-bg, #3d1a1a);
+}
+
+/* Section */
+.llm-settings-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-color);
+}
+
+.llm-settings-section h3 {
+  margin: 0 0 4px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.section-description {
+  margin: 0 0 12px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.llm-settings-prompt {
+  width: 100%;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+  line-height: 1.5;
+}
+
+.llm-settings-prompt:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+/* Scrollbar */
+.llm-settings-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.llm-settings-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.llm-settings-content::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.llm-settings-content::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
 ````
 
 ## File: src/renderer/components/QueryEditor/EditorStatusBar.tsx
@@ -14638,6 +16838,449 @@ export const TabBar: React.FC<TabBarProps> = ({ side }) => {
 };
 ````
 
+## File: src/renderer/components/ThemeSettingsDialog/ThemeSettingsDialog.css
+````css
+.theme-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-overlay);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.theme-dialog {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 420px;
+  max-width: 520px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-modal);
+  border: 1px solid var(--border-primary);
+}
+
+.theme-dialog h2 {
+  margin: 0 0 20px 0;
+  color: var(--text-white);
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+
+.theme-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.theme-error {
+  background: var(--bg-error);
+  border: 1px solid var(--border-error);
+  color: var(--text-error);
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.theme-section {
+  /* Each section groups themes */
+}
+
+.theme-section h3 {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 10px 0;
+  font-weight: 600;
+}
+
+.theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.theme-list-scrollable {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.theme-list-scrollable::-webkit-scrollbar {
+  width: 6px;
+}
+
+.theme-list-scrollable::-webkit-scrollbar-track {
+  background: var(--bg-scrollbar);
+  border-radius: 3px;
+}
+
+.theme-list-scrollable::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.theme-list-scrollable::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+
+.theme-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.theme-item:hover {
+  background: var(--bg-hover);
+}
+
+.theme-item.active {
+  background: var(--bg-active);
+  border-color: var(--border-active);
+}
+
+.theme-item.active .theme-name {
+  color: var(--text-white);
+}
+
+.theme-name {
+  flex: 1;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.theme-badge {
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.theme-badge.dark {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}
+
+.theme-badge.light {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
+}
+
+.theme-delete-btn {
+  margin-left: 8px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.25rem;
+  padding: 0 4px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.theme-delete-btn:hover {
+  color: var(--accent-danger);
+  opacity: 1;
+}
+
+.no-custom-themes {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin: 8px 0;
+  font-style: italic;
+}
+
+.import-theme-btn {
+  margin-top: 10px;
+  padding: 8px 16px;
+  background: var(--button-secondary);
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background 0.15s;
+}
+
+.import-theme-btn:hover:not(:disabled) {
+  background: var(--button-secondary-hover);
+}
+
+.import-theme-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.theme-hint {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.theme-hint a {
+  color: var(--text-link);
+  text-decoration: none;
+}
+
+.theme-hint a:hover {
+  text-decoration: underline;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.dialog-actions button {
+  padding: 8px 20px;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: 4px;
+  color: var(--text-white);
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background 0.15s;
+}
+
+.dialog-actions button:hover {
+  background: var(--accent-primary-hover);
+}
+
+/* Scrollbar styling for the dialog */
+.theme-dialog::-webkit-scrollbar {
+  width: 8px;
+}
+
+.theme-dialog::-webkit-scrollbar-track {
+  background: var(--bg-scrollbar);
+}
+
+.theme-dialog::-webkit-scrollbar-thumb {
+  background: var(--bg-scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.theme-dialog::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-scrollbar-thumb-hover);
+}
+````
+
+## File: src/renderer/components/ThemeSettingsDialog/ThemeSettingsDialog.tsx
+````typescript
+import React, { useRef, useState } from 'react';
+import { useThemeStore } from '../../stores/theme-store';
+import './ThemeSettingsDialog.css';
+
+interface ThemeSettingsDialogProps {
+  onClose: () => void;
+}
+
+// IDs of popular themes to show at the top of the additional themes section
+const POPULAR_THEME_IDS = [
+  'monokai', 'monokai-bright', 'night-owl', 'oceanic-next', 'github',
+  'solarized-dark', 'solarized-light', 'tomorrow', 'tomorrow-night',
+  'tomorrow-night-blue', 'tomorrow-night-bright', 'tomorrow-night-eighties',
+  'cobalt', 'twilight'
+];
+
+// IDs of core Monaco themes (not from monaco-themes package)
+const CORE_THEME_IDS = ['monaco-vs', 'monaco-vs-dark', 'monaco-hc-black', 'monaco-hc-light'];
+
+export const ThemeSettingsDialog: React.FC<ThemeSettingsDialogProps> = ({ onClose }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+
+  const {
+    allThemes,
+    activeTheme,
+    setActiveTheme,
+    importTheme,
+    deleteCustomTheme,
+  } = useThemeStore();
+
+  const handleThemeSelect = async (themeId: string) => {
+    setError(null);
+    await setActiveTheme(themeId);
+  };
+
+  const handleImportClick = () => {
+    setError(null);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setImporting(true);
+      setError(null);
+      try {
+        await importTheme(file);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to import theme');
+      } finally {
+        setImporting(false);
+      }
+    }
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDelete = async (themeId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setError(null);
+    await deleteCustomTheme(themeId);
+  };
+
+  // Close on Escape
+  React.useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleDialogClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
+
+  // Group themes by category
+  const defaultThemes = allThemes.filter(t => t.isDefault);
+  const coreThemes = allThemes.filter(t => CORE_THEME_IDS.includes(t.id));
+  const popularThemes = allThemes.filter(t => POPULAR_THEME_IDS.includes(t.id));
+  const otherBuiltInThemes = allThemes.filter(t => 
+    t.isBuiltIn && 
+    !t.isDefault && 
+    !CORE_THEME_IDS.includes(t.id) && 
+    !POPULAR_THEME_IDS.includes(t.id)
+  );
+  const customThemes = allThemes.filter(t => !t.isBuiltIn);
+
+  const renderThemeItem = (theme: typeof allThemes[0], canDelete = false) => (
+    <div
+      key={theme.id}
+      className={`theme-item ${activeTheme.id === theme.id ? 'active' : ''}`}
+      onClick={() => handleThemeSelect(theme.id)}
+    >
+      <span className="theme-name">{theme.name}</span>
+      <span className={`theme-badge ${theme.type}`}>{theme.type}</span>
+      {canDelete && (
+        <button
+          className="theme-delete-btn"
+          onClick={(e) => handleDelete(theme.id, e)}
+          title="Delete theme"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="theme-dialog-overlay" onClick={onClose}>
+      <div className="theme-dialog" onClick={handleDialogClick}>
+        <h2>Theme Settings</h2>
+
+        <div className="theme-content">
+          {/* Error message */}
+          {error && (
+            <div className="theme-error">
+              {error}
+            </div>
+          )}
+
+          {/* Default Themes */}
+          <div className="theme-section">
+            <h3>Default Themes</h3>
+            <div className="theme-list">
+              {defaultThemes.map(theme => renderThemeItem(theme))}
+            </div>
+          </div>
+
+          {/* Core Monaco Themes */}
+          <div className="theme-section">
+            <h3>Monaco Core</h3>
+            <div className="theme-list">
+              {coreThemes.map(theme => renderThemeItem(theme))}
+            </div>
+          </div>
+
+          {/* Popular Themes */}
+          <div className="theme-section">
+            <h3>Popular Themes</h3>
+            <div className="theme-list theme-list-scrollable">
+              {popularThemes.map(theme => renderThemeItem(theme))}
+            </div>
+          </div>
+
+          {/* Other Built-in Themes */}
+          <div className="theme-section">
+            <h3>More Themes ({otherBuiltInThemes.length})</h3>
+            <div className="theme-list theme-list-scrollable">
+              {otherBuiltInThemes.map(theme => renderThemeItem(theme))}
+            </div>
+          </div>
+
+          {/* Custom Themes */}
+          <div className="theme-section">
+            <h3>Custom Themes</h3>
+            {customThemes.length > 0 ? (
+              <div className="theme-list">
+                {customThemes.map(theme => renderThemeItem(theme, true))}
+              </div>
+            ) : (
+              <p className="no-custom-themes">No custom themes imported yet.</p>
+            )}
+
+            <button
+              className="import-theme-btn"
+              onClick={handleImportClick}
+              disabled={importing}
+            >
+              {importing ? 'Importing...' : 'Import Theme File...'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json"
+              onChange={handleFileChange}
+              style={{ display: 'none' }}
+            />
+            <p className="theme-hint">
+              Import additional Monaco-compatible theme JSON files.
+            </p>
+          </div>
+        </div>
+
+        <div className="dialog-actions">
+          <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.css
 ````css
 .view-definition-modal-overlay {
@@ -14775,152 +17418,6 @@ export const TabBar: React.FC<TabBarProps> = ({ side }) => {
   border-radius: 3px;
   border: 1px solid var(--border-error);
 }
-````
-
-## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
-````typescript
-import React, { useState, useEffect } from 'react';
-import Editor from '@monaco-editor/react';
-import './ViewDefinitionModal.css';
-
-interface ViewDefinitionModalProps {
-  projectId: string;
-  datasetId: string;
-  tableId: string;
-  onClose: () => void;
-}
-
-export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
-  projectId,
-  datasetId,
-  tableId,
-  onClose,
-}) => {
-  const [definition, setDefinition] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [editorTheme, setEditorTheme] = useState<string>('vs-dark');
-
-  // Listen for theme changes
-  useEffect(() => {
-    const updateTheme = () => {
-      const currentTheme = document.documentElement.getAttribute('data-theme');
-      setEditorTheme(currentTheme === 'light' ? 'light' : 'vs-dark');
-    };
-    
-    // Initial theme
-    updateTheme();
-    
-    // Watch for attribute changes
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const loadViewDefinition = async () => {
-      if (!window.electronAPI) {
-        setError('Electron API not available');
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
-        setDefinition(result.definition);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load view definition');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadViewDefinition();
-  }, [datasetId, tableId]);
-
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleEscape);
-    return () => window.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(definition);
-  };
-
-  return (
-    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
-      <div className="view-definition-modal-dialog">
-        <div className="view-definition-modal-header">
-          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
-          <button className="view-definition-modal-close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="view-definition-modal-content">
-          {isLoading && (
-            <div className="view-definition-loading">
-              <div className="view-definition-spinner"></div>
-              <div>Loading view definition...</div>
-            </div>
-          )}
-          {error && (
-            <div className="view-definition-error">
-              <strong>Error:</strong> {error}
-            </div>
-          )}
-          {!isLoading && !error && definition && (
-            <>
-              <div className="view-definition-actions">
-                <button onClick={handleCopy} className="view-definition-copy-button">
-                  Copy to Clipboard
-                </button>
-              </div>
-              <div className="view-definition-editor">
-                <Editor
-                  height="400px"
-                  language="sql"
-                  value={definition}
-                  theme={editorTheme}
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 13,
-                    lineNumbers: 'on',
-                    folding: true,
-                    wordWrap: 'on',
-                    automaticLayout: true,
-                    renderLineHighlight: 'none',
-                    scrollbar: {
-                      vertical: 'auto',
-                      horizontal: 'auto',
-                    },
-                  }}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
 ````
 
 ## File: src/renderer/hooks/useBigQuery.ts
@@ -15289,6 +17786,666 @@ export const useSchemaCacheStore = create<SchemaCacheState>((set, get) => ({
   
   clear: () => set({ schemas: new Map(), isLoading: false, loadingProgress: { loaded: 0, total: 0 } }),
 }));
+````
+
+## File: src/renderer/stores/theme-store.ts
+````typescript
+/**
+ * Theme Store - Manages theme state for QueryForge
+ * Handles built-in themes, custom theme imports, and Monaco editor theming
+ */
+
+import { create } from 'zustand';
+import type { ThemeDefinition, ThemeFileFormat } from '../../shared/types/theme';
+import { ALL_BUILT_IN_THEMES, getMonacoThemeName, getAppThemeTypeFromBase } from '../themes/built-in-themes';
+import { applyThemeColors, clearThemeColors } from '../themes/theme-colors';
+
+interface ThemeState {
+  activeTheme: ThemeDefinition;
+  customThemes: ThemeDefinition[];
+  allThemes: ThemeDefinition[];
+  isLoading: boolean;
+  isInitialized: boolean;
+
+  // Actions
+  initialize: () => Promise<void>;
+  setActiveTheme: (themeId: string) => Promise<void>;
+  importTheme: (file: File) => Promise<void>;
+  deleteCustomTheme: (themeId: string) => Promise<void>;
+  getMonacoTheme: () => string;
+  getAppThemeType: () => 'dark' | 'light';
+}
+
+export const useThemeStore = create<ThemeState>((set, get) => ({
+  activeTheme: ALL_BUILT_IN_THEMES[0], // Default (Dark)
+  customThemes: [],
+  allThemes: ALL_BUILT_IN_THEMES,
+  isLoading: true,
+  isInitialized: false,
+
+  initialize: async () => {
+    // Only initialize once
+    if (get().isInitialized) {
+      return;
+    }
+
+    if (!window.electronAPI) {
+      set({ isLoading: false, isInitialized: true });
+      return;
+    }
+
+    try {
+      const settings = await window.electronAPI.uiSettings.getThemeSettings();
+      const customThemes = settings.customThemes || [];
+      const allThemes = [...ALL_BUILT_IN_THEMES, ...customThemes];
+      const activeTheme = allThemes.find(t => t.id === settings.activeThemeId) || ALL_BUILT_IN_THEMES[0];
+
+      set({
+        customThemes,
+        allThemes,
+        activeTheme,
+        isLoading: false,
+        isInitialized: true,
+      });
+
+      // Apply theme to DOM
+      document.documentElement.setAttribute('data-theme', activeTheme.type);
+      
+      // Apply Monaco theme colors to CSS variables
+      if (activeTheme.isDefault) {
+        // Default themes use the CSS stylesheet values
+        clearThemeColors();
+      } else {
+        applyThemeColors(activeTheme);
+      }
+    } catch (error) {
+      console.error('Failed to initialize theme store:', error);
+      set({ isLoading: false, isInitialized: true });
+    }
+  },
+
+  setActiveTheme: async (themeId: string) => {
+    const { allThemes } = get();
+    const theme = allThemes.find(t => t.id === themeId);
+    if (!theme) return;
+
+    set({ activeTheme: theme });
+    document.documentElement.setAttribute('data-theme', theme.type);
+    
+    // Apply Monaco theme colors to CSS variables
+    if (theme.isDefault) {
+      // Default themes use the CSS stylesheet values
+      clearThemeColors();
+    } else {
+      applyThemeColors(theme);
+    }
+
+    if (window.electronAPI) {
+      try {
+        await window.electronAPI.uiSettings.setActiveTheme(themeId);
+        // Also update legacy theme setting for backwards compatibility
+        await window.electronAPI.uiSettings.setTheme(theme.type);
+      } catch (error) {
+        console.error('Failed to save active theme:', error);
+      }
+    }
+  },
+
+  importTheme: async (file: File) => {
+    const text = await file.text();
+    let themeData: ThemeFileFormat;
+
+    try {
+      themeData = JSON.parse(text);
+    } catch {
+      throw new Error('Invalid JSON file');
+    }
+
+    // Validate required fields
+    if (!themeData.base) {
+      throw new Error('Theme file must include a "base" property (vs, vs-dark, hc-black, or hc-light)');
+    }
+
+    const validBases = ['vs', 'vs-dark', 'hc-black', 'hc-light'];
+    if (!validBases.includes(themeData.base)) {
+      throw new Error(`Invalid base theme: "${themeData.base}". Must be one of: ${validBases.join(', ')}`);
+    }
+
+    // Create theme definition
+    const theme: ThemeDefinition = {
+      id: `custom-${Date.now()}`,
+      name: themeData.name || file.name.replace(/\.json$/i, ''),
+      type: getAppThemeTypeFromBase(themeData.base),
+      isBuiltIn: false,
+      isDefault: false,
+      editor: {
+        base: themeData.base,
+        inherit: themeData.inherit ?? true,
+        rules: themeData.rules || [],
+        colors: themeData.colors || {},
+      },
+      app: themeData.app, // Optional app-level colors
+    };
+
+    const { customThemes } = get();
+    const newCustomThemes = [...customThemes, theme];
+    const allThemes = [...ALL_BUILT_IN_THEMES, ...newCustomThemes];
+
+    set({ customThemes: newCustomThemes, allThemes });
+
+    if (window.electronAPI) {
+      try {
+        await window.electronAPI.uiSettings.addCustomTheme(theme);
+      } catch (error) {
+        console.error('Failed to save custom theme:', error);
+        throw error;
+      }
+    }
+  },
+
+  deleteCustomTheme: async (themeId: string) => {
+    const { customThemes, activeTheme } = get();
+    const newCustomThemes = customThemes.filter(t => t.id !== themeId);
+    const allThemes = [...ALL_BUILT_IN_THEMES, ...newCustomThemes];
+
+    // If deleting active theme, switch to default
+    let newActiveTheme = activeTheme;
+    if (activeTheme.id === themeId) {
+      newActiveTheme = ALL_BUILT_IN_THEMES[0];
+      document.documentElement.setAttribute('data-theme', newActiveTheme.type);
+      // Default theme uses CSS stylesheet values
+      clearThemeColors();
+    }
+
+    set({ customThemes: newCustomThemes, allThemes, activeTheme: newActiveTheme });
+
+    if (window.electronAPI) {
+      try {
+        await window.electronAPI.uiSettings.removeCustomTheme(themeId);
+        if (activeTheme.id === themeId) {
+          await window.electronAPI.uiSettings.setActiveTheme(newActiveTheme.id);
+          await window.electronAPI.uiSettings.setTheme(newActiveTheme.type);
+        }
+      } catch (error) {
+        console.error('Failed to delete custom theme:', error);
+      }
+    }
+  },
+
+  getMonacoTheme: () => {
+    const { activeTheme } = get();
+    return getMonacoThemeName(activeTheme);
+  },
+
+  getAppThemeType: () => {
+    return get().activeTheme.type;
+  },
+}));
+
+/**
+ * Hook to get the current Monaco theme name
+ * Use this in editor components to get the correct theme
+ */
+export function useMonacoTheme(): string {
+  return useThemeStore(state => getMonacoThemeName(state.activeTheme));
+}
+
+/**
+ * Hook to get the current app theme type (dark/light)
+ */
+export function useAppThemeType(): 'dark' | 'light' {
+  return useThemeStore(state => state.activeTheme.type);
+}
+````
+
+## File: src/renderer/themes/built-in-themes.ts
+````typescript
+/**
+ * Built-in themes registry for QueryForge
+ * Default themes are never overwritten and always available
+ * Includes all themes from the monaco-themes package (v0.3.3)
+ */
+
+import type { ThemeDefinition, MonacoThemeBase } from '../../shared/types/theme';
+
+// Raw theme data type from monaco-themes JSON files
+interface RawMonacoTheme {
+  base: string;
+  inherit: boolean;
+  rules: Array<{
+    token: string;
+    foreground?: string;
+    background?: string;
+    fontStyle?: string;
+  }>;
+  colors: { [key: string]: string };
+}
+
+// Load theme JSON files using require (works with webpack)
+/* eslint-disable @typescript-eslint/no-var-requires */
+const Active4D = require('monaco-themes/themes/Active4D.json') as RawMonacoTheme;
+const AllHallowsEve = require('monaco-themes/themes/All Hallows Eve.json') as RawMonacoTheme;
+const Amy = require('monaco-themes/themes/Amy.json') as RawMonacoTheme;
+const BirdsOfParadise = require('monaco-themes/themes/Birds of Paradise.json') as RawMonacoTheme;
+const Blackboard = require('monaco-themes/themes/Blackboard.json') as RawMonacoTheme;
+const BrillianceBlack = require('monaco-themes/themes/Brilliance Black.json') as RawMonacoTheme;
+const BrillianceDull = require('monaco-themes/themes/Brilliance Dull.json') as RawMonacoTheme;
+const ChromeDevTools = require('monaco-themes/themes/Chrome DevTools.json') as RawMonacoTheme;
+const CloudsMidnight = require('monaco-themes/themes/Clouds Midnight.json') as RawMonacoTheme;
+const Clouds = require('monaco-themes/themes/Clouds.json') as RawMonacoTheme;
+const Cobalt = require('monaco-themes/themes/Cobalt.json') as RawMonacoTheme;
+const Dawn = require('monaco-themes/themes/Dawn.json') as RawMonacoTheme;
+const DominionDay = require('monaco-themes/themes/Dominion Day.json') as RawMonacoTheme;
+const Dreamweaver = require('monaco-themes/themes/Dreamweaver.json') as RawMonacoTheme;
+const Eiffel = require('monaco-themes/themes/Eiffel.json') as RawMonacoTheme;
+const EspressoLibre = require('monaco-themes/themes/Espresso Libre.json') as RawMonacoTheme;
+const GitHub = require('monaco-themes/themes/GitHub.json') as RawMonacoTheme;
+const IDLE = require('monaco-themes/themes/IDLE.json') as RawMonacoTheme;
+const idleFingers = require('monaco-themes/themes/idleFingers.json') as RawMonacoTheme;
+const iPlastic = require('monaco-themes/themes/iPlastic.json') as RawMonacoTheme;
+const Katzenmilch = require('monaco-themes/themes/Katzenmilch.json') as RawMonacoTheme;
+const krTheme = require('monaco-themes/themes/krTheme.json') as RawMonacoTheme;
+const KuroirTheme = require('monaco-themes/themes/Kuroir Theme.json') as RawMonacoTheme;
+const LAZY = require('monaco-themes/themes/LAZY.json') as RawMonacoTheme;
+const MagicWB = require('monaco-themes/themes/MagicWB (Amiga).json') as RawMonacoTheme;
+const MerbivoreSoft = require('monaco-themes/themes/Merbivore Soft.json') as RawMonacoTheme;
+const Merbivore = require('monaco-themes/themes/Merbivore.json') as RawMonacoTheme;
+const monoindustrial = require('monaco-themes/themes/monoindustrial.json') as RawMonacoTheme;
+const MonokaiBright = require('monaco-themes/themes/Monokai Bright.json') as RawMonacoTheme;
+const Monokai = require('monaco-themes/themes/Monokai.json') as RawMonacoTheme;
+const NightOwl = require('monaco-themes/themes/Night Owl.json') as RawMonacoTheme;
+const OceanicNext = require('monaco-themes/themes/Oceanic Next.json') as RawMonacoTheme;
+const PastelsOnDark = require('monaco-themes/themes/Pastels on Dark.json') as RawMonacoTheme;
+const SlushAndPoppies = require('monaco-themes/themes/Slush and Poppies.json') as RawMonacoTheme;
+const SolarizedDark = require('monaco-themes/themes/Solarized-dark.json') as RawMonacoTheme;
+const SolarizedLight = require('monaco-themes/themes/Solarized-light.json') as RawMonacoTheme;
+const SpaceCadet = require('monaco-themes/themes/SpaceCadet.json') as RawMonacoTheme;
+const Sunburst = require('monaco-themes/themes/Sunburst.json') as RawMonacoTheme;
+const TextmateMacClassic = require('monaco-themes/themes/Textmate (Mac Classic).json') as RawMonacoTheme;
+const TomorrowNightBlue = require('monaco-themes/themes/Tomorrow-Night-Blue.json') as RawMonacoTheme;
+const TomorrowNightBright = require('monaco-themes/themes/Tomorrow-Night-Bright.json') as RawMonacoTheme;
+const TomorrowNightEighties = require('monaco-themes/themes/Tomorrow-Night-Eighties.json') as RawMonacoTheme;
+const TomorrowNight = require('monaco-themes/themes/Tomorrow-Night.json') as RawMonacoTheme;
+const Tomorrow = require('monaco-themes/themes/Tomorrow.json') as RawMonacoTheme;
+const Twilight = require('monaco-themes/themes/Twilight.json') as RawMonacoTheme;
+const UpstreamSunburst = require('monaco-themes/themes/Upstream Sunburst.json') as RawMonacoTheme;
+const VibrantInk = require('monaco-themes/themes/Vibrant Ink.json') as RawMonacoTheme;
+const XcodeDefault = require('monaco-themes/themes/Xcode_default.json') as RawMonacoTheme;
+const Zenburnesque = require('monaco-themes/themes/Zenburnesque.json') as RawMonacoTheme;
+/* eslint-enable @typescript-eslint/no-var-requires */
+
+// Default themes (never overwritten, always at the top of the list)
+export const DEFAULT_DARK_THEME: ThemeDefinition = {
+  id: 'default-dark',
+  name: 'Default (Dark)',
+  type: 'dark',
+  isBuiltIn: true,
+  isDefault: true,
+  // No editor property = use Monaco's built-in 'vs-dark'
+};
+
+export const DEFAULT_LIGHT_THEME: ThemeDefinition = {
+  id: 'default-light',
+  name: 'Default (Light)',
+  type: 'light',
+  isBuiltIn: true,
+  isDefault: true,
+  // No editor property = use Monaco's built-in 'light'
+};
+
+// Monaco built-in themes (basic)
+export const MONACO_CORE_THEMES: ThemeDefinition[] = [
+  {
+    id: 'monaco-vs',
+    name: 'Visual Studio',
+    type: 'light',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+  {
+    id: 'monaco-vs-dark',
+    name: 'Visual Studio Dark',
+    type: 'dark',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+  {
+    id: 'monaco-hc-black',
+    name: 'High Contrast (Dark)',
+    type: 'dark',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+  {
+    id: 'monaco-hc-light',
+    name: 'High Contrast (Light)',
+    type: 'light',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+];
+
+// Helper to create a theme definition from monaco-themes data
+function createMonacoTheme(id: string, name: string, themeData: RawMonacoTheme): ThemeDefinition {
+  // Cast the base to our expected type (all monaco-themes use 'vs' or 'vs-dark')
+  const base = themeData.base as MonacoThemeBase;
+  
+  return {
+    id,
+    name,
+    type: base === 'vs' || base === 'hc-light' ? 'light' : 'dark',
+    isBuiltIn: true,
+    isDefault: false,
+    editor: {
+      base,
+      inherit: themeData.inherit,
+      rules: themeData.rules,
+      colors: themeData.colors,
+    },
+  };
+}
+
+// All themes from monaco-themes package (v0.3.3)
+export const MONACO_PACKAGE_THEMES: ThemeDefinition[] = [
+  // Popular themes first
+  createMonacoTheme('monokai', 'Monokai', Monokai),
+  createMonacoTheme('monokai-bright', 'Monokai Bright', MonokaiBright),
+  createMonacoTheme('night-owl', 'Night Owl', NightOwl),
+  createMonacoTheme('oceanic-next', 'Oceanic Next', OceanicNext),
+  createMonacoTheme('github', 'GitHub', GitHub),
+  createMonacoTheme('solarized-dark', 'Solarized Dark', SolarizedDark),
+  createMonacoTheme('solarized-light', 'Solarized Light', SolarizedLight),
+  createMonacoTheme('tomorrow', 'Tomorrow', Tomorrow),
+  createMonacoTheme('tomorrow-night', 'Tomorrow Night', TomorrowNight),
+  createMonacoTheme('tomorrow-night-blue', 'Tomorrow Night Blue', TomorrowNightBlue),
+  createMonacoTheme('tomorrow-night-bright', 'Tomorrow Night Bright', TomorrowNightBright),
+  createMonacoTheme('tomorrow-night-eighties', 'Tomorrow Night Eighties', TomorrowNightEighties),
+  createMonacoTheme('cobalt', 'Cobalt', Cobalt),
+  createMonacoTheme('twilight', 'Twilight', Twilight),
+  
+  // Alphabetical order for the rest
+  createMonacoTheme('active4d', 'Active4D', Active4D),
+  createMonacoTheme('all-hallows-eve', 'All Hallows Eve', AllHallowsEve),
+  createMonacoTheme('amy', 'Amy', Amy),
+  createMonacoTheme('birds-of-paradise', 'Birds of Paradise', BirdsOfParadise),
+  createMonacoTheme('blackboard', 'Blackboard', Blackboard),
+  createMonacoTheme('brilliance-black', 'Brilliance Black', BrillianceBlack),
+  createMonacoTheme('brilliance-dull', 'Brilliance Dull', BrillianceDull),
+  createMonacoTheme('chrome-devtools', 'Chrome DevTools', ChromeDevTools),
+  createMonacoTheme('clouds', 'Clouds', Clouds),
+  createMonacoTheme('clouds-midnight', 'Clouds Midnight', CloudsMidnight),
+  createMonacoTheme('dawn', 'Dawn', Dawn),
+  createMonacoTheme('dominion-day', 'Dominion Day', DominionDay),
+  createMonacoTheme('dreamweaver', 'Dreamweaver', Dreamweaver),
+  createMonacoTheme('eiffel', 'Eiffel', Eiffel),
+  createMonacoTheme('espresso-libre', 'Espresso Libre', EspressoLibre),
+  createMonacoTheme('idle', 'IDLE', IDLE),
+  createMonacoTheme('idle-fingers', 'idleFingers', idleFingers),
+  createMonacoTheme('iplastic', 'iPlastic', iPlastic),
+  createMonacoTheme('katzenmilch', 'Katzenmilch', Katzenmilch),
+  createMonacoTheme('kr-theme', 'krTheme', krTheme),
+  createMonacoTheme('kuroir-theme', 'Kuroir Theme', KuroirTheme),
+  createMonacoTheme('lazy', 'LAZY', LAZY),
+  createMonacoTheme('magic-wb', 'MagicWB (Amiga)', MagicWB),
+  createMonacoTheme('merbivore', 'Merbivore', Merbivore),
+  createMonacoTheme('merbivore-soft', 'Merbivore Soft', MerbivoreSoft),
+  createMonacoTheme('monoindustrial', 'monoindustrial', monoindustrial),
+  createMonacoTheme('pastels-on-dark', 'Pastels on Dark', PastelsOnDark),
+  createMonacoTheme('slush-and-poppies', 'Slush and Poppies', SlushAndPoppies),
+  createMonacoTheme('spacecadet', 'SpaceCadet', SpaceCadet),
+  createMonacoTheme('sunburst', 'Sunburst', Sunburst),
+  createMonacoTheme('textmate-mac-classic', 'Textmate (Mac Classic)', TextmateMacClassic),
+  createMonacoTheme('upstream-sunburst', 'Upstream Sunburst', UpstreamSunburst),
+  createMonacoTheme('vibrant-ink', 'Vibrant Ink', VibrantInk),
+  createMonacoTheme('xcode-default', 'Xcode Default', XcodeDefault),
+  createMonacoTheme('zenburnesque', 'Zenburnesque', Zenburnesque),
+];
+
+// All built-in themes combined
+export const ALL_BUILT_IN_THEMES: ThemeDefinition[] = [
+  DEFAULT_DARK_THEME,
+  DEFAULT_LIGHT_THEME,
+  ...MONACO_CORE_THEMES,
+  ...MONACO_PACKAGE_THEMES,
+];
+
+/**
+ * Maps a theme ID to the Monaco editor theme name
+ * For built-in themes, this returns the Monaco theme identifier
+ * For custom themes, this returns the theme ID (which will be registered with defineTheme)
+ */
+export function getMonacoThemeName(theme: ThemeDefinition): string {
+  switch (theme.id) {
+    case 'default-dark':
+    case 'monaco-vs-dark':
+      return 'vs-dark';
+    case 'default-light':
+    case 'monaco-vs':
+      return 'vs';
+    case 'monaco-hc-black':
+      return 'hc-black';
+    case 'monaco-hc-light':
+      return 'hc-light';
+    default:
+      // Monaco-themes and custom themes use their ID as the Monaco theme name
+      return theme.id;
+  }
+}
+
+/**
+ * Determines the app theme type (dark/light) from a Monaco base theme
+ */
+export function getAppThemeTypeFromBase(base: string): 'dark' | 'light' {
+  return base === 'vs' || base === 'hc-light' ? 'light' : 'dark';
+}
+
+/**
+ * Registers all monaco-themes with the Monaco editor
+ * Should be called in beforeMount of the Editor component
+ */
+export function registerAllThemes(monaco: typeof import('monaco-editor')): void {
+  MONACO_PACKAGE_THEMES.forEach((theme) => {
+    if (theme.editor) {
+      monaco.editor.defineTheme(theme.id, {
+        base: theme.editor.base,
+        inherit: theme.editor.inherit,
+        rules: theme.editor.rules,
+        colors: theme.editor.colors,
+      });
+    }
+  });
+}
+````
+
+## File: src/renderer/themes/theme-colors.ts
+````typescript
+/**
+ * Theme Colors Utility
+ * Maps Monaco theme colors to CSS variables for app-wide theming
+ */
+
+import type { ThemeDefinition, MonacoThemeColors } from '../../shared/types/theme';
+
+/**
+ * Adjust color brightness
+ * @param hex - Hex color (with or without #)
+ * @param percent - Positive = lighter, negative = darker
+ */
+function adjustBrightness(hex: string, percent: number): string {
+  // Remove # if present
+  const color = hex.replace('#', '');
+  
+  // Parse RGB
+  const num = parseInt(color, 16);
+  const r = Math.min(255, Math.max(0, (num >> 16) + Math.round(2.55 * percent)));
+  const g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + Math.round(2.55 * percent)));
+  const b = Math.min(255, Math.max(0, (num & 0x0000FF) + Math.round(2.55 * percent)));
+  
+  return '#' + (0x1000000 + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
+/**
+ * Add alpha to a hex color
+ */
+function addAlpha(hex: string, alpha: number): string {
+  const color = hex.replace('#', '');
+  const r = parseInt(color.slice(0, 2), 16);
+  const g = parseInt(color.slice(2, 4), 16);
+  const b = parseInt(color.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Determine if a color is dark
+ */
+function isDarkColor(hex: string): boolean {
+  const color = hex.replace('#', '');
+  const r = parseInt(color.slice(0, 2), 16);
+  const g = parseInt(color.slice(2, 4), 16);
+  const b = parseInt(color.slice(4, 6), 16);
+  // Using relative luminance formula
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance < 0.5;
+}
+
+/**
+ * Map Monaco theme colors to CSS variables
+ */
+function mapThemeColorsToCSSVariables(
+  colors: MonacoThemeColors,
+  isDark: boolean
+): Record<string, string> {
+  const editorBg = colors['editor.background'] || (isDark ? '#1e1e1e' : '#ffffff');
+  const editorFg = colors['editor.foreground'] || (isDark ? '#cccccc' : '#333333');
+  const selectionBg = colors['editor.selectionBackground'] || (isDark ? '#264f78' : '#add6ff');
+  const lineHighlight = colors['editor.lineHighlightBackground'] || adjustBrightness(editorBg, isDark ? 5 : -5);
+  
+  // Derive secondary and tertiary backgrounds
+  const bgSecondary = adjustBrightness(editorBg, isDark ? 3 : -3);
+  const bgTertiary = adjustBrightness(editorBg, isDark ? 6 : -6);
+  const bgInput = adjustBrightness(editorBg, isDark ? 10 : 0);
+  const bgHover = adjustBrightness(editorBg, isDark ? 5 : -5);
+  
+  // Derive text colors
+  const textSecondary = adjustBrightness(editorFg, isDark ? -30 : 30);
+  
+  // Border colors
+  const borderPrimary = adjustBrightness(editorBg, isDark ? 15 : -15);
+  
+  // Scrollbar colors
+  const scrollbarThumb = adjustBrightness(editorBg, isDark ? 20 : -20);
+  const scrollbarThumbHover = adjustBrightness(editorBg, isDark ? 25 : -25);
+  const scrollbarThumbActive = adjustBrightness(editorBg, isDark ? 30 : -30);
+  
+  // Button secondary
+  const buttonSecondary = borderPrimary;
+  const buttonSecondaryHover = adjustBrightness(borderPrimary, isDark ? 5 : -5);
+  
+  // Shadows (darker for dark themes, lighter for light themes)
+  const shadowAlpha = isDark ? 0.4 : 0.15;
+  
+  // Badge colors derived from editor foreground
+  const badgeAlpha = isDark ? 0.15 : 0.1;
+  
+  return {
+    '--bg-primary': editorBg,
+    '--bg-secondary': bgSecondary,
+    '--bg-tertiary': bgTertiary,
+    '--bg-input': bgInput,
+    '--bg-hover': bgHover,
+    '--bg-scrollbar': editorBg,
+    '--bg-scrollbar-thumb': scrollbarThumb,
+    '--bg-scrollbar-thumb-hover': scrollbarThumbHover,
+    '--bg-scrollbar-thumb-active': scrollbarThumbActive,
+    '--bg-overlay': addAlpha('#000000', isDark ? 0.7 : 0.4),
+    
+    '--border-primary': borderPrimary,
+    
+    '--text-primary': editorFg,
+    '--text-secondary': textSecondary,
+    
+    '--button-secondary': buttonSecondary,
+    '--button-secondary-hover': buttonSecondaryHover,
+    
+    '--shadow-dialog': `0 8px 16px rgba(0, 0, 0, ${shadowAlpha})`,
+    '--shadow-dropdown': `0 2px 8px rgba(0, 0, 0, ${shadowAlpha * 0.75})`,
+    '--shadow-modal': `0 4px 20px rgba(0, 0, 0, ${shadowAlpha * 1.25})`,
+    '--shadow-tooltip': `0 4px 12px rgba(0, 0, 0, ${shadowAlpha})`,
+  };
+}
+
+/**
+ * Apply theme colors to the document root as CSS variables
+ */
+export function applyThemeColors(theme: ThemeDefinition): void {
+  const root = document.documentElement;
+  const isDark = theme.type === 'dark';
+  
+  // If theme has editor colors, map them to CSS variables
+  if (theme.editor?.colors) {
+    const cssVars = mapThemeColorsToCSSVariables(theme.editor.colors, isDark);
+    
+    for (const [property, value] of Object.entries(cssVars)) {
+      root.style.setProperty(property, value);
+    }
+  } else {
+    // Clear custom CSS variables and let data-theme handle it
+    clearThemeColors();
+  }
+  
+  // Apply any custom app colors if provided
+  if (theme.app) {
+    const appColorMap: Record<string, string> = {
+      bgPrimary: '--bg-primary',
+      bgSecondary: '--bg-secondary',
+      bgTertiary: '--bg-tertiary',
+      bgInput: '--bg-input',
+      bgHover: '--bg-hover',
+      textPrimary: '--text-primary',
+      textSecondary: '--text-secondary',
+      accentPrimary: '--accent-primary',
+    };
+    
+    for (const [key, cssVar] of Object.entries(appColorMap)) {
+      const value = theme.app[key as keyof typeof theme.app];
+      if (value) {
+        root.style.setProperty(cssVar, value);
+      }
+    }
+  }
+}
+
+/**
+ * Clear all custom theme CSS variables (reset to stylesheet defaults)
+ */
+export function clearThemeColors(): void {
+  const root = document.documentElement;
+  const properties = [
+    '--bg-primary',
+    '--bg-secondary',
+    '--bg-tertiary',
+    '--bg-input',
+    '--bg-hover',
+    '--bg-scrollbar',
+    '--bg-scrollbar-thumb',
+    '--bg-scrollbar-thumb-hover',
+    '--bg-scrollbar-thumb-active',
+    '--bg-overlay',
+    '--border-primary',
+    '--text-primary',
+    '--text-secondary',
+    '--button-secondary',
+    '--button-secondary-hover',
+    '--shadow-dialog',
+    '--shadow-dropdown',
+    '--shadow-modal',
+    '--shadow-tooltip',
+  ];
+  
+  for (const property of properties) {
+    root.style.removeProperty(property);
+  }
+}
 ````
 
 ## File: src/renderer/utils/bigquery-formatter.ts
@@ -17622,6 +20779,82 @@ export enum BigQueryErrorCode {
 }
 ````
 
+## File: src/shared/types/theme.ts
+````typescript
+/**
+ * Theme type definitions for QueryForge
+ * Supports Monaco Editor themes and app-level CSS customization
+ */
+
+// Monaco Editor theme rule for token colorization
+export interface MonacoThemeRule {
+  token: string;
+  foreground?: string;
+  background?: string;
+  fontStyle?: string;
+}
+
+// Monaco Editor color settings
+// Note: Monaco IColors expects non-optional strings, but theme files may have optional values
+export interface MonacoThemeColors {
+  [key: string]: string;
+}
+
+// Monaco theme base types
+export type MonacoThemeBase = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
+
+// Complete Monaco theme data structure
+export interface MonacoThemeData {
+  base: MonacoThemeBase;
+  inherit: boolean;
+  rules: MonacoThemeRule[];
+  colors: MonacoThemeColors;
+}
+
+// App theme type (dark or light)
+export type AppThemeType = 'dark' | 'light';
+
+// App-level theme colors (CSS variables)
+export interface AppThemeColors {
+  bgPrimary?: string;
+  bgSecondary?: string;
+  bgTertiary?: string;
+  bgInput?: string;
+  bgHover?: string;
+  textPrimary?: string;
+  textSecondary?: string;
+  accentPrimary?: string;
+  // Additional CSS variables can be added as needed
+}
+
+// Complete theme definition
+export interface ThemeDefinition {
+  id: string;
+  name: string;
+  type: AppThemeType;
+  isBuiltIn: boolean;
+  isDefault: boolean;
+  editor?: MonacoThemeData;  // Monaco-specific settings (optional for built-in themes)
+  app?: AppThemeColors;      // App CSS variable overrides (optional)
+}
+
+// Theme settings stored in electron-store
+export interface StoredThemeSettings {
+  activeThemeId: string;
+  customThemes: ThemeDefinition[];
+}
+
+// Theme file format (what users import)
+export interface ThemeFileFormat {
+  name: string;
+  base: MonacoThemeBase;
+  inherit?: boolean;
+  rules?: MonacoThemeRule[];
+  colors?: MonacoThemeColors;
+  app?: AppThemeColors;
+}
+````
+
 ## File: tests/integration/connection-integration.test.tsx
 ````typescript
 /**
@@ -19064,674 +22297,6 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByTestId('child1')).toBeInTheDocument();
     expect(screen.getByTestId('child2')).toBeInTheDocument();
-  });
-});
-````
-
-## File: tests/unit/renderer/components/JobInfoModal.test.tsx
-````typescript
-import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { JobInfoModal } from '../../../../src/renderer/components/JobInfoModal/JobInfoModal';
-import type { JobDetails } from '../../../../src/shared/types/bigquery';
-
-// Get the mocked electronAPI from the global window
-const mockElectronAPI = (window as any).electronAPI;
-
-// Mock job details for testing
-const mockJobDetails: JobDetails = {
-  jobId: 'test-job-123',
-  projectId: 'test-project',
-  location: 'EU',
-  user: 'test@example.com',
-  creationTime: '2025-12-05T10:00:00.000Z',
-  startTime: '2025-12-05T10:00:01.000Z',
-  endTime: '2025-12-05T10:00:05.000Z',
-  totalSlotMs: 5000,
-  totalBytesProcessed: 1073741824, // 1 GB
-  totalBytesBilled: 1073741824,
-  cacheHit: false,
-  statementType: 'SELECT',
-  outputRows: 1000,
-  billingTier: 1,
-  referencedTables: [
-    { projectId: 'test-project', datasetId: 'test_dataset', tableId: 'test_table' },
-  ],
-  state: 'DONE',
-};
-
-describe('JobInfoModal', () => {
-  const mockOnClose = jest.fn();
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    // Setup default mock for getJobInfo
-    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue(mockJobDetails);
-  });
-
-  it('should render loading state initially', () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    expect(screen.getByText('Loading job information...')).toBeInTheDocument();
-  });
-
-  it('should render job details after loading', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    // Check that job ID is displayed
-    expect(screen.getByText('test-job-123')).toBeInTheDocument();
-    
-    // Check project ID
-    expect(screen.getByText('test-project')).toBeInTheDocument();
-    
-    // Check location
-    expect(screen.getByText('EU')).toBeInTheDocument();
-    
-    // Check user
-    expect(screen.getByText('test@example.com')).toBeInTheDocument();
-  });
-
-  it('should display bytes processed in human readable format', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    // 1 GB should be displayed
-    expect(screen.getAllByText('1 GB').length).toBeGreaterThan(0);
-  });
-
-  it('should display cache hit status', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('No')).toBeInTheDocument();
-    });
-  });
-
-  it('should display cache hit as Yes when cacheHit is true', async () => {
-    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
-      ...mockJobDetails,
-      cacheHit: true,
-    });
-
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('✓ Yes')).toBeInTheDocument();
-    });
-  });
-
-  it('should display referenced tables', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Referenced Tables')).toBeInTheDocument();
-    });
-
-    expect(screen.getByText('test-project.test_dataset.test_table')).toBeInTheDocument();
-  });
-
-  it('should display output rows', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('1,000')).toBeInTheDocument();
-    });
-  });
-
-  it('should call onClose when close button is clicked', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    const closeButton = screen.getByRole('button', { name: '×' });
-    fireEvent.click(closeButton);
-
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should call onClose when clicking overlay', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    const overlay = document.querySelector('.job-info-modal-overlay');
-    fireEvent.click(overlay!);
-
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should not call onClose when clicking dialog content', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    const dialog = document.querySelector('.job-info-modal-dialog');
-    fireEvent.click(dialog!);
-
-    expect(mockOnClose).not.toHaveBeenCalled();
-  });
-
-  it('should call onClose when escape key is pressed', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    fireEvent.keyDown(window, { key: 'Escape' });
-
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should display error message when loading fails', async () => {
-    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockRejectedValue(
-      new Error('Job not found')
-    );
-
-    render(<JobInfoModal jobId="invalid-job" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/Error:/)).toBeInTheDocument();
-      expect(screen.getByText(/Job not found/)).toBeInTheDocument();
-    });
-  });
-
-  it('should copy job ID when copy button is clicked', async () => {
-    const mockClipboard = { writeText: jest.fn() };
-    Object.assign(navigator, { clipboard: mockClipboard });
-
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    const copyButton = screen.getByTitle('Copy job ID');
-    fireEvent.click(copyButton);
-
-    expect(mockClipboard.writeText).toHaveBeenCalledWith('test-job-123');
-  });
-
-  it('should display job status with correct styling', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('DONE')).toBeInTheDocument();
-    });
-
-    const statusElement = screen.getByText('DONE');
-    expect(statusElement).toHaveClass('job-status-done');
-  });
-
-  it('should display statement type', async () => {
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('SELECT')).toBeInTheDocument();
-    });
-  });
-
-  it('should display error details when job has error', async () => {
-    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
-      ...mockJobDetails,
-      state: 'DONE',
-      errorResult: {
-        reason: 'invalidQuery',
-        location: 'query',
-        message: 'Syntax error at line 1',
-      },
-    });
-
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Error Details')).toBeInTheDocument();
-    });
-
-    expect(screen.getByText('invalidQuery')).toBeInTheDocument();
-    expect(screen.getByText('Syntax error at line 1')).toBeInTheDocument();
-  });
-
-  it('should display DML affected rows for DML queries', async () => {
-    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
-      ...mockJobDetails,
-      statementType: 'UPDATE',
-      outputRows: undefined,
-      numDmlAffectedRows: 500,
-    });
-
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Rows Affected')).toBeInTheDocument();
-    });
-
-    expect(screen.getByText('500')).toBeInTheDocument();
-  });
-
-  it('should not display referenced tables section when empty', async () => {
-    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
-      ...mockJobDetails,
-      referencedTables: undefined,
-    });
-
-    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Job Details')).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText('Referenced Tables')).not.toBeInTheDocument();
-  });
-});
-````
-
-## File: tests/unit/renderer/components/SchemaSearchModal.test.tsx
-````typescript
-import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { SchemaSearchModal } from '../../../../src/renderer/components/SchemaSearchModal/SchemaSearchModal';
-
-// Get the mocked electronAPI from the global window
-const mockElectronAPI = (window as any).electronAPI;
-
-// Mock data
-const mockConnectionData = {
-  projectId: 'test-project',
-  keyFilePath: '/path/to/key.json',
-  keyFileJson: '{}',
-  location: 'US',
-};
-
-const mockSearchResultsData = [
-  {
-    type: 'table' as const,
-    datasetId: 'test_dataset',
-    tableId: 'users',
-    matchScore: 500,
-  },
-  {
-    type: 'column' as const,
-    datasetId: 'test_dataset',
-    tableId: 'users',
-    columnName: 'user_id',
-    columnType: 'INT64',
-    columnPath: 'user_id',
-    matchScore: 300,
-  },
-  {
-    type: 'column' as const,
-    datasetId: 'test_dataset',
-    tableId: 'orders',
-    columnName: 'user_name',
-    columnType: 'STRING',
-    columnPath: 'user_name',
-    matchScore: 200,
-  },
-];
-
-// Mutable state for mocks - modified per test
-let currentSearchResults: typeof mockSearchResultsData = [];
-let currentLoadingState = { isLoading: false, loaded: 0, total: 0 };
-let currentConnectionData: typeof mockConnectionData | null = mockConnectionData;
-
-// Store mock functions
-const mockCreateTab = jest.fn().mockReturnValue('new-tab-id');
-const mockSetTabQuery = jest.fn();
-const mockUpdateTab = jest.fn();
-
-// Mock the stores with factory functions
-jest.mock('../../../../src/renderer/stores/schema-cache-store', () => ({
-  useSchemaCacheStore: () => ({
-    search: () => currentSearchResults,
-    setSchema: jest.fn(),
-    hasSchema: jest.fn().mockReturnValue(true),
-    get isLoading() { return currentLoadingState.isLoading; },
-    get loadingProgress() { return { loaded: currentLoadingState.loaded, total: currentLoadingState.total }; },
-    setIsLoading: jest.fn(),
-    setLoadingProgress: jest.fn(),
-  }),
-}));
-
-jest.mock('../../../../src/renderer/stores/connection-store', () => ({
-  useConnectionStore: (selector?: (state: any) => any) => {
-    const state = { connection: currentConnectionData };
-    return selector ? selector(state) : state;
-  },
-}));
-
-jest.mock('../../../../src/renderer/stores/bigquery-metadata-store', () => ({
-  useBigQueryMetadataStore: () => ({
-    datasets: [],
-  }),
-}));
-
-jest.mock('../../../../src/renderer/stores/tabs-store', () => ({
-  useTabsStore: () => ({
-    createTab: mockCreateTab,
-    setTabQuery: mockSetTabQuery,
-    updateTab: mockUpdateTab,
-  }),
-}));
-
-describe('SchemaSearchModal', () => {
-  const mockOnClose = jest.fn();
-  const mockOnShowSchema = jest.fn();
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    currentSearchResults = [];
-    currentLoadingState = { isLoading: false, loaded: 0, total: 0 };
-    currentConnectionData = mockConnectionData;
-
-    // Setup electronAPI mock
-    mockElectronAPI.bigquery.listTables = jest.fn().mockResolvedValue([]);
-    mockElectronAPI.bigquery.getTableSchema = jest.fn().mockResolvedValue({ fields: [] });
-  });
-
-  it('should render search input and focus it on mount', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    expect(input).toBeInTheDocument();
-    expect(input).toHaveFocus();
-  });
-
-  it('should show empty state when no query is entered', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    expect(screen.getByText('Type to search across all tables and columns')).toBeInTheDocument();
-  });
-
-  it('should show no results message when search returns empty', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'nonexistent' } });
-
-    expect(screen.getByText('No results found for "nonexistent"')).toBeInTheDocument();
-  });
-
-  it('should display search results', () => {
-    currentSearchResults = mockSearchResultsData;
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user' } });
-
-    // Verify results are rendered with badges
-    expect(screen.getByText('Table')).toBeInTheDocument();
-    expect(screen.getAllByText('Column').length).toBe(2);
-  });
-
-  it('should display table and column badges', () => {
-    currentSearchResults = mockSearchResultsData;
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user' } });
-
-    expect(screen.getByText('Table')).toBeInTheDocument();
-    expect(screen.getAllByText('Column').length).toBe(2);
-  });
-
-  it('should call onClose when escape key is pressed', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    fireEvent.keyDown(window, { key: 'Escape' });
-
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should call onClose when clicking overlay', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const overlay = document.querySelector('.schema-search-modal-overlay');
-    fireEvent.click(overlay!);
-
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should not call onClose when clicking modal content', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const modal = document.querySelector('.schema-search-modal');
-    fireEvent.click(modal!);
-
-    expect(mockOnClose).not.toHaveBeenCalled();
-  });
-
-  it('should navigate results with arrow keys', () => {
-    currentSearchResults = mockSearchResultsData;
-
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user' } });
-
-    // First item should be selected by default
-    const getItems = () => container.querySelectorAll('.schema-search-result-item');
-    const getSelectedIndex = () => {
-      const items = getItems();
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].classList.contains('selected')) return i;
-      }
-      return -1;
-    };
-    
-    expect(getItems().length).toBe(3);
-    expect(getSelectedIndex()).toBe(0);
-  });
-
-  it('should select item on mouse enter', () => {
-    currentSearchResults = mockSearchResultsData;
-
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user' } });
-
-    const getItems = () => container.querySelectorAll('.schema-search-result-item');
-    
-    // First item should be selected initially
-    expect(getItems()[0]).toHaveClass('selected');
-  });
-
-  it('should call onShowSchema when selecting a table result', () => {
-    currentSearchResults = [mockSearchResultsData[0]]; // Only table result
-
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'users' } });
-
-    // Press Enter to select
-    fireEvent.keyDown(input, { key: 'Enter' });
-
-    expect(mockOnShowSchema).toHaveBeenCalledWith('test-project', 'test_dataset', 'users');
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should create a new tab with column query when selecting a column result', () => {
-    currentSearchResults = [mockSearchResultsData[1]]; // Column result
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user_id' } });
-
-    // Click to select
-    const item = document.querySelector('.schema-search-result-item');
-    fireEvent.click(item!);
-
-    expect(mockCreateTab).toHaveBeenCalled();
-    expect(mockSetTabQuery).toHaveBeenCalledWith(
-      'new-tab-id',
-      expect.stringContaining('SELECT user_id')
-    );
-    expect(mockUpdateTab).toHaveBeenCalledWith('new-tab-id', {
-      title: 'users.user_id',
-    });
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should show loading state when fetching schemas', () => {
-    currentLoadingState = { isLoading: true, loaded: 5, total: 10 };
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    expect(screen.getByText('Loading schemas (5/10)')).toBeInTheDocument();
-  });
-
-  it('should display keyboard shortcuts in footer', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    expect(screen.getByText('↑↓ Navigate')).toBeInTheDocument();
-    expect(screen.getByText('↵ Select')).toBeInTheDocument();
-    expect(screen.getByText('Esc Close')).toBeInTheDocument();
-  });
-
-  it('should display column type for column results', () => {
-    currentSearchResults = [mockSearchResultsData[1]];
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user_id' } });
-
-    expect(screen.getByText('INT64')).toBeInTheDocument();
-  });
-
-  it('should display dataset.table path for results', () => {
-    currentSearchResults = [mockSearchResultsData[0]];
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'users' } });
-
-    expect(screen.getByText('test_dataset.users')).toBeInTheDocument();
-  });
-
-  it('should navigate with Tab key', () => {
-    currentSearchResults = mockSearchResultsData;
-
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user' } });
-    
-    const getItems = () => container.querySelectorAll('.schema-search-result-item');
-    
-    // Should have 3 results
-    expect(getItems().length).toBe(3);
-    // First item should be selected initially
-    expect(getItems()[0]).toHaveClass('selected');
-  });
-
-  it('should not go beyond first or last item with arrow keys', () => {
-    currentSearchResults = mockSearchResultsData;
-
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user' } });
-    
-    const getItems = () => container.querySelectorAll('.schema-search-result-item');
-    
-    // Should have 3 results
-    expect(getItems().length).toBe(3);
-    // First item should be selected initially
-    expect(getItems()[0]).toHaveClass('selected');
-  });
-
-  it('should not perform any action when no connection', () => {
-    currentConnectionData = null;
-    currentSearchResults = [mockSearchResultsData[0]];
-
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'users' } });
-
-    fireEvent.keyDown(input, { key: 'Enter' });
-
-    // Should not call onShowSchema when there's no connection
-    expect(mockOnShowSchema).not.toHaveBeenCalled();
-  });
-
-  it('should show context menu on right-click and view schema option', () => {
-    currentSearchResults = [mockSearchResultsData[1]]; // Column result
-
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user_id' } });
-
-    // Right-click on the result item
-    const item = document.querySelector('.schema-search-result-item');
-    fireEvent.contextMenu(item!);
-
-    // Context menu should appear with "View Table Schema" option
-    expect(screen.getByText('View Table Schema')).toBeInTheDocument();
-  });
-
-  it('should call onShowSchema when clicking View Table Schema in context menu', () => {
-    currentSearchResults = [mockSearchResultsData[1]]; // Column result
-
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'user_id' } });
-
-    // Right-click on the result item
-    const item = document.querySelector('.schema-search-result-item');
-    fireEvent.contextMenu(item!);
-
-    // Click on "View Table Schema"
-    const viewSchemaButton = screen.getByText('View Table Schema');
-    fireEvent.click(viewSchemaButton);
-
-    // Should call onShowSchema with the table's info
-    expect(mockOnShowSchema).toHaveBeenCalledWith('test-project', 'test_dataset', 'users');
-    expect(mockOnClose).toHaveBeenCalled();
-  });
-
-  it('should close context menu when clicking overlay', () => {
-    currentSearchResults = [mockSearchResultsData[0]];
-
-    render(<SchemaSearchModal onClose={mockOnClose} />);
-
-    const input = screen.getByPlaceholderText('Search tables and columns...');
-    fireEvent.change(input, { target: { value: 'users' } });
-
-    // Right-click to open context menu
-    const item = document.querySelector('.schema-search-result-item');
-    fireEvent.contextMenu(item!);
-
-    expect(screen.getByText('View Table Schema')).toBeInTheDocument();
-
-    // Click the context overlay to close
-    const contextOverlay = document.querySelector('.schema-search-context-overlay');
-    fireEvent.click(contextOverlay!);
-
-    // Context menu should be closed
-    expect(screen.queryByText('View Table Schema')).not.toBeInTheDocument();
   });
 });
 ````
@@ -23192,6 +25757,1198 @@ module.exports = (env, argv) => {
 };
 ````
 
+## File: src/main/ipc/llm.ts
+````typescript
+/**
+ * IPC handlers for LLM operations
+ */
+
+import { ipcMain, BrowserWindow } from 'electron';
+import { llmService } from '../services/llm';
+import {
+  getLLMSettings,
+  saveLLMSettings,
+  saveProviderConfig,
+  getProviderConfig,
+  deleteProviderConfig,
+  setActiveProvider,
+  getActiveProvider,
+  saveSystemPrompt,
+  getSystemPrompt,
+  hasApiKey,
+  closeLLMDatabase,
+} from '../storage/llm-store';
+import {
+  createConversation,
+  getConversation,
+  listConversations,
+  updateConversation,
+  addMessageToConversation,
+  updateLastMessage,
+  deleteConversation,
+  clearAllConversations,
+  searchConversations,
+  getOrCreateTabConversation,
+  closeChatHistoryDatabase,
+} from '../storage/chat-history-sqlite';
+import type {
+  LLMProvider,
+  LLMConfig,
+  LLMSettings,
+  ChatMessage,
+  ChatConversation,
+  SchemaContext,
+  ChatResponse,
+  LLMErrorCode,
+  DEFAULT_SYSTEM_PROMPT,
+} from '../../shared/types/llm';
+import { DEFAULT_SYSTEM_PROMPT as defaultSystemPrompt } from '../../shared/types/llm';
+
+/**
+ * Initialize the LLM service with stored settings
+ */
+function initializeLLMService(): void {
+  const settings = getLLMSettings();
+  
+  // Configure providers from stored settings
+  for (const provider of ['openai', 'azure', 'gemini'] as LLMProvider[]) {
+    const config = getProviderConfig(provider);
+    if (config) {
+      llmService.configureProvider(config);
+    }
+  }
+  
+  // Set active provider
+  if (settings.activeProvider) {
+    llmService.setActiveProvider(settings.activeProvider);
+  }
+  
+  // Set system prompt
+  const systemPrompt = getSystemPrompt() || defaultSystemPrompt;
+  llmService.setSystemPrompt(systemPrompt);
+}
+
+export function registerLLMHandlers(): void {
+  // Initialize service on registration
+  initializeLLMService();
+
+  // === Settings Management ===
+  
+  // Get LLM settings (without API keys)
+  ipcMain.handle('llm:getSettings', async (): Promise<LLMSettings> => {
+    return getLLMSettings();
+  });
+
+  // Save LLM settings
+  ipcMain.handle('llm:saveSettings', async (_event, settings: LLMSettings): Promise<void> => {
+    saveLLMSettings(settings);
+  });
+
+  // Configure a provider (with API key)
+  ipcMain.handle('llm:configureProvider', async (_event, config: LLMConfig): Promise<void> => {
+    saveProviderConfig(config);
+    llmService.configureProvider(config);
+  });
+
+  // Get provider config (without API key for security)
+  ipcMain.handle('llm:getProviderConfig', async (_event, provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null> => {
+    const config = getProviderConfig(provider);
+    if (!config) return null;
+    
+    // Remove API key before sending to renderer
+    const { apiKey, ...safeConfig } = config as any;
+    return safeConfig;
+  });
+
+  // Check if provider has API key
+  ipcMain.handle('llm:hasApiKey', async (_event, provider: LLMProvider): Promise<boolean> => {
+    return hasApiKey(provider);
+  });
+
+  // Delete provider config
+  ipcMain.handle('llm:deleteProviderConfig', async (_event, provider: LLMProvider): Promise<void> => {
+    deleteProviderConfig(provider);
+    // Reconfigure service
+    if (getActiveProvider() === provider) {
+      setActiveProvider(null);
+      llmService.setActiveProvider(null);
+    }
+  });
+
+  // Set active provider
+  ipcMain.handle('llm:setActiveProvider', async (_event, provider: LLMProvider | null): Promise<void> => {
+    setActiveProvider(provider);
+    llmService.setActiveProvider(provider);
+    
+    // Reload provider config if needed
+    if (provider) {
+      const config = getProviderConfig(provider);
+      if (config) {
+        llmService.configureProvider(config);
+      }
+    }
+  });
+
+  // Get active provider
+  ipcMain.handle('llm:getActiveProvider', async (): Promise<LLMProvider | null> => {
+    return getActiveProvider();
+  });
+
+  // Save system prompt
+  ipcMain.handle('llm:saveSystemPrompt', async (_event, prompt: string): Promise<void> => {
+    saveSystemPrompt(prompt);
+    llmService.setSystemPrompt(prompt);
+  });
+
+  // Get system prompt
+  ipcMain.handle('llm:getSystemPrompt', async (): Promise<string> => {
+    return getSystemPrompt() || defaultSystemPrompt;
+  });
+
+  // Test provider connection
+  ipcMain.handle('llm:testConnection', async (_event, provider?: LLMProvider): Promise<{ success: boolean; error?: string }> => {
+    try {
+      let result: boolean;
+      if (provider) {
+        result = await llmService.testProviderConnection(provider);
+      } else {
+        result = await llmService.testConnection();
+      }
+      
+      if (!result) {
+        return { 
+          success: false, 
+          error: 'Connection test failed. Check the console for details (View > Toggle Developer Tools).' 
+        };
+      }
+      return { success: true };
+    } catch (error: any) {
+      console.error('LLM connection test error:', error);
+      return { 
+        success: false, 
+        error: error.message || 'Unknown error during connection test' 
+      };
+    }
+  });
+
+  // Check if LLM is configured
+  ipcMain.handle('llm:isConfigured', async (): Promise<boolean> => {
+    return llmService.isConfigured();
+  });
+
+  // === Chat Operations ===
+
+  // Send chat message (non-streaming)
+  ipcMain.handle(
+    'llm:chat',
+    async (
+      _event,
+      messages: ChatMessage[],
+      schemaContext?: SchemaContext
+    ): Promise<ChatResponse> => {
+      if (!llmService.isConfigured()) {
+        throw {
+          code: 'PROVIDER_NOT_CONFIGURED' as LLMErrorCode,
+          message: 'No LLM provider is configured. Please configure a provider in settings.',
+        };
+      }
+
+      try {
+        return await llmService.chat(messages, schemaContext);
+      } catch (error: any) {
+        throw {
+          code: 'UNKNOWN_ERROR' as LLMErrorCode,
+          message: error.message || 'Failed to get chat response',
+          details: error,
+        };
+      }
+    }
+  );
+
+  // Send chat message (streaming) - sends chunks via IPC events
+  ipcMain.handle(
+    'llm:chatStream',
+    async (
+      event,
+      conversationId: string,
+      messages: ChatMessage[],
+      schemaContext?: SchemaContext
+    ): Promise<{ messageId: string }> => {
+      if (!llmService.isConfigured()) {
+        throw {
+          code: 'PROVIDER_NOT_CONFIGURED' as LLMErrorCode,
+          message: 'No LLM provider is configured. Please configure a provider in settings.',
+        };
+      }
+
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window) {
+        throw new Error('Could not find window');
+      }
+
+      let messageId = '';
+      let fullContent = '';
+
+      try {
+        const stream = llmService.chatStream(messages, schemaContext);
+        
+        for await (const chunk of stream) {
+          messageId = chunk.messageId;
+          fullContent += chunk.content;
+          
+          // Send chunk to renderer
+          window.webContents.send('llm:streamChunk', {
+            conversationId,
+            messageId: chunk.messageId,
+            content: chunk.content,
+            isComplete: chunk.isComplete,
+          });
+        }
+
+        // Check if the response contains SQL
+        const sqlMatch = fullContent.match(/```sql\n([\s\S]*?)```/);
+        const sqlQuery = sqlMatch ? sqlMatch[1].trim() : undefined;
+
+        // Send final message info
+        window.webContents.send('llm:streamComplete', {
+          conversationId,
+          messageId,
+          fullContent,
+          containsQuery: !!sqlQuery,
+          sqlQuery,
+        });
+
+        return { messageId };
+      } catch (error: any) {
+        window.webContents.send('llm:streamError', {
+          conversationId,
+          error: error.message || 'Streaming failed',
+        });
+        
+        throw {
+          code: 'UNKNOWN_ERROR' as LLMErrorCode,
+          message: error.message || 'Failed to stream chat response',
+          details: error,
+        };
+      }
+    }
+  );
+
+  // === Conversation Management ===
+
+  // Create conversation
+  ipcMain.handle(
+    'llm:createConversation',
+    async (_event, title?: string, tabId?: string): Promise<ChatConversation> => {
+      return createConversation(title, tabId);
+    }
+  );
+
+  // Get conversation
+  ipcMain.handle(
+    'llm:getConversation',
+    async (_event, id: string): Promise<ChatConversation | null> => {
+      return getConversation(id);
+    }
+  );
+
+  // List conversations
+  ipcMain.handle(
+    'llm:listConversations',
+    async (_event, limit?: number, offset?: number): Promise<ChatConversation[]> => {
+      return listConversations(limit, offset);
+    }
+  );
+
+  // Update conversation
+  ipcMain.handle(
+    'llm:updateConversation',
+    async (
+      _event,
+      id: string,
+      updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>
+    ): Promise<ChatConversation | null> => {
+      return updateConversation(id, updates);
+    }
+  );
+
+  // Add message to conversation
+  ipcMain.handle(
+    'llm:addMessage',
+    async (_event, conversationId: string, message: ChatMessage): Promise<ChatConversation | null> => {
+      return addMessageToConversation(conversationId, message);
+    }
+  );
+
+  // Delete conversation
+  ipcMain.handle('llm:deleteConversation', async (_event, id: string): Promise<void> => {
+    deleteConversation(id);
+  });
+
+  // Clear all conversations
+  ipcMain.handle('llm:clearConversations', async (): Promise<void> => {
+    clearAllConversations();
+  });
+
+  // Search conversations
+  ipcMain.handle(
+    'llm:searchConversations',
+    async (_event, query: string, limit?: number): Promise<ChatConversation[]> => {
+      return searchConversations(query, limit);
+    }
+  );
+
+  // Get or create tab conversation
+  ipcMain.handle(
+    'llm:getTabConversation',
+    async (_event, tabId: string): Promise<ChatConversation> => {
+      return getOrCreateTabConversation(tabId);
+    }
+  );
+}
+
+/**
+ * Close LLM databases
+ */
+export function closeLLMDatabases(): void {
+  closeLLMDatabase();
+  closeChatHistoryDatabase();
+}
+````
+
+## File: src/main/ipc/ui-settings.ts
+````typescript
+import { ipcMain } from 'electron';
+import {
+  getLeftSidebarWidth,
+  setLeftSidebarWidth,
+  getRightSidebarWidth,
+  setRightSidebarWidth,
+  getTheme,
+  setTheme,
+  getThemeSettings,
+  setActiveThemeId,
+  addCustomTheme,
+  removeCustomTheme,
+  type Theme,
+} from '../storage/ui-settings-store';
+import type { ThemeDefinition } from '../../shared/types/theme';
+
+export function registerUISettingsHandlers(): void {
+  ipcMain.handle('ui-settings:getLeftSidebarWidth', async () => {
+    return getLeftSidebarWidth();
+  });
+
+  ipcMain.handle('ui-settings:setLeftSidebarWidth', async (_event, width: number) => {
+    setLeftSidebarWidth(width);
+  });
+
+  ipcMain.handle('ui-settings:getRightSidebarWidth', async () => {
+    return getRightSidebarWidth();
+  });
+
+  ipcMain.handle('ui-settings:setRightSidebarWidth', async (_event, width: number) => {
+    setRightSidebarWidth(width);
+  });
+
+  ipcMain.handle('ui-settings:getTheme', async () => {
+    return getTheme();
+  });
+
+  ipcMain.handle('ui-settings:setTheme', async (_event, theme: Theme) => {
+    setTheme(theme);
+  });
+
+  // Theme settings handlers
+  ipcMain.handle('ui-settings:getThemeSettings', async () => {
+    return getThemeSettings();
+  });
+
+  ipcMain.handle('ui-settings:setActiveTheme', async (_event, themeId: string) => {
+    setActiveThemeId(themeId);
+  });
+
+  ipcMain.handle('ui-settings:addCustomTheme', async (_event, theme: ThemeDefinition) => {
+    addCustomTheme(theme);
+  });
+
+  ipcMain.handle('ui-settings:removeCustomTheme', async (_event, themeId: string) => {
+    removeCustomTheme(themeId);
+  });
+}
+````
+
+## File: src/main/services/llm/azure-provider.ts
+````typescript
+/**
+ * Azure OpenAI LLM Provider implementation
+ */
+
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatStreamChunk,
+  SchemaContext,
+  AzureOpenAIConfig,
+  LLMConfig,
+} from '../../../shared/types/llm';
+import {
+  ILLMProvider,
+  buildSystemMessage,
+  generateMessageId,
+} from './base-provider';
+
+/**
+ * Azure OpenAI provider implementation using native fetch
+ */
+export class AzureOpenAIProvider implements ILLMProvider {
+  readonly name = 'azure';
+  private config: AzureOpenAIConfig | null = null;
+
+  constructor(config?: AzureOpenAIConfig) {
+    if (config) {
+      this.config = config;
+    }
+  }
+
+  isConfigured(): boolean {
+    return !!(this.config?.apiKey && this.config?.endpoint && this.config?.deploymentName);
+  }
+
+  updateConfig(config: Partial<LLMConfig>): void {
+    if (config.provider === 'azure') {
+      this.config = { ...this.config, ...config } as AzureOpenAIConfig;
+    }
+  }
+
+  getModel(): string {
+    return this.config?.model || 'gpt-4o';
+  }
+
+  setConfig(config: AzureOpenAIConfig): void {
+    this.config = config;
+  }
+
+  async testConnection(): Promise<boolean> {
+    if (!this.isConfigured()) {
+      console.error('Azure OpenAI: Not configured - missing apiKey, endpoint, or deploymentName');
+      return false;
+    }
+
+    try {
+      const url = this.getUrl();
+      console.log('Azure OpenAI: Testing connection to:', url);
+      
+      // Try a simple completions request to test the connection
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'Hello' }],
+          max_completion_tokens: 5,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Azure OpenAI: Test connection failed:', response.status, errorText);
+      }
+      
+      return response.ok;
+    } catch (error) {
+      console.error('Azure OpenAI: Test connection error:', error);
+      return false;
+    }
+  }
+
+  private getApiVersion(): string {
+    return this.config?.apiVersion || '2024-12-01-preview';
+  }
+
+  private getUrl(stream: boolean = false): string {
+    const baseUrl = this.config!.endpoint.replace(/\/$/, '');
+    const deployment = this.config!.deploymentName;
+    const apiVersion = this.getApiVersion();
+    
+    return `${baseUrl}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+  }
+
+  private getHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      'api-key': this.config!.apiKey,
+    };
+  }
+
+  private formatMessages(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): Array<{ role: string; content: string }> {
+    const formattedMessages: Array<{ role: string; content: string }> = [];
+
+    // Add system message with schema context
+    const systemContent = buildSystemMessage(
+      systemPrompt || '',
+      schemaContext
+    );
+    
+    if (systemContent) {
+      formattedMessages.push({
+        role: 'system',
+        content: systemContent,
+      });
+    }
+
+    // Add conversation messages
+    for (const msg of messages) {
+      if (msg.role !== 'system') {
+        formattedMessages.push({
+          role: msg.role,
+          content: msg.content,
+        });
+      }
+    }
+
+    return formattedMessages;
+  }
+
+  async chat(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): Promise<ChatResponse> {
+    if (!this.isConfigured()) {
+      throw new Error('Azure OpenAI provider is not configured');
+    }
+
+    const formattedMessages = this.formatMessages(messages, schemaContext, systemPrompt);
+
+    const response = await fetch(this.getUrl(), {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        messages: formattedMessages,
+        temperature: this.config!.temperature ?? 0.7,
+        max_completion_tokens: this.config!.maxTokens ?? 4096,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(error.error?.message || `Azure OpenAI API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const assistantMessage = data.choices[0]?.message;
+
+    if (!assistantMessage) {
+      throw new Error('No response from Azure OpenAI');
+    }
+
+    const messageId = generateMessageId();
+    const content = assistantMessage.content || '';
+
+    // Check if the response contains SQL
+    const sqlMatch = content.match(/```sql\n([\s\S]*?)```/);
+    const sqlQuery = sqlMatch ? sqlMatch[1].trim() : undefined;
+
+    return {
+      message: {
+        id: messageId,
+        role: 'assistant',
+        content,
+        timestamp: Date.now(),
+        containsQuery: !!sqlQuery,
+        sqlQuery,
+      },
+      usage: data.usage ? {
+        promptTokens: data.usage.prompt_tokens,
+        completionTokens: data.usage.completion_tokens,
+        totalTokens: data.usage.total_tokens,
+      } : undefined,
+    };
+  }
+
+  async *chatStream(
+    messages: ChatMessage[],
+    schemaContext?: SchemaContext,
+    systemPrompt?: string
+  ): AsyncGenerator<ChatStreamChunk, void, unknown> {
+    if (!this.isConfigured()) {
+      throw new Error('Azure OpenAI provider is not configured');
+    }
+
+    const formattedMessages = this.formatMessages(messages, schemaContext, systemPrompt);
+    const messageId = generateMessageId();
+
+    const response = await fetch(this.getUrl(true), {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        messages: formattedMessages,
+        temperature: this.config!.temperature ?? 0.7,
+        max_completion_tokens: this.config!.maxTokens ?? 4096,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
+      throw new Error(error.error?.message || `Azure OpenAI API error: ${response.status}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response reader');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          yield { content: '', isComplete: true, messageId };
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          
+          if (trimmed.startsWith('data: ')) {
+            try {
+              const json = JSON.parse(trimmed.slice(6));
+              const content = json.choices?.[0]?.delta?.content || '';
+              if (content) {
+                yield { content, isComplete: false, messageId };
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
+````
+
+## File: src/main/storage/ui-settings-store.ts
+````typescript
+import Store from 'electron-store';
+import type { ThemeDefinition, StoredThemeSettings } from '../../shared/types/theme';
+
+interface WindowBounds {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+}
+
+export type Theme = 'dark' | 'light';
+
+interface UISettingsData {
+  leftSidebarWidth: number;
+  rightSidebarWidth: number;
+  windowBounds?: WindowBounds;
+  theme: Theme;
+  themeSettings: StoredThemeSettings;
+}
+
+const store = new Store<UISettingsData>({
+  name: 'ui-settings',
+  defaults: {
+    leftSidebarWidth: 250,
+    rightSidebarWidth: 300,
+    windowBounds: {
+      width: 1200,
+      height: 800,
+    },
+    theme: 'dark',
+    themeSettings: {
+      activeThemeId: 'default-dark',
+      customThemes: [],
+    },
+  },
+}) as Store<UISettingsData> & {
+  get(key: 'leftSidebarWidth'): number;
+  set(key: 'leftSidebarWidth', value: number): void;
+  get(key: 'rightSidebarWidth'): number;
+  set(key: 'rightSidebarWidth', value: number): void;
+  get(key: 'windowBounds'): WindowBounds | undefined;
+  set(key: 'windowBounds', value: WindowBounds): void;
+  get(key: 'theme'): Theme;
+  set(key: 'theme', value: Theme): void;
+  get(key: 'themeSettings'): StoredThemeSettings;
+  set(key: 'themeSettings', value: StoredThemeSettings): void;
+};
+
+export function getLeftSidebarWidth(): number {
+  return store.get('leftSidebarWidth') || 250;
+}
+
+export function setLeftSidebarWidth(width: number): void {
+  store.set('leftSidebarWidth', width);
+}
+
+export function getRightSidebarWidth(): number {
+  return store.get('rightSidebarWidth') || 300;
+}
+
+export function setRightSidebarWidth(width: number): void {
+  store.set('rightSidebarWidth', width);
+}
+
+export function getWindowBounds(): WindowBounds | undefined {
+  return store.get('windowBounds');
+}
+
+export function setWindowBounds(bounds: WindowBounds): void {
+  store.set('windowBounds', bounds);
+}
+
+export function getTheme(): Theme {
+  return store.get('theme') || 'dark';
+}
+
+export function setTheme(theme: Theme): void {
+  store.set('theme', theme);
+}
+
+// Theme settings functions
+export function getThemeSettings(): StoredThemeSettings {
+  return store.get('themeSettings') || { activeThemeId: 'default-dark', customThemes: [] };
+}
+
+export function setThemeSettings(settings: StoredThemeSettings): void {
+  store.set('themeSettings', settings);
+}
+
+export function addCustomTheme(theme: ThemeDefinition): void {
+  const settings = getThemeSettings();
+  // Remove existing theme with same ID if exists
+  const filtered = settings.customThemes.filter(t => t.id !== theme.id);
+  settings.customThemes = [...filtered, theme];
+  setThemeSettings(settings);
+}
+
+export function removeCustomTheme(themeId: string): void {
+  const settings = getThemeSettings();
+  settings.customThemes = settings.customThemes.filter(t => t.id !== themeId);
+  // If active theme was deleted, revert to default
+  if (settings.activeThemeId === themeId) {
+    settings.activeThemeId = 'default-dark';
+  }
+  setThemeSettings(settings);
+}
+
+export function setActiveThemeId(themeId: string): void {
+  const settings = getThemeSettings();
+  settings.activeThemeId = themeId;
+  setThemeSettings(settings);
+}
+````
+
+## File: src/renderer/components/AIChatSidebar/AIChatSidebar.tsx
+````typescript
+/**
+ * AI Chat Sidebar Component
+ * Provides a chat interface for interacting with LLMs to help write BigQuery queries
+ */
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useLLMStore, initializeLLMStore } from '../../stores/llm-store';
+import { useSchemaCacheStore } from '../../stores/schema-cache-store';
+import { useConnectionStore } from '../../stores/connection-store';
+import { useTabsStore } from '../../stores/tabs-store';
+import type { ChatMessage, SchemaContext } from '../../../shared/types/llm';
+import './AIChatSidebar.css';
+
+interface AIChatSidebarProps {
+  onClose: () => void;
+  onOpenSettings: () => void;
+  onInsertQuery?: (query: string) => void;
+}
+
+export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
+  onClose,
+  onOpenSettings,
+  onInsertQuery,
+}) => {
+  const [inputValue, setInputValue] = useState('');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  
+  const {
+    currentConversation,
+    conversations,
+    isConfigured,
+    isSending,
+    error,
+    streamingContent,
+    sendMessage,
+    createConversation,
+    selectConversation,
+    deleteConversation,
+    clearCurrentConversation,
+    loadConversations,
+    setError,
+  } = useLLMStore();
+  
+  const connection = useConnectionStore((state) => state.connection);
+  const schemas = useSchemaCacheStore((state) => state.schemas);
+  const setSchema = useSchemaCacheStore((state) => state.setSchema);
+  const { activeTabId } = useTabsStore();
+  const [schemaLoadAttempted, setSchemaLoadAttempted] = useState(false);
+
+  // Initialize store on mount
+  useEffect(() => {
+    const cleanup = initializeLLMStore();
+    return cleanup;
+  }, []);
+
+  // Load cached schemas from SQLite when sidebar opens (if not already in memory)
+  useEffect(() => {
+    const loadCachedSchemas = async () => {
+      if (!window.electronAPI?.schemaCache || !connection || schemaLoadAttempted) {
+        return;
+      }
+      
+      if (schemas.size > 0) {
+        // Already have schemas in memory
+        setSchemaLoadAttempted(true);
+        return;
+      }
+
+      try {
+        // Load all cached schemas for this project from SQLite
+        const cachedSchemas = await window.electronAPI.schemaCache.getForProject(connection.projectId);
+        
+        // Populate in-memory store with cached schemas
+        for (const schema of cachedSchemas) {
+          setSchema(schema.datasetId, schema.tableId, schema.fields);
+        }
+        
+        console.log(`AI Chat: Loaded ${cachedSchemas.length} schemas from cache`);
+      } catch (err) {
+        console.warn('AI Chat: Failed to load cached schemas:', err);
+      }
+      
+      setSchemaLoadAttempted(true);
+    };
+
+    loadCachedSchemas();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection, schemaLoadAttempted]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [currentConversation?.messages, streamingContent]);
+
+  // Focus input on mount
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Refocus input when sending completes (isSending goes from true to false)
+  const prevIsSendingRef = useRef(isSending);
+  useEffect(() => {
+    if (prevIsSendingRef.current && !isSending) {
+      // isSending just became false, refocus the input
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
+    }
+    prevIsSendingRef.current = isSending;
+  }, [isSending]);
+
+  // Build schema context from cached schemas
+  const buildSchemaContext = useCallback((): SchemaContext | undefined => {
+    if (!connection?.projectId || schemas.size === 0) {
+      return undefined;
+    }
+
+    const datasetMap = new Map<string, Array<{
+      tableId: string;
+      columns: Array<{ name: string; type: string; description?: string }>;
+    }>>();
+
+    for (const [, schema] of schemas) {
+      const existing = datasetMap.get(schema.datasetId) || [];
+      existing.push({
+        tableId: schema.tableId,
+        columns: schema.fields.map((f) => ({
+          name: f.name,
+          type: f.type,
+        })),
+      });
+      datasetMap.set(schema.datasetId, existing);
+    }
+
+    const datasets = Array.from(datasetMap.entries()).map(([datasetId, tables]) => ({
+      datasetId,
+      tables,
+    }));
+
+    // Limit context to avoid overwhelming the LLM
+    const MAX_DATASETS = 50;
+    const MAX_TABLES_PER_DATASET = 100;
+    const MAX_COLUMNS_PER_TABLE = 100;
+    
+    const limitedDatasets = datasets.slice(0, MAX_DATASETS);
+    for (const dataset of limitedDatasets) {
+      dataset.tables = dataset.tables.slice(0, MAX_TABLES_PER_DATASET);
+      for (const table of dataset.tables) {
+        table.columns = table.columns.slice(0, MAX_COLUMNS_PER_TABLE);
+      }
+    }
+
+    return {
+      projectId: connection.projectId,
+      datasets: limitedDatasets,
+    };
+  }, [connection?.projectId, schemas]);
+
+  const handleSend = async () => {
+    if (!inputValue.trim() || isSending) return;
+
+    const message = inputValue.trim();
+    setInputValue('');
+    setError(null);
+
+    const schemaContext = buildSchemaContext();
+    await sendMessage(message, schemaContext);
+    
+    // Refocus the input after sending
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleNewChat = async () => {
+    setError(null);
+    await createConversation('New Chat', activeTabId || undefined);
+  };
+
+  const handleInsertQuery = (query: string) => {
+    if (onInsertQuery) {
+      onInsertQuery(query);
+    }
+  };
+
+  const formatTimestamp = (timestamp: number): string => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const renderMessage = (message: ChatMessage, isStreaming = false) => {
+    const content = isStreaming ? streamingContent : message.content;
+    
+    // Parse content for SQL code blocks
+    const parts = content.split(/(```sql\n[\s\S]*?```)/g);
+    
+    return (
+      <div key={message.id} className={`chat-message chat-message-${message.role}`}>
+        <div className="chat-message-header">
+          <span className="chat-message-role">
+            {message.role === 'user' ? 'You' : 'AI Assistant'}
+          </span>
+          <span className="chat-message-time">
+            {formatTimestamp(message.timestamp)}
+          </span>
+        </div>
+        <div className="chat-message-content">
+          {parts.map((part, index) => {
+            if (part.startsWith('```sql\n') && part.endsWith('```')) {
+              const sql = part.slice(7, -3).trim();
+              return (
+                <div key={index} className="chat-code-block">
+                  <div className="chat-code-header">
+                    <span>SQL</span>
+                    <button
+                      className="chat-code-insert-btn"
+                      onClick={() => handleInsertQuery(sql)}
+                      title="Insert into editor"
+                    >
+                      Insert Query
+                    </button>
+                  </div>
+                  <pre><code>{sql}</code></pre>
+                </div>
+              );
+            }
+            return <span key={index}>{part}</span>;
+          })}
+          {isStreaming && <span className="chat-cursor">▋</span>}
+        </div>
+      </div>
+    );
+  };
+
+  const renderConversationsList = () => {
+    if (conversations.length === 0) {
+      return (
+        <div className="chat-history-empty">
+          No previous conversations
+        </div>
+      );
+    }
+
+    return (
+      <div className="chat-history-list">
+        {conversations.slice(0, 10).map((conv) => (
+          <div
+            key={conv.id}
+            className={`chat-history-item ${currentConversation?.id === conv.id ? 'active' : ''}`}
+            onClick={() => selectConversation(conv.id)}
+          >
+            <span className="chat-history-title">{conv.title}</span>
+            <button
+              className="chat-history-delete"
+              onClick={(e) => {
+                e.stopPropagation();
+                deleteConversation(conv.id);
+              }}
+              title="Delete conversation"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="ai-chat-sidebar">
+      <div className="ai-chat-header">
+        <div className="ai-chat-title">
+          <span className="ai-chat-icon">✨</span>
+          <span>AI Assistant</span>
+        </div>
+        <div className="ai-chat-header-actions">
+          <button
+            className="ai-chat-btn"
+            onClick={handleNewChat}
+            title="New conversation"
+          >
+            +
+          </button>
+          <button
+            className="ai-chat-btn"
+            onClick={onOpenSettings}
+            title="Settings"
+          >
+            ⚙
+          </button>
+          <button
+            className="ai-chat-btn ai-chat-close"
+            onClick={onClose}
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
+      {!isConfigured && (
+        <div className="ai-chat-setup-banner">
+          <p>Configure an AI provider to start chatting</p>
+          <button onClick={onOpenSettings}>Configure Settings</button>
+        </div>
+      )}
+
+      <div className="ai-chat-history">
+        <div className="ai-chat-history-header">
+          <span>Recent Chats</span>
+          <button
+            className="ai-chat-btn-text"
+            onClick={loadConversations}
+            title="Refresh"
+          >
+            ↻
+          </button>
+        </div>
+        {renderConversationsList()}
+      </div>
+
+      <div className="ai-chat-messages">
+        {currentConversation?.messages.map((msg) => renderMessage(msg))}
+        {isSending && streamingContent && renderMessage({
+          id: 'streaming',
+          role: 'assistant',
+          content: streamingContent,
+          timestamp: Date.now(),
+        }, true)}
+        {isSending && !streamingContent && (
+          <div className="chat-message chat-message-assistant">
+            <div className="chat-message-content chat-typing">
+              <span>●</span><span>●</span><span>●</span>
+            </div>
+          </div>
+        )}
+        {error && (
+          <div className="chat-error">
+            <span className="chat-error-icon">⚠</span>
+            <span>{error}</span>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="ai-chat-input-container">
+        <textarea
+          ref={inputRef}
+          className="ai-chat-input"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={isConfigured ? "Ask about your data or request a query..." : "Configure an AI provider first..."}
+          disabled={!isConfigured || isSending}
+          rows={3}
+        />
+        <button
+          className="ai-chat-send-btn"
+          onClick={handleSend}
+          disabled={!isConfigured || !inputValue.trim() || isSending}
+          title="Send message"
+        >
+          {isSending ? '...' : '→'}
+        </button>
+      </div>
+
+      <div className="ai-chat-footer">
+        <span className="ai-chat-schema-status">
+          {!schemaLoadAttempted && connection
+            ? 'Loading schemas...'
+            : schemas.size > 0 
+              ? `${schemas.size} tables available for context`
+              : connection 
+                ? 'No cached schemas. Use ⌘P to load schemas.'
+                : 'Connect to BigQuery first'}
+        </span>
+      </div>
+    </div>
+  );
+};
+````
+
 ## File: src/renderer/components/DatasetTree/DatasetTree.css
 ````css
 .dataset-tree {
@@ -23505,6 +27262,534 @@ module.exports = (env, argv) => {
   border-bottom-left-radius: 3px;
   border-bottom-right-radius: 3px;
 }
+````
+
+## File: src/renderer/components/LLMSettingsDialog/LLMSettingsDialog.tsx
+````typescript
+/**
+ * LLM Settings Dialog Component
+ * Allows users to configure LLM providers (OpenAI, Azure, Gemini)
+ */
+
+import React, { useState, useEffect } from 'react';
+import { useLLMStore } from '../../stores/llm-store';
+import type {
+  LLMProvider,
+  LLMConfig,
+  OpenAIConfig,
+  AzureOpenAIConfig,
+  GeminiConfig,
+} from '../../../shared/types/llm';
+import { AVAILABLE_MODELS, DEFAULT_MODELS, DEFAULT_SYSTEM_PROMPT } from '../../../shared/types/llm';
+import './LLMSettingsDialog.css';
+
+interface LLMSettingsDialogProps {
+  onClose: () => void;
+}
+
+type ProviderTab = 'openai' | 'azure' | 'gemini';
+
+export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose }) => {
+  const { activeProvider, loadSettings, setActiveProvider } = useLLMStore();
+  
+  const [selectedTab, setSelectedTab] = useState<ProviderTab>('openai');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [systemPrompt, setSystemPrompt] = useState('');
+  
+  // OpenAI form state
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [openaiModel, setOpenaiModel] = useState(DEFAULT_MODELS.openai);
+  const [openaiOrg, setOpenaiOrg] = useState('');
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
+  const [openaiHasKey, setOpenaiHasKey] = useState(false);
+  
+  // Azure form state
+  const [azureApiKey, setAzureApiKey] = useState('');
+  const [azureEndpoint, setAzureEndpoint] = useState('');
+  const [azureDeployment, setAzureDeployment] = useState('');
+  const [azureModel, setAzureModel] = useState(DEFAULT_MODELS.azure);
+  const [azureApiVersion, setAzureApiVersion] = useState('2024-12-01-preview');
+  const [azureHasKey, setAzureHasKey] = useState(false);
+  
+  // Gemini form state
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [geminiModel, setGeminiModel] = useState(DEFAULT_MODELS.gemini);
+  const [geminiHasKey, setGeminiHasKey] = useState(false);
+
+  // Load existing settings
+  useEffect(() => {
+    const loadExistingSettings = async () => {
+      if (!window.electronAPI?.llm) return;
+      
+      try {
+        // Load system prompt
+        const prompt = await window.electronAPI.llm.getSystemPrompt();
+        setSystemPrompt(prompt || DEFAULT_SYSTEM_PROMPT);
+        
+        // Load OpenAI config
+        const openaiConfig = await window.electronAPI.llm.getProviderConfig('openai');
+        if (openaiConfig) {
+          setOpenaiModel((openaiConfig as Omit<OpenAIConfig, 'apiKey'>).model || DEFAULT_MODELS.openai);
+          setOpenaiOrg((openaiConfig as Omit<OpenAIConfig, 'apiKey'>).organization || '');
+          setOpenaiBaseUrl((openaiConfig as Omit<OpenAIConfig, 'apiKey'>).baseUrl || '');
+        }
+        setOpenaiHasKey(await window.electronAPI.llm.hasApiKey('openai'));
+        
+        // Load Azure config
+        const azureConfig = await window.electronAPI.llm.getProviderConfig('azure');
+        if (azureConfig) {
+          setAzureEndpoint((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).endpoint || '');
+          setAzureDeployment((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).deploymentName || '');
+          setAzureModel((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).model || DEFAULT_MODELS.azure);
+          setAzureApiVersion((azureConfig as Omit<AzureOpenAIConfig, 'apiKey'>).apiVersion || '2024-12-01-preview');
+        }
+        setAzureHasKey(await window.electronAPI.llm.hasApiKey('azure'));
+        
+        // Load Gemini config
+        const geminiConfig = await window.electronAPI.llm.getProviderConfig('gemini');
+        if (geminiConfig) {
+          setGeminiModel((geminiConfig as Omit<GeminiConfig, 'apiKey'>).model || DEFAULT_MODELS.gemini);
+        }
+        setGeminiHasKey(await window.electronAPI.llm.hasApiKey('gemini'));
+        
+        // Set initial tab based on active provider
+        const active = await window.electronAPI.llm.getActiveProvider();
+        if (active) {
+          setSelectedTab(active);
+        }
+      } catch (error) {
+        console.error('Failed to load LLM settings:', error);
+      }
+    };
+    
+    loadExistingSettings();
+  }, []);
+
+  const handleSaveOpenAI = async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    setIsSaving(true);
+    setTestResult(null);
+    
+    try {
+      const config: OpenAIConfig = {
+        provider: 'openai',
+        apiKey: openaiApiKey || '', // Empty string if not changing
+        model: openaiModel,
+        organization: openaiOrg || undefined,
+        baseUrl: openaiBaseUrl || undefined,
+      };
+      
+      // Only save if there's a new API key or we already have one
+      if (openaiApiKey || openaiHasKey) {
+        if (openaiApiKey) {
+          await window.electronAPI.llm.configureProvider(config);
+        }
+        setOpenaiHasKey(true);
+        setOpenaiApiKey(''); // Clear the input after saving
+        setTestResult({ success: true, message: 'OpenAI configuration saved!' });
+      } else {
+        setTestResult({ success: false, message: 'Please enter an API key' });
+      }
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Failed to save configuration' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveAzure = async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    setIsSaving(true);
+    setTestResult(null);
+    
+    try {
+      if (!azureEndpoint || !azureDeployment) {
+        setTestResult({ success: false, message: 'Please fill in endpoint and deployment name' });
+        setIsSaving(false);
+        return;
+      }
+      
+      const config: AzureOpenAIConfig = {
+        provider: 'azure',
+        apiKey: azureApiKey || '',
+        endpoint: azureEndpoint,
+        deploymentName: azureDeployment,
+        model: azureModel,
+        apiVersion: azureApiVersion,
+      };
+      
+      if (azureApiKey || azureHasKey) {
+        if (azureApiKey) {
+          await window.electronAPI.llm.configureProvider(config);
+        }
+        setAzureHasKey(true);
+        setAzureApiKey('');
+        setTestResult({ success: true, message: 'Azure OpenAI configuration saved!' });
+      } else {
+        setTestResult({ success: false, message: 'Please enter an API key' });
+      }
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Failed to save configuration' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveGemini = async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    setIsSaving(true);
+    setTestResult(null);
+    
+    try {
+      const config: GeminiConfig = {
+        provider: 'gemini',
+        apiKey: geminiApiKey || '',
+        model: geminiModel,
+      };
+      
+      if (geminiApiKey || geminiHasKey) {
+        if (geminiApiKey) {
+          await window.electronAPI.llm.configureProvider(config);
+        }
+        setGeminiHasKey(true);
+        setGeminiApiKey('');
+        setTestResult({ success: true, message: 'Gemini configuration saved!' });
+      } else {
+        setTestResult({ success: false, message: 'Please enter an API key' });
+      }
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Failed to save configuration' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    setIsTesting(true);
+    setTestResult(null);
+    
+    try {
+      const result = await window.electronAPI.llm.testConnection(selectedTab);
+      setTestResult({
+        success: result.success,
+        message: result.success 
+          ? 'Connection successful!' 
+          : result.error || 'Connection failed. Please check your configuration.',
+      });
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Connection test failed' });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const handleSetActive = async (provider: LLMProvider) => {
+    if (!window.electronAPI?.llm) return;
+    
+    try {
+      await setActiveProvider(provider);
+      setTestResult({ success: true, message: `${provider.charAt(0).toUpperCase() + provider.slice(1)} is now the active provider` });
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Failed to set active provider' });
+    }
+  };
+
+  const handleSaveSystemPrompt = async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    try {
+      await window.electronAPI.llm.saveSystemPrompt(systemPrompt);
+      setTestResult({ success: true, message: 'System prompt saved!' });
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Failed to save system prompt' });
+    }
+  };
+
+  const handleDeleteProvider = async (provider: LLMProvider) => {
+    if (!window.electronAPI?.llm) return;
+    
+    try {
+      await window.electronAPI.llm.deleteProviderConfig(provider);
+      
+      switch (provider) {
+        case 'openai':
+          setOpenaiHasKey(false);
+          setOpenaiApiKey('');
+          break;
+        case 'azure':
+          setAzureHasKey(false);
+          setAzureApiKey('');
+          break;
+        case 'gemini':
+          setGeminiHasKey(false);
+          setGeminiApiKey('');
+          break;
+      }
+      
+      await loadSettings();
+      setTestResult({ success: true, message: `${provider} configuration deleted` });
+    } catch (error: any) {
+      setTestResult({ success: false, message: error.message || 'Failed to delete configuration' });
+    }
+  };
+
+  const renderProviderTab = () => {
+    switch (selectedTab) {
+      case 'openai':
+        return (
+          <div className="llm-settings-form">
+            <div className="llm-settings-field">
+              <label>API Key {openaiHasKey && <span className="key-configured">✓ Configured</span>}</label>
+              <input
+                type="password"
+                value={openaiApiKey}
+                onChange={(e) => setOpenaiApiKey(e.target.value)}
+                placeholder={openaiHasKey ? '••••••••••••••••' : 'sk-...'}
+              />
+              <span className="field-hint">Get your API key from platform.openai.com</span>
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Model</label>
+              <select value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
+                {AVAILABLE_MODELS.openai.map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Organization ID (optional)</label>
+              <input
+                type="text"
+                value={openaiOrg}
+                onChange={(e) => setOpenaiOrg(e.target.value)}
+                placeholder="org-..."
+              />
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Base URL (optional)</label>
+              <input
+                type="text"
+                value={openaiBaseUrl}
+                onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                placeholder="https://api.openai.com/v1"
+              />
+              <span className="field-hint">Leave empty for default OpenAI API</span>
+            </div>
+            
+            <div className="llm-settings-actions">
+              <button onClick={handleSaveOpenAI} disabled={isSaving}>
+                {isSaving ? 'Saving...' : 'Save Configuration'}
+              </button>
+              <button onClick={handleTestConnection} disabled={isTesting || !openaiHasKey}>
+                {isTesting ? 'Testing...' : 'Test Connection'}
+              </button>
+              {openaiHasKey && activeProvider !== 'openai' && (
+                <button onClick={() => handleSetActive('openai')} className="btn-primary">
+                  Set as Active
+                </button>
+              )}
+              {openaiHasKey && (
+                <button onClick={() => handleDeleteProvider('openai')} className="btn-danger">
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+        );
+        
+      case 'azure':
+        return (
+          <div className="llm-settings-form">
+            <div className="llm-settings-field">
+              <label>API Key {azureHasKey && <span className="key-configured">✓ Configured</span>}</label>
+              <input
+                type="password"
+                value={azureApiKey}
+                onChange={(e) => setAzureApiKey(e.target.value)}
+                placeholder={azureHasKey ? '••••••••••••••••' : 'Enter API key'}
+              />
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Endpoint URL</label>
+              <input
+                type="text"
+                value={azureEndpoint}
+                onChange={(e) => setAzureEndpoint(e.target.value)}
+                placeholder="https://your-resource.openai.azure.com"
+              />
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Deployment Name</label>
+              <input
+                type="text"
+                value={azureDeployment}
+                onChange={(e) => setAzureDeployment(e.target.value)}
+                placeholder="your-deployment-name"
+              />
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Model</label>
+              <select value={azureModel} onChange={(e) => setAzureModel(e.target.value)}>
+                {AVAILABLE_MODELS.azure.map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>API Version</label>
+              <input
+                type="text"
+                value={azureApiVersion}
+                onChange={(e) => setAzureApiVersion(e.target.value)}
+                placeholder="2024-12-01-preview"
+              />
+            </div>
+            
+            <div className="llm-settings-actions">
+              <button onClick={handleSaveAzure} disabled={isSaving}>
+                {isSaving ? 'Saving...' : 'Save Configuration'}
+              </button>
+              <button onClick={handleTestConnection} disabled={isTesting || !azureHasKey}>
+                {isTesting ? 'Testing...' : 'Test Connection'}
+              </button>
+              {azureHasKey && activeProvider !== 'azure' && (
+                <button onClick={() => handleSetActive('azure')} className="btn-primary">
+                  Set as Active
+                </button>
+              )}
+              {azureHasKey && (
+                <button onClick={() => handleDeleteProvider('azure')} className="btn-danger">
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+        );
+        
+      case 'gemini':
+        return (
+          <div className="llm-settings-form">
+            <div className="llm-settings-field">
+              <label>API Key {geminiHasKey && <span className="key-configured">✓ Configured</span>}</label>
+              <input
+                type="password"
+                value={geminiApiKey}
+                onChange={(e) => setGeminiApiKey(e.target.value)}
+                placeholder={geminiHasKey ? '••••••••••••••••' : 'Enter API key'}
+              />
+              <span className="field-hint">Get your API key from ai.google.dev</span>
+            </div>
+            
+            <div className="llm-settings-field">
+              <label>Model</label>
+              <select value={geminiModel} onChange={(e) => setGeminiModel(e.target.value)}>
+                {AVAILABLE_MODELS.gemini.map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="llm-settings-actions">
+              <button onClick={handleSaveGemini} disabled={isSaving}>
+                {isSaving ? 'Saving...' : 'Save Configuration'}
+              </button>
+              <button onClick={handleTestConnection} disabled={isTesting || !geminiHasKey}>
+                {isTesting ? 'Testing...' : 'Test Connection'}
+              </button>
+              {geminiHasKey && activeProvider !== 'gemini' && (
+                <button onClick={() => handleSetActive('gemini')} className="btn-primary">
+                  Set as Active
+                </button>
+              )}
+              {geminiHasKey && (
+                <button onClick={() => handleDeleteProvider('gemini')} className="btn-danger">
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="llm-settings-overlay" onClick={onClose}>
+      <div className="llm-settings-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="llm-settings-header">
+          <h2>AI Provider Settings</h2>
+          <button className="llm-settings-close" onClick={onClose}>×</button>
+        </div>
+        
+        <div className="llm-settings-content">
+          {/* Provider Tabs */}
+          <div className="llm-settings-tabs">
+            <button
+              className={`llm-settings-tab ${selectedTab === 'openai' ? 'active' : ''} ${activeProvider === 'openai' ? 'is-active-provider' : ''}`}
+              onClick={() => { setSelectedTab('openai'); setTestResult(null); }}
+            >
+              OpenAI {activeProvider === 'openai' && '✓'}
+            </button>
+            <button
+              className={`llm-settings-tab ${selectedTab === 'azure' ? 'active' : ''} ${activeProvider === 'azure' ? 'is-active-provider' : ''}`}
+              onClick={() => { setSelectedTab('azure'); setTestResult(null); }}
+            >
+              Azure OpenAI {activeProvider === 'azure' && '✓'}
+            </button>
+            <button
+              className={`llm-settings-tab ${selectedTab === 'gemini' ? 'active' : ''} ${activeProvider === 'gemini' ? 'is-active-provider' : ''}`}
+              onClick={() => { setSelectedTab('gemini'); setTestResult(null); }}
+            >
+              Google Gemini {activeProvider === 'gemini' && '✓'}
+            </button>
+          </div>
+          
+          {/* Test Result */}
+          {testResult && (
+            <div className={`llm-settings-result ${testResult.success ? 'success' : 'error'}`}>
+              {testResult.message}
+            </div>
+          )}
+          
+          {/* Provider Form */}
+          {renderProviderTab()}
+          
+          {/* System Prompt Section */}
+          <div className="llm-settings-section">
+            <h3>System Prompt</h3>
+            <p className="section-description">
+              Customize the instructions given to the AI assistant
+            </p>
+            <textarea
+              className="llm-settings-prompt"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              rows={6}
+              placeholder="Enter system prompt..."
+            />
+            <div className="llm-settings-actions">
+              <button onClick={handleSaveSystemPrompt}>Save System Prompt</button>
+              <button onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}>Reset to Default</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 ````
 
 ## File: src/renderer/components/QueryHistory/QueryHistory.tsx
@@ -24856,6 +29141,552 @@ export const SplitEditorPane: React.FC<SplitEditorPaneProps> = ({
 }
 ````
 
+## File: src/renderer/components/ViewDefinitionModal/ViewDefinitionModal.tsx
+````typescript
+import React, { useState, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
+import { useThemeStore } from '../../stores/theme-store';
+import { getMonacoThemeName, registerAllThemes } from '../../themes/built-in-themes';
+import './ViewDefinitionModal.css';
+
+interface ViewDefinitionModalProps {
+  projectId: string;
+  datasetId: string;
+  tableId: string;
+  onClose: () => void;
+}
+
+export const ViewDefinitionModal: React.FC<ViewDefinitionModalProps> = ({
+  projectId,
+  datasetId,
+  tableId,
+  onClose,
+}) => {
+  const [definition, setDefinition] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Get theme from store
+  const { activeTheme, isInitialized: themeInitialized } = useThemeStore();
+  const monacoThemeName = themeInitialized ? getMonacoThemeName(activeTheme) : 'vs-dark';
+
+  useEffect(() => {
+    const loadViewDefinition = async () => {
+      if (!window.electronAPI) {
+        setError('Electron API not available');
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const result = await window.electronAPI.bigquery.getViewDefinition(datasetId, tableId);
+        setDefinition(result.definition);
+      } catch (err: any) {
+        setError(err.message || 'Failed to load view definition');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadViewDefinition();
+  }, [datasetId, tableId]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
+
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(definition);
+  };
+
+  return (
+    <div className="view-definition-modal-overlay" onClick={handleOverlayClick}>
+      <div className="view-definition-modal-dialog">
+        <div className="view-definition-modal-header">
+          <h2>View Definition: {projectId}.{datasetId}.{tableId}</h2>
+          <button className="view-definition-modal-close" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="view-definition-modal-content">
+          {isLoading && (
+            <div className="view-definition-loading">
+              <div className="view-definition-spinner"></div>
+              <div>Loading view definition...</div>
+            </div>
+          )}
+          {error && (
+            <div className="view-definition-error">
+              <strong>Error:</strong> {error}
+            </div>
+          )}
+          {!isLoading && !error && definition && (
+            <>
+              <div className="view-definition-actions">
+                <button onClick={handleCopy} className="view-definition-copy-button">
+                  Copy to Clipboard
+                </button>
+              </div>
+              <div className="view-definition-editor">
+                <Editor
+                  height="400px"
+                  language="sql"
+                  value={definition}
+                  theme={monacoThemeName}
+                  beforeMount={(monaco) => {
+                    // Register all built-in themes from monaco-themes package
+                    registerAllThemes(monaco as typeof import('monaco-editor'));
+                    
+                    // Register custom theme if it has editor configuration (user-imported themes)
+                    if (activeTheme.editor && !activeTheme.isBuiltIn) {
+                      monaco.editor.defineTheme(activeTheme.id, {
+                        base: activeTheme.editor.base,
+                        inherit: activeTheme.editor.inherit,
+                        rules: activeTheme.editor.rules,
+                        colors: activeTheme.editor.colors,
+                      });
+                    }
+                  }}
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 13,
+                    lineNumbers: 'on',
+                    folding: true,
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    renderLineHighlight: 'none',
+                    scrollbar: {
+                      vertical: 'auto',
+                      horizontal: 'auto',
+                    },
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+````
+
+## File: src/renderer/stores/llm-store.ts
+````typescript
+/**
+ * Zustand store for LLM/AI chat state management
+ */
+
+import { create } from 'zustand';
+import type {
+  LLMProvider,
+  LLMSettings,
+  ChatMessage,
+  ChatConversation,
+  SchemaContext,
+} from '../../shared/types/llm';
+
+interface LLMState {
+  // Settings
+  settings: LLMSettings | null;
+  activeProvider: LLMProvider | null;
+  isConfigured: boolean;
+  
+  // Current conversation
+  currentConversation: ChatConversation | null;
+  conversations: ChatConversation[];
+  
+  // UI state
+  isLoading: boolean;
+  isSending: boolean;
+  error: string | null;
+  streamingContent: string;
+  streamingMessageId: string | null;
+  
+  // Sidebar visibility
+  sidebarVisible: boolean;
+  
+  // Callback for when stream completes
+  onStreamCompleteCallback: (() => void) | null;
+  
+  // Actions - Settings
+  loadSettings: () => Promise<void>;
+  setActiveProvider: (provider: LLMProvider | null) => Promise<void>;
+  checkIsConfigured: () => Promise<boolean>;
+  
+  // Actions - Conversations
+  loadConversations: () => Promise<void>;
+  createConversation: (title?: string, tabId?: string) => Promise<ChatConversation>;
+  selectConversation: (id: string) => Promise<void>;
+  deleteConversation: (id: string) => Promise<void>;
+  clearCurrentConversation: () => void;
+  
+  // Actions - Messages
+  sendMessage: (content: string, schemaContext?: SchemaContext) => Promise<void>;
+  
+  // Actions - Streaming
+  setStreamingContent: (content: string) => void;
+  appendStreamingContent: (content: string) => void;
+  clearStreamingContent: () => void;
+  
+  // Actions - UI
+  setError: (error: string | null) => void;
+  toggleSidebar: () => void;
+  setSidebarVisible: (visible: boolean) => void;
+  setOnStreamCompleteCallback: (callback: (() => void) | null) => void;
+}
+
+/**
+ * Generate a unique message ID
+ */
+function generateMessageId(): string {
+  return `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+}
+
+export const useLLMStore = create<LLMState>((set, get) => ({
+  // Initial state
+  settings: null,
+  activeProvider: null,
+  isConfigured: false,
+  currentConversation: null,
+  conversations: [],
+  isLoading: false,
+  isSending: false,
+  error: null,
+  streamingContent: '',
+  streamingMessageId: null,
+  sidebarVisible: false,
+  onStreamCompleteCallback: null,
+
+  // Load settings from storage
+  loadSettings: async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    try {
+      const settings = await window.electronAPI.llm.getSettings();
+      const activeProvider = await window.electronAPI.llm.getActiveProvider();
+      const isConfigured = await window.electronAPI.llm.isConfigured();
+      
+      set({ settings, activeProvider, isConfigured });
+    } catch (error) {
+      console.error('Failed to load LLM settings:', error);
+    }
+  },
+
+  // Set active provider
+  setActiveProvider: async (provider) => {
+    if (!window.electronAPI?.llm) return;
+    
+    try {
+      await window.electronAPI.llm.setActiveProvider(provider);
+      const isConfigured = await window.electronAPI.llm.isConfigured();
+      set({ activeProvider: provider, isConfigured });
+    } catch (error) {
+      console.error('Failed to set active provider:', error);
+    }
+  },
+
+  // Check if LLM is configured
+  checkIsConfigured: async () => {
+    if (!window.electronAPI?.llm) return false;
+    
+    try {
+      const isConfigured = await window.electronAPI.llm.isConfigured();
+      set({ isConfigured });
+      return isConfigured;
+    } catch (error) {
+      console.error('Failed to check if LLM is configured:', error);
+      return false;
+    }
+  },
+
+  // Load conversations list
+  loadConversations: async () => {
+    if (!window.electronAPI?.llm) return;
+    
+    set({ isLoading: true });
+    
+    try {
+      const conversations = await window.electronAPI.llm.listConversations(50);
+      set({ conversations, isLoading: false });
+    } catch (error) {
+      console.error('Failed to load conversations:', error);
+      set({ isLoading: false });
+    }
+  },
+
+  // Create new conversation
+  createConversation: async (title, tabId) => {
+    if (!window.electronAPI?.llm) {
+      throw new Error('LLM API not available');
+    }
+    
+    const conversation = await window.electronAPI.llm.createConversation(title, tabId);
+    
+    set((state) => ({
+      currentConversation: conversation,
+      conversations: [conversation, ...state.conversations],
+    }));
+    
+    return conversation;
+  },
+
+  // Select a conversation
+  selectConversation: async (id) => {
+    if (!window.electronAPI?.llm) return;
+    
+    set({ isLoading: true });
+    
+    try {
+      const conversation = await window.electronAPI.llm.getConversation(id);
+      set({ currentConversation: conversation, isLoading: false });
+    } catch (error) {
+      console.error('Failed to load conversation:', error);
+      set({ isLoading: false });
+    }
+  },
+
+  // Delete a conversation
+  deleteConversation: async (id) => {
+    if (!window.electronAPI?.llm) return;
+    
+    try {
+      await window.electronAPI.llm.deleteConversation(id);
+      
+      set((state) => {
+        const conversations = state.conversations.filter((c) => c.id !== id);
+        const currentConversation = state.currentConversation?.id === id 
+          ? null 
+          : state.currentConversation;
+        
+        return { conversations, currentConversation };
+      });
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+    }
+  },
+
+  // Clear current conversation
+  clearCurrentConversation: () => {
+    set({ currentConversation: null, streamingContent: '', streamingMessageId: null });
+  },
+
+  // Send a message (with streaming)
+  sendMessage: async (content, schemaContext) => {
+    if (!window.electronAPI?.llm) {
+      set({ error: 'LLM API not available' });
+      return;
+    }
+    
+    const { currentConversation, isConfigured } = get();
+    
+    if (!isConfigured) {
+      set({ error: 'LLM provider not configured. Please configure a provider in settings.' });
+      return;
+    }
+    
+    set({ isSending: true, error: null, streamingContent: '' });
+    
+    try {
+      // Create conversation if needed
+      let conversation = currentConversation;
+      if (!conversation) {
+        conversation = await get().createConversation();
+      }
+      
+      // Create user message
+      const userMessage: ChatMessage = {
+        id: generateMessageId(),
+        role: 'user',
+        content,
+        timestamp: Date.now(),
+      };
+      
+      // Add user message to conversation
+      const updatedConversation = await window.electronAPI.llm.addMessage(
+        conversation.id,
+        userMessage
+      );
+      
+      if (updatedConversation) {
+        set({ currentConversation: updatedConversation });
+      }
+      
+      // Get all messages for the API call
+      const messages = updatedConversation?.messages || [userMessage];
+      
+      // Start streaming chat
+      const { messageId } = await window.electronAPI.llm.chatStream(
+        conversation.id,
+        messages,
+        schemaContext
+      );
+      
+      set({ streamingMessageId: messageId });
+      
+    } catch (error: any) {
+      console.error('Failed to send message:', error);
+      set({ 
+        error: error.message || 'Failed to send message',
+        isSending: false,
+      });
+    }
+  },
+
+  // Streaming content management
+  setStreamingContent: (content) => {
+    set({ streamingContent: content });
+  },
+
+  appendStreamingContent: (content) => {
+    set((state) => ({ streamingContent: state.streamingContent + content }));
+  },
+
+  clearStreamingContent: () => {
+    set({ streamingContent: '', streamingMessageId: null });
+  },
+
+  // Error management
+  setError: (error) => {
+    set({ error });
+  },
+
+  // Sidebar visibility
+  toggleSidebar: () => {
+    set((state) => ({ sidebarVisible: !state.sidebarVisible }));
+  },
+
+  setSidebarVisible: (visible) => {
+    set({ sidebarVisible: visible });
+  },
+
+  setOnStreamCompleteCallback: (callback) => {
+    set({ onStreamCompleteCallback: callback });
+  },
+}));
+
+/**
+ * Initialize LLM store and set up streaming listeners
+ */
+export function initializeLLMStore(): () => void {
+  const store = useLLMStore.getState();
+  
+  // Load initial settings
+  store.loadSettings();
+  store.loadConversations();
+  
+  // Set up streaming listeners
+  if (!window.electronAPI?.llm) {
+    return () => {};
+  }
+  
+  const cleanupChunk = window.electronAPI.llm.onStreamChunk((data) => {
+    const state = useLLMStore.getState();
+    
+    if (data.conversationId === state.currentConversation?.id) {
+      state.appendStreamingContent(data.content);
+    }
+  });
+  
+  const cleanupComplete = window.electronAPI.llm.onStreamComplete(async (data) => {
+    const state = useLLMStore.getState();
+    
+    if (data.conversationId === state.currentConversation?.id) {
+      // Create assistant message
+      const assistantMessage: ChatMessage = {
+        id: data.messageId,
+        role: 'assistant',
+        content: data.fullContent,
+        timestamp: Date.now(),
+        containsQuery: data.containsQuery,
+        sqlQuery: data.sqlQuery,
+      };
+      
+      // Add to conversation
+      if (window.electronAPI?.llm) {
+        const updated = await window.electronAPI.llm.addMessage(
+          data.conversationId,
+          assistantMessage
+        );
+        
+        if (updated) {
+          // Update title if it's the first response
+          if (updated.messages.length <= 2 && updated.title === 'New Chat') {
+            // Generate a title from the first user message
+            const firstUserMsg = updated.messages.find((m) => m.role === 'user');
+            if (firstUserMsg) {
+              const title = firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '');
+              await window.electronAPI.llm.updateConversation(data.conversationId, { title });
+              updated.title = title;
+            }
+          }
+          
+          useLLMStore.setState({ 
+            currentConversation: updated,
+            isSending: false,
+            streamingContent: '',
+            streamingMessageId: null,
+          });
+          
+          // Call the completion callback if set (with delay to ensure DOM updates complete)
+          const { onStreamCompleteCallback } = useLLMStore.getState();
+          if (onStreamCompleteCallback) {
+            setTimeout(() => onStreamCompleteCallback(), 50);
+          }
+          
+          // Refresh conversations list
+          state.loadConversations();
+        }
+      }
+    }
+  });
+  
+  const cleanupError = window.electronAPI.llm.onStreamError((data) => {
+    const state = useLLMStore.getState();
+    
+    if (data.conversationId === state.currentConversation?.id) {
+      useLLMStore.setState({
+        error: data.error,
+        isSending: false,
+        streamingContent: '',
+        streamingMessageId: null,
+      });
+      
+      // Call the completion callback on error too (with delay)
+      const { onStreamCompleteCallback } = useLLMStore.getState();
+      if (onStreamCompleteCallback) {
+        setTimeout(() => onStreamCompleteCallback(), 50);
+      }
+    }
+  });
+  
+  // Return cleanup function
+  return () => {
+    cleanupChunk();
+    cleanupComplete();
+    cleanupError();
+  };
+}
+````
+
 ## File: src/renderer/stores/tabs-store.ts
 ````typescript
 import { create } from 'zustand';
@@ -25971,6 +30802,953 @@ body {
   --badge-partition-bg: rgba(4, 81, 165, 0.1);
   --badge-partition-text: #0451a5;
 }
+````
+
+## File: src/shared/types/llm.ts
+````typescript
+/**
+ * LLM-related types for AI chat functionality
+ */
+
+/**
+ * Supported LLM providers
+ */
+export type LLMProvider = 'openai' | 'azure' | 'gemini';
+
+/**
+ * Base configuration for all providers
+ */
+export interface BaseLLMConfig {
+  provider: LLMProvider;
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+/**
+ * OpenAI-specific configuration
+ */
+export interface OpenAIConfig extends BaseLLMConfig {
+  provider: 'openai';
+  apiKey: string;
+  organization?: string;
+  baseUrl?: string; // For custom endpoints
+}
+
+/**
+ * Azure OpenAI-specific configuration
+ */
+export interface AzureOpenAIConfig extends BaseLLMConfig {
+  provider: 'azure';
+  apiKey: string;
+  endpoint: string; // Azure resource endpoint
+  deploymentName: string; // The deployment name in Azure
+  apiVersion?: string; // API version, defaults to latest stable
+}
+
+/**
+ * Google Gemini-specific configuration
+ */
+export interface GeminiConfig extends BaseLLMConfig {
+  provider: 'gemini';
+  apiKey: string;
+}
+
+/**
+ * Union type for all provider configurations
+ */
+export type LLMConfig = OpenAIConfig | AzureOpenAIConfig | GeminiConfig;
+
+/**
+ * Stored LLM settings (persisted to disk)
+ * API keys are stored separately in secure storage
+ */
+export interface LLMSettings {
+  activeProvider: LLMProvider | null;
+  providers: {
+    openai?: Omit<OpenAIConfig, 'apiKey'> & { hasApiKey: boolean };
+    azure?: Omit<AzureOpenAIConfig, 'apiKey'> & { hasApiKey: boolean };
+    gemini?: Omit<GeminiConfig, 'apiKey'> & { hasApiKey: boolean };
+  };
+  defaultTemperature: number;
+  defaultMaxTokens: number;
+  systemPrompt?: string;
+}
+
+/**
+ * Default models for each provider
+ */
+export const DEFAULT_MODELS: Record<LLMProvider, string> = {
+  openai: 'gpt-4o',
+  azure: 'gpt-4o',
+  gemini: 'gemini-2.0-flash',
+};
+
+/**
+ * Available models per provider
+ */
+export const AVAILABLE_MODELS: Record<LLMProvider, string[]> = {
+  openai: [
+    'gpt-5.1-chat',
+    'gpt-5.1-mini',
+    'gpt-5.1-nano',
+    'gpt-5.0-chat',
+    'gpt-5.0',
+    'gpt-5.0-mini',
+    'o3-mini',
+    'o1',
+    'o1-mini',
+    'o1-preview',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4.1-nano',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4-turbo',
+    'gpt-4',
+    'gpt-3.5-turbo',
+  ],
+  azure: [
+    'gpt-5.1-chat',
+    'gpt-5.1-mini',
+    'gpt-5.1-nano',
+    'gpt-5.1-codex-mini',
+    'gpt-5.0-chat',
+    'gpt-5.0',
+    'gpt-5.0-mini',
+    'o3-mini',
+    'o1',
+    'o1-mini',
+    'o1-preview',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4.1-nano',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4-turbo',
+    'gpt-4',
+    'gpt-35-turbo',
+  ],
+  gemini: [
+    'gemini-2.5-pro-preview-06-05',
+    'gemini-2.5-flash-preview-05-20',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-8b',
+  ],
+};
+
+/**
+ * Chat message role
+ */
+export type MessageRole = 'system' | 'user' | 'assistant';
+
+/**
+ * Individual chat message
+ */
+export interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  content: string;
+  timestamp: number;
+  // For assistant messages, track if it contains a query
+  containsQuery?: boolean;
+  // Extracted SQL query if any
+  sqlQuery?: string;
+}
+
+/**
+ * Chat conversation/session
+ */
+export interface ChatConversation {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+  // Optional: link to a specific tab/query context
+  tabId?: string;
+}
+
+/**
+ * Schema context for LLM queries
+ * Formatted summary of available schemas
+ */
+export interface SchemaContext {
+  projectId: string;
+  datasets: Array<{
+    datasetId: string;
+    tables: Array<{
+      tableId: string;
+      columns: Array<{
+        name: string;
+        type: string;
+        description?: string;
+      }>;
+    }>;
+  }>;
+}
+
+/**
+ * LLM chat request
+ */
+export interface ChatRequest {
+  messages: ChatMessage[];
+  schemaContext?: SchemaContext;
+  config?: Partial<LLMConfig>;
+}
+
+/**
+ * LLM chat response
+ */
+export interface ChatResponse {
+  message: ChatMessage;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+/**
+ * Streaming chat response chunk
+ */
+export interface ChatStreamChunk {
+  content: string;
+  isComplete: boolean;
+  messageId: string;
+}
+
+/**
+ * Error codes for LLM operations
+ */
+export enum LLMErrorCode {
+  PROVIDER_NOT_CONFIGURED = 'PROVIDER_NOT_CONFIGURED',
+  INVALID_API_KEY = 'INVALID_API_KEY',
+  RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
+  MODEL_NOT_AVAILABLE = 'MODEL_NOT_AVAILABLE',
+  CONTEXT_TOO_LONG = 'CONTEXT_TOO_LONG',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+}
+
+/**
+ * LLM operation error
+ */
+export interface LLMError {
+  code: LLMErrorCode;
+  message: string;
+  details?: any;
+}
+
+/**
+ * System prompt template for BigQuery assistant
+ */
+export const DEFAULT_SYSTEM_PROMPT = `You are a BigQuery SQL expert assistant. Your role is to help users write, understand, and optimize BigQuery SQL queries.
+
+When helping users:
+1. Write clear, efficient BigQuery SQL queries based on their requirements
+2. Explain query logic when asked
+3. Suggest optimizations and best practices
+4. Use the provided schema context to write accurate queries with correct table and column names
+
+When writing SQL queries:
+- Always use fully qualified table names (project.dataset.table)
+- Use appropriate BigQuery functions and syntax
+- Consider partitioning and clustering when relevant
+- Wrap SQL code in markdown code blocks with \`\`\`sql
+
+If the user's request is unclear, ask clarifying questions before writing the query.`;
+````
+
+## File: tests/unit/renderer/components/JobInfoModal.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { JobInfoModal } from '../../../../src/renderer/components/JobInfoModal/JobInfoModal';
+import type { JobDetails } from '../../../../src/shared/types/bigquery';
+
+// Get the mocked electronAPI from the global window
+const mockElectronAPI = (window as any).electronAPI;
+
+// Mock job details for testing
+const mockJobDetails: JobDetails = {
+  jobId: 'test-job-123',
+  projectId: 'test-project',
+  location: 'EU',
+  user: 'test@example.com',
+  creationTime: '2025-12-05T10:00:00.000Z',
+  startTime: '2025-12-05T10:00:01.000Z',
+  endTime: '2025-12-05T10:00:05.000Z',
+  totalSlotMs: 5000,
+  totalBytesProcessed: 1073741824, // 1 GB
+  totalBytesBilled: 1073741824,
+  cacheHit: false,
+  statementType: 'SELECT',
+  outputRows: 1000,
+  billingTier: 1,
+  referencedTables: [
+    { projectId: 'test-project', datasetId: 'test_dataset', tableId: 'test_table' },
+  ],
+  state: 'DONE',
+};
+
+describe('JobInfoModal', () => {
+  const mockOnClose = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Setup default mock for getJobInfo
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue(mockJobDetails);
+  });
+
+  it('should render loading state initially', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    expect(screen.getByText('Loading job information...')).toBeInTheDocument();
+    
+    // Wait for async effects to complete to avoid act() warnings
+    await waitFor(() => {
+      expect(screen.queryByText('Loading job information...')).not.toBeInTheDocument();
+    });
+  });
+
+  it('should render job details after loading', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    // Check that job ID is displayed
+    expect(screen.getByText('test-job-123')).toBeInTheDocument();
+    
+    // Check project ID
+    expect(screen.getByText('test-project')).toBeInTheDocument();
+    
+    // Check location
+    expect(screen.getByText('EU')).toBeInTheDocument();
+    
+    // Check user
+    expect(screen.getByText('test@example.com')).toBeInTheDocument();
+  });
+
+  it('should display bytes processed in human readable format', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    // 1 GB should be displayed
+    expect(screen.getAllByText('1 GB').length).toBeGreaterThan(0);
+  });
+
+  it('should display cache hit status', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No')).toBeInTheDocument();
+    });
+  });
+
+  it('should display cache hit as Yes when cacheHit is true', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      cacheHit: true,
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('✓ Yes')).toBeInTheDocument();
+    });
+  });
+
+  it('should display referenced tables', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Referenced Tables')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('test-project.test_dataset.test_table')).toBeInTheDocument();
+  });
+
+  it('should display output rows', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('1,000')).toBeInTheDocument();
+    });
+  });
+
+  it('should call onClose when close button is clicked', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const closeButton = screen.getByRole('button', { name: '×' });
+    fireEvent.click(closeButton);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should call onClose when clicking overlay', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const overlay = document.querySelector('.job-info-modal-overlay');
+    fireEvent.click(overlay!);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should not call onClose when clicking dialog content', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const dialog = document.querySelector('.job-info-modal-dialog');
+    fireEvent.click(dialog!);
+
+    expect(mockOnClose).not.toHaveBeenCalled();
+  });
+
+  it('should call onClose when escape key is pressed', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should display error message when loading fails', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockRejectedValue(
+      new Error('Job not found')
+    );
+
+    render(<JobInfoModal jobId="invalid-job" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error:/)).toBeInTheDocument();
+      expect(screen.getByText(/Job not found/)).toBeInTheDocument();
+    });
+  });
+
+  it('should copy job ID when copy button is clicked', async () => {
+    const mockClipboard = { writeText: jest.fn() };
+    Object.assign(navigator, { clipboard: mockClipboard });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    const copyButton = screen.getByTitle('Copy job ID');
+    fireEvent.click(copyButton);
+
+    expect(mockClipboard.writeText).toHaveBeenCalledWith('test-job-123');
+  });
+
+  it('should display job status with correct styling', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DONE')).toBeInTheDocument();
+    });
+
+    const statusElement = screen.getByText('DONE');
+    expect(statusElement).toHaveClass('job-status-done');
+  });
+
+  it('should display statement type', async () => {
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SELECT')).toBeInTheDocument();
+    });
+  });
+
+  it('should display error details when job has error', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      state: 'DONE',
+      errorResult: {
+        reason: 'invalidQuery',
+        location: 'query',
+        message: 'Syntax error at line 1',
+      },
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Error Details')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('invalidQuery')).toBeInTheDocument();
+    expect(screen.getByText('Syntax error at line 1')).toBeInTheDocument();
+  });
+
+  it('should display DML affected rows for DML queries', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      statementType: 'UPDATE',
+      outputRows: undefined,
+      numDmlAffectedRows: 500,
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Rows Affected')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('500')).toBeInTheDocument();
+  });
+
+  it('should not display referenced tables section when empty', async () => {
+    mockElectronAPI.bigquery.getJobInfo = jest.fn().mockResolvedValue({
+      ...mockJobDetails,
+      referencedTables: undefined,
+    });
+
+    render(<JobInfoModal jobId="test-job-123" onClose={mockOnClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Job Details')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('Referenced Tables')).not.toBeInTheDocument();
+  });
+});
+````
+
+## File: tests/unit/renderer/components/SchemaSearchModal.test.tsx
+````typescript
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { SchemaSearchModal } from '../../../../src/renderer/components/SchemaSearchModal/SchemaSearchModal';
+
+// Get the mocked electronAPI from the global window
+const mockElectronAPI = (window as any).electronAPI;
+
+// Mock data
+const mockConnectionData = {
+  projectId: 'test-project',
+  keyFilePath: '/path/to/key.json',
+  keyFileJson: '{}',
+  location: 'US',
+};
+
+const mockSearchResultsData = [
+  {
+    type: 'table' as const,
+    datasetId: 'test_dataset',
+    tableId: 'users',
+    matchScore: 500,
+  },
+  {
+    type: 'column' as const,
+    datasetId: 'test_dataset',
+    tableId: 'users',
+    columnName: 'user_id',
+    columnType: 'INT64',
+    columnPath: 'user_id',
+    matchScore: 300,
+  },
+  {
+    type: 'column' as const,
+    datasetId: 'test_dataset',
+    tableId: 'orders',
+    columnName: 'user_name',
+    columnType: 'STRING',
+    columnPath: 'user_name',
+    matchScore: 200,
+  },
+];
+
+// Mutable state for mocks - modified per test
+let currentSearchResults: typeof mockSearchResultsData = [];
+let currentLoadingState = { isLoading: false, loaded: 0, total: 0 };
+let currentConnectionData: typeof mockConnectionData | null = mockConnectionData;
+
+// Store mock functions
+const mockCreateTab = jest.fn().mockReturnValue('new-tab-id');
+const mockSetTabQuery = jest.fn();
+const mockUpdateTab = jest.fn();
+
+// Mock the stores with factory functions
+jest.mock('../../../../src/renderer/stores/schema-cache-store', () => ({
+  useSchemaCacheStore: () => ({
+    search: () => currentSearchResults,
+    setSchema: jest.fn(),
+    hasSchema: jest.fn().mockReturnValue(true),
+    get isLoading() { return currentLoadingState.isLoading; },
+    get loadingProgress() { return { loaded: currentLoadingState.loaded, total: currentLoadingState.total }; },
+    setIsLoading: jest.fn(),
+    setLoadingProgress: jest.fn(),
+  }),
+}));
+
+jest.mock('../../../../src/renderer/stores/connection-store', () => ({
+  useConnectionStore: (selector?: (state: any) => any) => {
+    const state = { connection: currentConnectionData };
+    return selector ? selector(state) : state;
+  },
+}));
+
+jest.mock('../../../../src/renderer/stores/bigquery-metadata-store', () => ({
+  useBigQueryMetadataStore: () => ({
+    datasets: [],
+  }),
+}));
+
+jest.mock('../../../../src/renderer/stores/tabs-store', () => ({
+  useTabsStore: () => ({
+    createTab: mockCreateTab,
+    setTabQuery: mockSetTabQuery,
+    updateTab: mockUpdateTab,
+  }),
+}));
+
+describe('SchemaSearchModal', () => {
+  const mockOnClose = jest.fn();
+  const mockOnShowSchema = jest.fn();
+
+  // Helper to render and wait for async effects to settle
+  const renderAndWait = async (ui: React.ReactElement) => {
+    const result = render(ui);
+    // Wait for async effects (loadCachedSchemas) to complete
+    await waitFor(() => {});
+    return result;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    currentSearchResults = [];
+    currentLoadingState = { isLoading: false, loaded: 0, total: 0 };
+    currentConnectionData = mockConnectionData;
+
+    // Setup electronAPI mock
+    mockElectronAPI.bigquery.listTables = jest.fn().mockResolvedValue([]);
+    mockElectronAPI.bigquery.getTableSchema = jest.fn().mockResolvedValue({ fields: [] });
+    
+    // Suppress console.log for schema cache loading messages
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('should render search input and focus it on mount', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveFocus();
+  });
+
+  it('should show empty state when no query is entered', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    expect(screen.getByText('Type to search across all tables and columns')).toBeInTheDocument();
+  });
+
+  it('should show no results message when search returns empty', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'nonexistent' } });
+
+    expect(screen.getByText('No results found for "nonexistent"')).toBeInTheDocument();
+  });
+
+  it('should display search results', async () => {
+    currentSearchResults = mockSearchResultsData;
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    // Verify results are rendered with badges
+    expect(screen.getByText('Table')).toBeInTheDocument();
+    expect(screen.getAllByText('Column').length).toBe(2);
+  });
+
+  it('should display table and column badges', async () => {
+    currentSearchResults = mockSearchResultsData;
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    expect(screen.getByText('Table')).toBeInTheDocument();
+    expect(screen.getAllByText('Column').length).toBe(2);
+  });
+
+  it('should call onClose when escape key is pressed', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should call onClose when clicking overlay', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const overlay = document.querySelector('.schema-search-modal-overlay');
+    fireEvent.click(overlay!);
+
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should not call onClose when clicking modal content', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const modal = document.querySelector('.schema-search-modal');
+    fireEvent.click(modal!);
+
+    expect(mockOnClose).not.toHaveBeenCalled();
+  });
+
+  it('should navigate results with arrow keys', async () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    // First item should be selected by default
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    const getSelectedIndex = () => {
+      const items = getItems();
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].classList.contains('selected')) return i;
+      }
+      return -1;
+    };
+    
+    expect(getItems().length).toBe(3);
+    expect(getSelectedIndex()).toBe(0);
+  });
+
+  it('should select item on mouse enter', async () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    
+    // First item should be selected initially
+    expect(getItems()[0]).toHaveClass('selected');
+  });
+
+  it('should call onShowSchema when selecting a table result', async () => {
+    currentSearchResults = [mockSearchResultsData[0]]; // Only table result
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    // Press Enter to select
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(mockOnShowSchema).toHaveBeenCalledWith('test-project', 'test_dataset', 'users');
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should create a new tab with column query when selecting a column result', async () => {
+    currentSearchResults = [mockSearchResultsData[1]]; // Column result
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    // Click to select
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.click(item!);
+
+    expect(mockCreateTab).toHaveBeenCalled();
+    expect(mockSetTabQuery).toHaveBeenCalledWith(
+      'new-tab-id',
+      expect.stringContaining('SELECT user_id')
+    );
+    expect(mockUpdateTab).toHaveBeenCalledWith('new-tab-id', {
+      title: 'users.user_id',
+    });
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should show loading state when fetching schemas', async () => {
+    currentLoadingState = { isLoading: true, loaded: 5, total: 10 };
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    expect(screen.getByText('Loading schemas (5/10)')).toBeInTheDocument();
+  });
+
+  it('should display keyboard shortcuts in footer', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    expect(screen.getByText('↑↓ Navigate')).toBeInTheDocument();
+    expect(screen.getByText('↵ Select')).toBeInTheDocument();
+    expect(screen.getByText('Esc Close')).toBeInTheDocument();
+  });
+
+  it('should display column type for column results', async () => {
+    currentSearchResults = [mockSearchResultsData[1]];
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    expect(screen.getByText('INT64')).toBeInTheDocument();
+  });
+
+  it('should display dataset.table path for results', async () => {
+    currentSearchResults = [mockSearchResultsData[0]];
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    expect(screen.getByText('test_dataset.users')).toBeInTheDocument();
+  });
+
+  it('should navigate with Tab key', async () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+    
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    
+    // Should have 3 results
+    expect(getItems().length).toBe(3);
+    // First item should be selected initially
+    expect(getItems()[0]).toHaveClass('selected');
+  });
+
+  it('should not go beyond first or last item with arrow keys', async () => {
+    currentSearchResults = mockSearchResultsData;
+
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user' } });
+    
+    const getItems = () => container.querySelectorAll('.schema-search-result-item');
+    
+    // Should have 3 results
+    expect(getItems().length).toBe(3);
+    // First item should be selected initially
+    expect(getItems()[0]).toHaveClass('selected');
+  });
+
+  it('should not perform any action when no connection', async () => {
+    currentConnectionData = null;
+    currentSearchResults = [mockSearchResultsData[0]];
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // Should not call onShowSchema when there's no connection
+    expect(mockOnShowSchema).not.toHaveBeenCalled();
+  });
+
+  it('should show context menu on right-click and view schema option', async () => {
+    currentSearchResults = [mockSearchResultsData[1]]; // Column result
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    // Right-click on the result item
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.contextMenu(item!);
+
+    // Context menu should appear with "View Table Schema" option
+    expect(screen.getByText('View Table Schema')).toBeInTheDocument();
+  });
+
+  it('should call onShowSchema when clicking View Table Schema in context menu', async () => {
+    currentSearchResults = [mockSearchResultsData[1]]; // Column result
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'user_id' } });
+
+    // Right-click on the result item
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.contextMenu(item!);
+
+    // Click on "View Table Schema"
+    const viewSchemaButton = screen.getByText('View Table Schema');
+    fireEvent.click(viewSchemaButton);
+
+    // Should call onShowSchema with the table's info
+    expect(mockOnShowSchema).toHaveBeenCalledWith('test-project', 'test_dataset', 'users');
+    expect(mockOnClose).toHaveBeenCalled();
+  });
+
+  it('should close context menu when clicking overlay', async () => {
+    currentSearchResults = [mockSearchResultsData[0]];
+
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
+
+    const input = screen.getByPlaceholderText('Search tables and columns...');
+    fireEvent.change(input, { target: { value: 'users' } });
+
+    // Right-click to open context menu
+    const item = document.querySelector('.schema-search-result-item');
+    fireEvent.contextMenu(item!);
+
+    expect(screen.getByText('View Table Schema')).toBeInTheDocument();
+
+    // Click the context overlay to close
+    const contextOverlay = document.querySelector('.schema-search-context-overlay');
+    fireEvent.click(contextOverlay!);
+
+    // Context menu should be closed
+    expect(screen.queryByText('View Table Schema')).not.toBeInTheDocument();
+  });
+});
 ````
 
 ## File: tests/unit/renderer/components/SidebarSwitcher.test.tsx
@@ -31855,7 +37633,7 @@ A powerful desktop application for browsing and querying Google Cloud Platform B
 - **Resizable Panels**: Adjust sidebar and editor/results split
 - **Collapsible Sidebar**: Maximize editor space when needed
 - **Persistent Layout**: Window size, position, and panel sizes persist across sessions
-- **Dark/Light Mode**: Toggle between dark and light themes to suit your preference
+- **Monaco theme support**: The application uses native Monaco themes
 
 ## Prerequisites
 
@@ -33248,6 +39026,10 @@ global.window = global.window || {};
     setRightSidebarWidth: jest.fn().mockResolvedValue(undefined),
     getTheme: jest.fn().mockResolvedValue('dark'),
     setTheme: jest.fn().mockResolvedValue(undefined),
+    getThemeSettings: jest.fn().mockResolvedValue({ activeThemeId: 'default-dark', customThemes: [] }),
+    setActiveTheme: jest.fn().mockResolvedValue(undefined),
+    addCustomTheme: jest.fn().mockResolvedValue(undefined),
+    removeCustomTheme: jest.fn().mockResolvedValue(undefined),
   },
   tabs: {
     getTabs: jest.fn().mockResolvedValue([]),
@@ -33267,6 +39049,7 @@ global.window = global.window || {};
     onDisconnect: jest.fn(() => () => {}),
     onToggleTheme: jest.fn(() => () => {}),
     onSearchSchema: jest.fn(() => () => {}),
+    onShowThemeSettings: jest.fn(() => () => {}),
   },
   resultsCache: {
     get: jest.fn().mockResolvedValue(null),
@@ -33301,876 +39084,6 @@ jest.mock('@monaco-editor/react', () => ({
     return React.createElement('div', { 'data-testid': 'monaco-editor' }, 'Monaco Editor');
   },
 }));
-````
-
-## File: src/main/main.ts
-````typescript
-import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { registerBigQueryHandlers } from './ipc/bigquery';
-import { registerConnectionHandlers } from './ipc/connection';
-import { registerQueriesHandlers } from './ipc/queries';
-import { registerUISettingsHandlers } from './ipc/ui-settings';
-import { registerTabsHandlers } from './ipc/tabs';
-import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
-import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
-import { registerExportHandlers } from './ipc/export';
-import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
-import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
-import { clearAllResults } from './storage/results-cache-sqlite';
-
-// Suppress error logging for "Table not found" errors from IPC handlers
-// These errors are handled in the UI and don't need console logging
-// Intercept at the process level before Electron logs them
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
-  const message = chunk?.toString() || '';
-  // Check if this is a "Table not found" error from getTableSchema
-  // Match various formats Electron might use to log the error
-  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
-      (message.includes('Table not found') || 
-       message.includes('code: \'BIGQUERY_ERROR\'') ||
-       message.includes('BIGQUERY_ERROR'))) {
-    // Suppress logging for table not found errors
-    return true;
-  }
-  // Write all other messages normally
-  return originalStderrWrite(chunk, encoding, callback);
-};
-
-// Set app name immediately (before any other app calls) for macOS dock
-// This must be called before app.whenReady() to ensure the dock shows the correct name
-if (process.platform === 'darwin') {
-  app.setName('QueryForge');
-  console.log('Initial app name set to:', app.getName());
-}
-
-let mainWindow: BrowserWindow | null = null;
-
-// Register IPC handlers
-registerBigQueryHandlers();
-registerConnectionHandlers();
-registerQueriesHandlers();
-registerUISettingsHandlers();
-registerTabsHandlers();
-registerResultsCacheHandlers();
-registerSchemaCacheHandlers();
-registerExportHandlers();
-registerQueryHistoryHandlers();
-
-// Register app version handler
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:new-tab');
-          },
-        },
-        {
-          label: 'Save Query',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => {
-            mainWindow?.webContents.send('menu:save-query');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Quit',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
-          click: () => {
-            app.quit();
-          },
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-        { type: 'separator' },
-        {
-          label: 'Search Schema...',
-          accelerator: 'CmdOrCtrl+P',
-          click: () => {
-            mainWindow?.webContents.send('menu:search-schema');
-          },
-        },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Actual Size' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About QueryForge',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-about');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Keyboard Shortcuts',
-          accelerator: 'CmdOrCtrl+?',
-          click: () => {
-            mainWindow?.webContents.send('menu:show-help');
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme',
-          accelerator: 'CmdOrCtrl+Shift+T',
-          click: () => {
-            mainWindow?.webContents.send('menu:toggle-theme');
-          },
-        },
-      ],
-    },
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-}
-
-function createWindow(): void {
-  // Restore window size and position from previous session
-  const savedBounds = getWindowBounds();
-  const windowState = {
-    width: savedBounds?.width || 1200,
-    height: savedBounds?.height || 800,
-    x: savedBounds?.x,
-    y: savedBounds?.y,
-  };
-
-  // Get icon path - always check from root directory first (most reliable)
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    console.log('Using icon:', iconPath);
-  } else {
-    console.warn('Icon not found. Expected locations:');
-    if (process.platform === 'darwin') {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    } else {
-      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
-    }
-  }
-
-  const windowOptions: Electron.BrowserWindowConstructorOptions = {
-    width: windowState.width,
-    height: windowState.height,
-    x: windowState.x,
-    y: windowState.y,
-    backgroundColor: '#1e1e1e',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false, // Required for preload script
-    },
-  };
-
-  // Set icon for Windows/Linux (macOS uses dock icon instead)
-  if (iconPath && process.platform !== 'darwin') {
-    windowOptions.icon = iconPath;
-  }
-
-  mainWindow = new BrowserWindow({
-    ...windowOptions,
-    title: 'QueryForge',
-  });
-  
-  // Set app icon for macOS dock (if icon found)
-  // macOS will automatically apply rounded corners to the icon
-  if (iconPath && process.platform === 'darwin' && app.dock) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        // Set app name again after setting dock icon (macOS may need this)
-        app.setName('QueryForge');
-        console.log('Set macOS dock icon:', absoluteIconPath);
-        console.log('App name after setting icon:', app.getName());
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set dock icon:', error);
-    }
-  }
-
-  // Debounce function to avoid saving too frequently
-  let saveTimeout: NodeJS.Timeout | null = null;
-  const saveWindowBounds = () => {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-    }
-    saveTimeout = setTimeout(() => {
-      const bounds = mainWindow?.getBounds();
-      if (bounds) {
-        setWindowBounds({
-          width: bounds.width,
-          height: bounds.height,
-          x: bounds.x,
-          y: bounds.y,
-        });
-      }
-    }, 500); // Debounce by 500ms
-  };
-
-  // Save window state on move/resize
-  mainWindow.on('moved', saveWindowBounds);
-  mainWindow.on('resized', saveWindowBounds);
-
-  // Save window bounds and tabs when window is closed
-  mainWindow.on('close', () => {
-    const bounds = mainWindow?.getBounds();
-    if (bounds) {
-      setWindowBounds({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-      });
-    }
-    // Request tabs to be saved from renderer process
-    mainWindow?.webContents.send('app:before-close');
-    // Clear results cache when application closes
-    clearAllResults();
-  });
-
-  // Load the HTML file from dist (webpack bundles everything)
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-
-  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
-  // Only open automatically if explicitly requested via command line flag
-  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
-    mainWindow.webContents.openDevTools();
-  }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
-
-// Set app icon before app is ready (for better compatibility)
-function setAppIcon(): void {
-  const rootDir = process.cwd();
-  let iconPath: string | undefined;
-  
-  if (process.platform === 'darwin') {
-    // macOS: prefer .icns file (better transparency support)
-    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    
-    // Prefer .icns for better transparency and native macOS support
-    if (fs.existsSync(icnsPath)) {
-      iconPath = icnsPath;
-    } else if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  } else {
-    // Windows/Linux: use PNG
-    const pngPath = path.join(rootDir, 'queryforge_icon.png');
-    if (fs.existsSync(pngPath)) {
-      iconPath = pngPath;
-    }
-  }
-  
-  if (iconPath) {
-    try {
-      // Ensure we have an absolute path
-      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
-      
-      // Verify file exists
-      if (!fs.existsSync(absoluteIconPath)) {
-        console.warn('Icon file does not exist:', absoluteIconPath);
-        return;
-      }
-      
-      // Use nativeImage for both .icns and PNG files
-      // nativeImage.createFromPath() works with .icns files on macOS
-      const icon = nativeImage.createFromPath(absoluteIconPath);
-      if (!icon.isEmpty()) {
-        app.setAboutPanelOptions({
-          iconPath: absoluteIconPath,
-        });
-        console.log('Set app icon:', absoluteIconPath);
-      } else {
-        console.warn('Icon file is empty:', absoluteIconPath);
-      }
-    } catch (error) {
-      console.warn('Failed to set app icon:', error);
-    }
-  }
-}
-
-// Set icon early
-setAppIcon();
-
-app.whenReady().then(() => {
-  // Verify and set app name again after app is ready (for macOS dock)
-  if (process.platform === 'darwin') {
-    app.setName('QueryForge');
-    console.log('App name set to:', app.getName());
-  }
-  
-  // Also override console.error as a backup (though stderr.write should catch most cases)
-  const originalConsoleError = console.error;
-  console.error = (...args: any[]) => {
-    const errorMessage = args.join(' ') || '';
-    // Check if this is a "Table not found" error from getTableSchema
-    // Match various formats Electron might use to log the error
-    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
-        (errorMessage.includes('Table not found') || 
-         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
-         errorMessage.includes('BIGQUERY_ERROR'))) {
-      // Suppress logging for table not found errors
-      return;
-    }
-    // Log all other errors normally
-    originalConsoleError.apply(console, args);
-  };
-  
-  createMenu();
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  // Clear results cache when all windows are closed
-  clearAllResults();
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-// Clear cache and close database on app quit (for macOS)
-app.on('will-quit', () => {
-  clearAllResults();
-  closeCacheDatabase();
-  closeSchemaCacheDatabase();
-  closeHistoryDatabase();
-});
-````
-
-## File: src/renderer/App.tsx
-````typescript
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useConnectionStore } from './stores/connection-store';
-import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
-import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
-import { SavedQueries } from './components/SavedQueries/SavedQueries';
-import { HelpDialog } from './components/HelpDialog/HelpDialog';
-import { AboutDialog } from './components/AboutDialog/AboutDialog';
-import { TabBar } from './components/TabBar/TabBar';
-import { SplitEditorContainer } from './components/SplitEditorContainer/SplitEditorContainer';
-import { DatasetTree } from './components/DatasetTree/DatasetTree';
-import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
-import { QueryHistory } from './components/QueryHistory/QueryHistory';
-import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
-import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
-import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
-import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
-import './themes.css';
-import './App.css';
-
-type Theme = 'dark' | 'light';
-
-const App: React.FC = () => {
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-  const [showSavedQueries, setShowSavedQueries] = useState(false);
-  const [showHelpDialog, setShowHelpDialog] = useState(false);
-  const [showAboutDialog, setShowAboutDialog] = useState(false);
-  const [showSchemaSearch, setShowSchemaSearch] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [editorHeight, setEditorHeight] = useState(350);
-  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
-  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
-  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
-  const resizeStartXLeftRef = useRef(0);
-  const resizeStartWidthLeftRef = useRef(250);
-  const resizeStartXRightRef = useRef(0);
-  const resizeStartWidthRightRef = useRef(300);
-  const editorResultsRef = useRef<HTMLDivElement>(null);
-  const connection = useConnectionStore((state) => state.connection);
-  const { tabs, setActiveTab, activeTabId, isSplitView } = useTabsStore();
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
-  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
-  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
-
-  // Reset refresh function when switching views
-  useEffect(() => {
-    sidebarRefreshFnRef.current = null;
-    setSidebarIsLoading(false);
-  }, [sidebarView]);
-
-  // Stable callback that invokes the current refresh function
-  const handleSidebarRefresh = useCallback(() => {
-    if (sidebarRefreshFnRef.current) {
-      sidebarRefreshFnRef.current();
-    }
-  }, []);
-  const [schemaSidebar, setSchemaSidebar] = useState<{
-    projectId: string;
-    datasetId: string;
-    tableId: string;
-  } | null>(null);
-
-  useEffect(() => {
-    // Load saved sidebar widths and theme on mount
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
-        // Ensure minimum width of 268px
-        const validWidth = Math.max(268, width);
-        setLeftSidebarWidth(validWidth);
-        resizeStartWidthLeftRef.current = validWidth;
-        savedLeftSidebarWidthRef.current = validWidth;
-      });
-      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
-        setRightSidebarWidth(width);
-        resizeStartWidthRightRef.current = width;
-      });
-      // Load saved theme
-      window.electronAPI.uiSettings.getTheme().then((savedTheme) => {
-        setTheme(savedTheme);
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      });
-    }
-  }, []);
-
-  // Handle theme toggle
-  const handleToggleTheme = useCallback(() => {
-    const newTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    if (window.electronAPI) {
-      window.electronAPI.uiSettings.setTheme(newTheme);
-    }
-  }, [theme]);
-
-  // Handle sidebar collapse/expand
-  const handleLeftSidebarToggle = useCallback(() => {
-    if (leftSidebarCollapsed) {
-      // Expanding - restore saved width, ensuring minimum of 268px
-      setLeftSidebarCollapsed(false);
-      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
-      setLeftSidebarWidth(restoredWidth);
-      savedLeftSidebarWidthRef.current = restoredWidth;
-    } else {
-      // Collapsing - save current width and set to 0
-      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
-      setLeftSidebarCollapsed(true);
-      setLeftSidebarWidth(0);
-    }
-  }, [leftSidebarCollapsed, leftSidebarWidth]);
-
-  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
-    setSchemaSidebar({ projectId, datasetId, tableId });
-  }, []);
-
-  useEffect(() => {
-    // Initialize tabs store (load saved tabs)
-    initializeTabsStore();
-  }, []);
-
-  useEffect(() => {
-    // Try to restore saved connection on mount
-    if (window.electronAPI) {
-      // First check if there's an active connection
-      window.electronAPI.connection.getActive().then((activeConnection) => {
-        if (activeConnection) {
-          useConnectionStore.getState().setConnection(activeConnection);
-        } else {
-          // Try to restore saved connection
-          window.electronAPI.connection.restore().then((restoredConnection) => {
-            if (restoredConnection) {
-              useConnectionStore.getState().setConnection(restoredConnection);
-            } else {
-              // No saved connection, show dialog
-              setShowConnectionDialog(true);
-            }
-          }).catch((error) => {
-            // Failed to restore (e.g., invalid credentials), show dialog
-            console.error('Failed to restore saved connection:', error);
-            setShowConnectionDialog(true);
-          });
-        }
-      });
-    } else {
-      setShowConnectionDialog(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Listen for menu events
-    if (window.electronAPI?.menu) {
-      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
-        setShowHelpDialog(true);
-      });
-      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
-        setShowAboutDialog(true);
-      });
-      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
-        useTabsStore.getState().createTab();
-      });
-      const removeToggleThemeListener = window.electronAPI.menu.onToggleTheme(() => {
-        handleToggleTheme();
-      });
-      const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
-        setShowSchemaSearch(true);
-      });
-
-      return () => {
-        removeHelpListener();
-        removeAboutListener();
-        removeNewTabListener();
-        removeToggleThemeListener();
-        removeSearchSchemaListener();
-      };
-    }
-  }, [handleToggleTheme]);
-
-  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingLeftSidebar(true);
-    resizeStartXLeftRef.current = e.clientX;
-    resizeStartWidthLeftRef.current = leftSidebarWidth;
-  }, [leftSidebarWidth]);
-
-  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingRightSidebar(true);
-    resizeStartXRightRef.current = e.clientX;
-    resizeStartWidthRightRef.current = rightSidebarWidth;
-  }, [rightSidebarWidth]);
-
-  useEffect(() => {
-    if (!isResizingLeftSidebar) return;
-
-    let currentWidth = resizeStartWidthLeftRef.current;
-    let rafId: number | null = null;
-    let pendingWidth: number | null = null;
-
-    const updateWidth = () => {
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-        pendingWidth = null;
-      }
-      rafId = null;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - resizeStartXLeftRef.current;
-      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
-      currentWidth = newWidth;
-      pendingWidth = newWidth;
-      
-      // Throttle updates using requestAnimationFrame
-      if (rafId === null) {
-        rafId = requestAnimationFrame(updateWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingLeftSidebar(false);
-      // Ensure final width is set
-      if (pendingWidth !== null) {
-        setLeftSidebarWidth(pendingWidth);
-      } else {
-        setLeftSidebarWidth(currentWidth);
-      }
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
-      }
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, [isResizingLeftSidebar]);
-
-  useEffect(() => {
-    if (!isResizingRightSidebar) return;
-
-    let currentWidth = resizeStartWidthRightRef.current;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
-      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
-      setRightSidebarWidth(currentWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizingRightSidebar(false);
-      // Save the final width
-      if (window.electronAPI) {
-        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
-      }
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizingRightSidebar]);
-
-  useEffect(() => {
-    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
-      const isModifierPressed = e.metaKey || e.ctrlKey;
-      
-      // Schema search: CMD/CTRL + P
-      if (isModifierPressed && e.key.toLowerCase() === 'p') {
-        e.preventDefault();
-        setShowSchemaSearch(true);
-        return;
-      }
-      
-      // Check if the key is a number between 1-9
-      const keyCode = e.key;
-      const numberMatch = keyCode.match(/^[1-9]$/);
-      
-      if (isModifierPressed && numberMatch) {
-        // Don't trigger if user is typing in an input field
-        const target = e.target as HTMLElement;
-        const isInputField = 
-          target.tagName === 'INPUT' || 
-          target.tagName === 'TEXTAREA' || 
-          target.isContentEditable;
-        
-        if (isInputField) {
-          return;
-        }
-        
-        // Prevent default browser behavior (e.g., browser tab switching)
-        e.preventDefault();
-        
-        // Convert key to index (1-9 -> 0-8)
-        const tabIndex = parseInt(keyCode, 10) - 1;
-        
-        // Only switch to query tabs (filter out Explorer/Saved Queries)
-        const queryTabs = tabs.filter(tab => tab.type === 'query');
-        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
-          setActiveTab(queryTabs[tabIndex].id);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [tabs, setActiveTab]);
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1></h1>
-        <div className="header-actions">
-          {connection && (
-            <div className="connection-status">
-              <span className="status-indicator connected"></span>
-              <span>{connection.projectId}</span>
-            </div>
-          )}
-          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
-        </div>
-      </header>
-      <main className="app-main">
-        {!isSplitView && <TabBar />}
-        <div className="app-content">
-          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
-            <SidebarHeader
-              collapsed={leftSidebarCollapsed}
-              onToggleCollapse={handleLeftSidebarToggle}
-              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
-              isLoading={sidebarIsLoading}
-            />
-            <SidebarSwitcher
-              currentView={sidebarView}
-              onViewChange={setSidebarView}
-              collapsed={leftSidebarCollapsed}
-            />
-            {sidebarView === 'saved-queries' ? (
-              <SavedQueriesTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : sidebarView === 'history' ? (
-              <QueryHistory 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            ) : (
-              <DatasetTree 
-                collapsed={leftSidebarCollapsed}
-                onToggleCollapse={handleLeftSidebarToggle}
-                onShowSchema={handleShowSchema}
-                onRefreshReady={(refreshFn, isLoading) => {
-                  sidebarRefreshFnRef.current = refreshFn;
-                  setSidebarIsLoading(isLoading);
-                }}
-              />
-            )}
-          </div>
-          {!leftSidebarCollapsed && (
-            <div
-              className="resize-handle-vertical"
-              onMouseDown={handleLeftSidebarResizeStart}
-            />
-          )}
-          <div className="app-editor-results" ref={editorResultsRef}>
-            <SplitEditorContainer 
-              editorHeight={editorHeight}
-              onEditorResize={setEditorHeight}
-              theme={theme}
-            />
-          </div>
-          {schemaSidebar && (
-            <>
-              <div
-                className="resize-handle-vertical"
-                onMouseDown={handleRightSidebarResizeStart}
-              />
-              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
-                <SchemaSidebar
-                  projectId={schemaSidebar.projectId}
-                  datasetId={schemaSidebar.datasetId}
-                  tableId={schemaSidebar.tableId}
-                  onClose={() => setSchemaSidebar(null)}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      </main>
-      {showConnectionDialog && (
-        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
-      )}
-      {showSavedQueries && (
-        <SavedQueries onClose={() => setShowSavedQueries(false)} />
-      )}
-      {showHelpDialog && (
-        <HelpDialog onClose={() => setShowHelpDialog(false)} />
-      )}
-      {showAboutDialog && (
-        <AboutDialog onClose={() => setShowAboutDialog(false)} />
-      )}
-      {showSchemaSearch && (
-        <SchemaSearchModal
-          onClose={() => setShowSchemaSearch(false)}
-          onShowSchema={handleShowSchema}
-        />
-      )}
-    </div>
-  );
-};
-
-export default App;
 ````
 
 ## File: src/main/ipc/bigquery.ts
@@ -35517,460 +40430,429 @@ export function registerBigQueryHandlers(): void {
 }
 ````
 
-## File: src/main/preload.ts
+## File: src/main/main.ts
 ````typescript
-import { contextBridge, ipcRenderer } from 'electron';
-import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../shared/types/query';
-import type { Dataset, Table } from '../shared/types/dataset';
-import type { JobDetails } from '../shared/types/bigquery';
+import { app, BrowserWindow, Menu, nativeImage, ipcMain } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import { registerBigQueryHandlers } from './ipc/bigquery';
+import { registerConnectionHandlers } from './ipc/connection';
+import { registerQueriesHandlers } from './ipc/queries';
+import { registerUISettingsHandlers } from './ipc/ui-settings';
+import { registerTabsHandlers } from './ipc/tabs';
+import { registerResultsCacheHandlers, closeCacheDatabase } from './ipc/results-cache';
+import { registerSchemaCacheHandlers, closeSchemaCacheDatabase } from './ipc/schema-cache';
+import { registerExportHandlers } from './ipc/export';
+import { registerQueryHistoryHandlers, closeHistoryDatabase } from './ipc/query-history';
+import { registerLLMHandlers, closeLLMDatabases } from './ipc/llm';
+import { getWindowBounds, setWindowBounds } from './storage/ui-settings-store';
+import { clearAllResults } from './storage/results-cache-sqlite';
 
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    getJobInfo(jobId: string): Promise<JobDetails>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
+// Suppress error logging for "Table not found" errors from IPC handlers
+// These errors are handled in the UI and don't need console logging
+// Intercept at the process level before Electron logs them
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const message = chunk?.toString() || '';
+  // Check if this is a "Table not found" error from getTableSchema
+  // Match various formats Electron might use to log the error
+  if ((message.includes('bigquery:getTableSchema') || message.includes('Error occurred in handler')) && 
+      (message.includes('Table not found') || 
+       message.includes('code: \'BIGQUERY_ERROR\'') ||
+       message.includes('BIGQUERY_ERROR'))) {
+    // Suppress logging for table not found errors
+    return true;
+  }
+  // Write all other messages normally
+  return originalStderrWrite(chunk, encoding, callback);
+};
 
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-  };
-
-  // Schema cache
-  schemaCache: {
-    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
-    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
-    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
-    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
-    getForProject(projectId: string): Promise<StoredSchema[]>;
-    needsRefresh(projectId: string): Promise<boolean>;
-    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
-    deleteForProject(projectId: string): Promise<void>;
-    deleteExpired(): Promise<number>;
-    clear(): Promise<void>;
-    stats(): Promise<{
-      totalSchemas: number;
-      validSchemas: number;
-      expiredSchemas: number;
-      oldestTimestamp: number | null;
-      newestTimestamp: number | null;
-      databaseSizeBytes: number;
-    }>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onSearchSchema(callback: () => void): () => void;
-  };
-
-  // App info
-  app: {
-    getVersion(): Promise<string>;
-  };
-
-  // Export operations
-  export: {
-    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
-  };
-
-  // Query history
-  queryHistory: {
-    add(entry: QueryHistoryEntry): Promise<void>;
-    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
-    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
-    get(id: string): Promise<QueryHistoryEntry | undefined>;
-    delete(id: string): Promise<void>;
-    updateByJobId(jobId: string, totalRows: number): Promise<void>;
-    clear(): Promise<void>;
-    count(): Promise<number>;
-  };
+// Set app name immediately (before any other app calls) for macOS dock
+// This must be called before app.whenReady() to ensure the dock shows the correct name
+if (process.platform === 'darwin') {
+  app.setName('QueryForge');
+  console.log('Initial app name set to:', app.getName());
 }
 
-// Expose protected methods that allow the renderer process to use
-// the ipcRenderer without exposing the entire object
-contextBridge.exposeInMainWorld('electronAPI', {
-  bigquery: {
-    execute: (queryText: string, projectId: string, tabId?: string) =>
-      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
-    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
-    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
-    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
-    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
-    getTableSchema: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
-    getViewDefinition: (datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
-    getJobInfo: (jobId: string) => ipcRenderer.invoke('bigquery:getJobInfo', jobId),
-    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:progress', handler);
-      return () => ipcRenderer.removeListener('bigquery:progress', handler);
-    },
-    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
-      const handler = (_event: any, data: any) => callback(data);
-      ipcRenderer.on('bigquery:rows-update', handler);
-      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
-    },
-  },
-  connection: {
-    configure: (config: ConnectionConfig) =>
-      ipcRenderer.invoke('connection:configure', config),
-    getActive: () => ipcRenderer.invoke('connection:getActive'),
-    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
-    restore: () => ipcRenderer.invoke('connection:restore'),
-    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
-    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
-  },
-  queries: {
-    list: () => ipcRenderer.invoke('queries:list'),
-    get: (id: string) => ipcRenderer.invoke('queries:get', id),
-    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
-    update: (id: string, updates: UpdateQueryInput) =>
-      ipcRenderer.invoke('queries:update', id, updates),
-    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
-    search: (term: string) => ipcRenderer.invoke('queries:search', term),
-  },
-  uiSettings: {
-    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
-    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
-    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
-    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
-    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
-    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
-  },
-  tabs: {
-    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
-    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
-    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
-      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
-    onBeforeClose: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('app:before-close', handler);
-      return () => ipcRenderer.removeListener('app:before-close', handler);
-    },
-  },
-  resultsCache: {
-    save: (tabId: string, results: QueryResult) =>
-      ipcRenderer.invoke('results-cache:save', tabId, results),
-    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
-    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
-    getPage: (tabId: string, pageNumber: number) =>
-      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
-    getRange: (tabId: string, startIndex: number, count: number) =>
-      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
-    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
-    clear: () => ipcRenderer.invoke('results-cache:clear'),
-    stats: () => ipcRenderer.invoke('results-cache:stats'),
-  },
-  schemaCache: {
-    save: (projectId: string, datasetId: string, tableId: string, fields: SchemaField[]) =>
-      ipcRenderer.invoke('schema-cache:save', projectId, datasetId, tableId, fields),
-    saveBatch: (schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>) =>
-      ipcRenderer.invoke('schema-cache:saveBatch', schemas),
-    get: (projectId: string, datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('schema-cache:get', projectId, datasetId, tableId),
-    hasValid: (projectId: string, datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('schema-cache:hasValid', projectId, datasetId, tableId),
-    getForProject: (projectId: string) =>
-      ipcRenderer.invoke('schema-cache:getForProject', projectId),
-    needsRefresh: (projectId: string) =>
-      ipcRenderer.invoke('schema-cache:needsRefresh', projectId),
-    delete: (projectId: string, datasetId: string, tableId: string) =>
-      ipcRenderer.invoke('schema-cache:delete', projectId, datasetId, tableId),
-    deleteForProject: (projectId: string) =>
-      ipcRenderer.invoke('schema-cache:deleteForProject', projectId),
-    deleteExpired: () => ipcRenderer.invoke('schema-cache:deleteExpired'),
-    clear: () => ipcRenderer.invoke('schema-cache:clear'),
-    stats: () => ipcRenderer.invoke('schema-cache:stats'),
-  },
-  menu: {
-    onShowHelp: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-help', handler);
-      return () => ipcRenderer.removeListener('menu:show-help', handler);
-    },
-    onNewTab: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:new-tab', handler);
-      return () => ipcRenderer.removeListener('menu:new-tab', handler);
-    },
-    onShowAbout: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:show-about', handler);
-      return () => ipcRenderer.removeListener('menu:show-about', handler);
-    },
-    onToggleTheme: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:toggle-theme', handler);
-      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
-    },
-    onSaveQuery: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:save-query', handler);
-      return () => ipcRenderer.removeListener('menu:save-query', handler);
-    },
-    onSearchSchema: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on('menu:search-schema', handler);
-      return () => ipcRenderer.removeListener('menu:search-schema', handler);
-    },
-  },
-  app: {
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
-  },
-  export: {
-    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
-      ipcRenderer.invoke('export:saveFile', content, options),
-  },
-  queryHistory: {
-    add: (entry: QueryHistoryEntry) => ipcRenderer.invoke('query-history:add', entry),
-    list: (limit?: number, offset?: number) => ipcRenderer.invoke('query-history:list', limit, offset),
-    search: (searchTerm: string, limit?: number) => ipcRenderer.invoke('query-history:search', searchTerm, limit),
-    get: (id: string) => ipcRenderer.invoke('query-history:get', id),
-    delete: (id: string) => ipcRenderer.invoke('query-history:delete', id),
-    updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
-    clear: () => ipcRenderer.invoke('query-history:clear'),
-    count: () => ipcRenderer.invoke('query-history:count'),
-  },
-} as ElectronAPI);
+let mainWindow: BrowserWindow | null = null;
 
-// Extend Window interface for TypeScript
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
+// Register IPC handlers
+registerBigQueryHandlers();
+registerConnectionHandlers();
+registerQueriesHandlers();
+registerUISettingsHandlers();
+registerTabsHandlers();
+registerResultsCacheHandlers();
+registerSchemaCacheHandlers();
+registerExportHandlers();
+registerQueryHistoryHandlers();
+registerLLMHandlers();
+
+// Register app version handler
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
+function createMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Tab',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:new-tab');
+          },
+        },
+        {
+          label: 'Save Query',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            mainWindow?.webContents.send('menu:save-query');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Quit',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => {
+            app.quit();
+          },
+        },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+        { type: 'separator' },
+        {
+          label: 'Search Schema...',
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            mainWindow?.webContents.send('menu:search-schema');
+          },
+        },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Actual Size' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Toggle Full Screen' },
+        { type: 'separator' },
+        {
+          label: 'Theme Settings...',
+          accelerator: 'CmdOrCtrl+Shift+T',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-theme-settings');
+          },
+        },
+        {
+          label: 'Toggle AI Assistant',
+          accelerator: 'CmdOrCtrl+Shift+A',
+          click: () => {
+            mainWindow?.webContents.send('menu:toggle-ai-assistant');
+          },
+        },
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About QueryForge',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-about');
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+?',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-help');
+          },
+        },
+      ],
+    },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
+function createWindow(): void {
+  // Restore window size and position from previous session
+  const savedBounds = getWindowBounds();
+  const windowState = {
+    width: savedBounds?.width || 1200,
+    height: savedBounds?.height || 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
+  };
+
+  // Get icon path - always check from root directory first (most reliable)
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    console.log('Using icon:', iconPath);
+  } else {
+    console.warn('Icon not found. Expected locations:');
+    if (process.platform === 'darwin') {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.icns'));
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    } else {
+      console.warn('  -', path.join(rootDir, 'queryforge_icon.png'));
+    }
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: windowState.width,
+    height: windowState.height,
+    x: windowState.x,
+    y: windowState.y,
+    backgroundColor: '#1e1e1e',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false, // Required for preload script
+    },
+  };
+
+  // Set icon for Windows/Linux (macOS uses dock icon instead)
+  if (iconPath && process.platform !== 'darwin') {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow({
+    ...windowOptions,
+    title: 'QueryForge',
+  });
+  
+  // Set app icon for macOS dock (if icon found)
+  // macOS will automatically apply rounded corners to the icon
+  if (iconPath && process.platform === 'darwin' && app.dock) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.dock.setIcon(icon);
+        // Set app name again after setting dock icon (macOS may need this)
+        app.setName('QueryForge');
+        console.log('Set macOS dock icon:', absoluteIconPath);
+        console.log('App name after setting icon:', app.getName());
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set dock icon:', error);
+    }
+  }
+
+  // Debounce function to avoid saving too frequently
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveWindowBounds = () => {
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+    }
+    saveTimeout = setTimeout(() => {
+      const bounds = mainWindow?.getBounds();
+      if (bounds) {
+        setWindowBounds({
+          width: bounds.width,
+          height: bounds.height,
+          x: bounds.x,
+          y: bounds.y,
+        });
+      }
+    }, 500); // Debounce by 500ms
+  };
+
+  // Save window state on move/resize
+  mainWindow.on('moved', saveWindowBounds);
+  mainWindow.on('resized', saveWindowBounds);
+
+  // Save window bounds and tabs when window is closed
+  mainWindow.on('close', () => {
+    const bounds = mainWindow?.getBounds();
+    if (bounds) {
+      setWindowBounds({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+      });
+    }
+    // Request tabs to be saved from renderer process
+    mainWindow?.webContents.send('app:before-close');
+    // Clear results cache when application closes
+    clearAllResults();
+  });
+
+  // Load the HTML file from dist (webpack bundles everything)
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+
+  // DevTools can be opened manually via View > Toggle Developer Tools menu or Cmd+Option+I / Ctrl+Shift+I
+  // Only open automatically if explicitly requested via command line flag
+  if (process.argv.includes('--dev') || process.argv.includes('--open-devtools')) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// Set app icon before app is ready (for better compatibility)
+function setAppIcon(): void {
+  const rootDir = process.cwd();
+  let iconPath: string | undefined;
+  
+  if (process.platform === 'darwin') {
+    // macOS: prefer .icns file (better transparency support)
+    const icnsPath = path.join(rootDir, 'queryforge_icon.icns');
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    
+    // Prefer .icns for better transparency and native macOS support
+    if (fs.existsSync(icnsPath)) {
+      iconPath = icnsPath;
+    } else if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  } else {
+    // Windows/Linux: use PNG
+    const pngPath = path.join(rootDir, 'queryforge_icon.png');
+    if (fs.existsSync(pngPath)) {
+      iconPath = pngPath;
+    }
+  }
+  
+  if (iconPath) {
+    try {
+      // Ensure we have an absolute path
+      const absoluteIconPath = path.isAbsolute(iconPath) ? iconPath : path.resolve(rootDir, iconPath);
+      
+      // Verify file exists
+      if (!fs.existsSync(absoluteIconPath)) {
+        console.warn('Icon file does not exist:', absoluteIconPath);
+        return;
+      }
+      
+      // Use nativeImage for both .icns and PNG files
+      // nativeImage.createFromPath() works with .icns files on macOS
+      const icon = nativeImage.createFromPath(absoluteIconPath);
+      if (!icon.isEmpty()) {
+        app.setAboutPanelOptions({
+          iconPath: absoluteIconPath,
+        });
+        console.log('Set app icon:', absoluteIconPath);
+      } else {
+        console.warn('Icon file is empty:', absoluteIconPath);
+      }
+    } catch (error) {
+      console.warn('Failed to set app icon:', error);
+    }
   }
 }
-````
 
-## File: src/renderer/types/electron-api.d.ts
-````typescript
-import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
-import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../../shared/types/query';
-import type { Dataset, Table } from '../../shared/types/dataset';
-import type { JobDetails } from '../../shared/types/bigquery';
+// Set icon early
+setAppIcon();
 
-/**
- * Electron API exposed to renderer process
- */
-export interface ElectronAPI {
-  // BigQuery operations
-  bigquery: {
-    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
-    cancel(jobId: string): Promise<void>;
-    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
-    listDatasets(): Promise<Dataset[]>;
-    listTables(datasetId: string): Promise<Table[]>;
-    getTableSchema(datasetId: string, tableId: string): Promise<{ 
-      fields: ColumnMetadata[];
-      metadata?: {
-        creationTime?: number;
-        lastModifiedTime?: number;
-        numRows?: number;
-        numBytes?: number;
-      };
-    }>;
-    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
-    getJobInfo(jobId: string): Promise<JobDetails>;
-    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
-    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
-  };
-
-  // Connection management
-  connection: {
-    configure(config: ConnectionConfig): Promise<void>;
-    getActive(): Promise<ConnectionConfiguration | null>;
-    getSaved(): Promise<ConnectionConfiguration | null>;
-    restore(): Promise<ConnectionConfiguration | null>;
-    test(config: ConnectionConfig): Promise<boolean>;
-    disconnect(): Promise<void>;
-  };
-
-  // Saved queries
-  queries: {
-    list(): Promise<SavedQuery[]>;
-    get(id: string): Promise<SavedQuery>;
-    save(query: SaveQueryInput): Promise<SavedQuery>;
-    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
-    delete(id: string): Promise<void>;
-    search(term: string): Promise<SavedQuery[]>;
-  };
-
-  // UI settings
-  uiSettings: {
-    getLeftSidebarWidth(): Promise<number>;
-    setLeftSidebarWidth(width: number): Promise<void>;
-    getRightSidebarWidth(): Promise<number>;
-    setRightSidebarWidth(width: number): Promise<void>;
-    getTheme(): Promise<'dark' | 'light'>;
-    setTheme(theme: 'dark' | 'light'): Promise<void>;
-  };
-
-  // Tabs management
-  tabs: {
-    getTabs(): Promise<QueryTab[]>;
-    getActiveTabId(): Promise<string | null>;
-    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
-    onBeforeClose(callback: () => void): () => void;
-  };
-
-  // Results cache (SQLite-backed for performance with large datasets)
-  resultsCache: {
-    save(tabId: string, results: QueryResult): Promise<void>;
-    get(tabId: string): Promise<QueryResult | null>;
-    getMetadata(tabId: string): Promise<{
-      columns: ColumnMetadata[];
-      totalRows: number;
-      rowsReturned: number;
-      executionTimeMs: number;
-      bytesProcessed?: number;
-      jobId: string;
-      hasMore: boolean;
-    } | null>;
-    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
-    /** Get a range of rows for virtual scrolling */
-    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
-    delete(tabId: string): Promise<void>;
-    clear(): Promise<void>;
-    /** Get cache statistics */
-    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
-  };
-
-  // Schema cache (SQLite-backed with 12-hour TTL)
-  schemaCache: {
-    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
-    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
-    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
-    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
-    getForProject(projectId: string): Promise<StoredSchema[]>;
-    needsRefresh(projectId: string): Promise<boolean>;
-    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
-    deleteForProject(projectId: string): Promise<void>;
-    deleteExpired(): Promise<number>;
-    clear(): Promise<void>;
-    stats(): Promise<{
-      totalSchemas: number;
-      validSchemas: number;
-      expiredSchemas: number;
-      oldestTimestamp: number | null;
-      newestTimestamp: number | null;
-      databaseSizeBytes: number;
-    }>;
-  };
-
-  // Menu events
-  menu: {
-    onShowHelp(callback: () => void): () => void;
-    onNewTab(callback: () => void): () => void;
-    onShowAbout(callback: () => void): () => void;
-    onCloseTab(callback: () => void): () => void;
-    onSaveQuery(callback: () => void): () => void;
-    onFormatQuery(callback: () => void): () => void;
-    onExecuteQuery(callback: () => void): () => void;
-    onShowConnection(callback: () => void): () => void;
-    onDisconnect(callback: () => void): () => void;
-    onToggleTheme(callback: () => void): () => void;
-    onSearchSchema(callback: () => void): () => void;
-  };
-
-  // Export operations
-  export: {
-    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
-  };
-
-  // Query history
-  queryHistory: {
-    add(entry: QueryHistoryEntry): Promise<void>;
-    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
-    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
-    get(id: string): Promise<QueryHistoryEntry | undefined>;
-    delete(id: string): Promise<void>;
-    updateByJobId(jobId: string, totalRows: number): Promise<void>;
-    clear(): Promise<void>;
-    count(): Promise<number>;
-  };
-}
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
+app.whenReady().then(() => {
+  // Verify and set app name again after app is ready (for macOS dock)
+  if (process.platform === 'darwin') {
+    app.setName('QueryForge');
+    console.log('App name set to:', app.getName());
   }
-}
+  
+  // Also override console.error as a backup (though stderr.write should catch most cases)
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    const errorMessage = args.join(' ') || '';
+    // Check if this is a "Table not found" error from getTableSchema
+    // Match various formats Electron might use to log the error
+    if ((errorMessage.includes('bigquery:getTableSchema') || errorMessage.includes('Error occurred in handler')) && 
+        (errorMessage.includes('Table not found') || 
+         errorMessage.includes('code: \'BIGQUERY_ERROR\'') ||
+         errorMessage.includes('BIGQUERY_ERROR'))) {
+      // Suppress logging for table not found errors
+      return;
+    }
+    // Log all other errors normally
+    originalConsoleError.apply(console, args);
+  };
+  
+  createMenu();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Clear results cache when all windows are closed
+  clearAllResults();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// Clear cache and close database on app quit (for macOS)
+app.on('will-quit', () => {
+  clearAllResults();
+  closeCacheDatabase();
+  closeSchemaCacheDatabase();
+  closeHistoryDatabase();
+  closeLLMDatabases();
+});
 ````
 
 ## File: src/renderer/utils/sql-validation.ts
@@ -38607,6 +43489,967 @@ export const validateGroupByColumns = async (
 };
 ````
 
+## File: src/renderer/App.tsx
+````typescript
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useConnectionStore } from './stores/connection-store';
+import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
+import { useThemeStore } from './stores/theme-store';
+import { useLLMStore } from './stores/llm-store';
+import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
+import { SavedQueries } from './components/SavedQueries/SavedQueries';
+import { HelpDialog } from './components/HelpDialog/HelpDialog';
+import { AboutDialog } from './components/AboutDialog/AboutDialog';
+import { ThemeSettingsDialog } from './components/ThemeSettingsDialog/ThemeSettingsDialog';
+import { TabBar } from './components/TabBar/TabBar';
+import { SplitEditorContainer } from './components/SplitEditorContainer/SplitEditorContainer';
+import { DatasetTree } from './components/DatasetTree/DatasetTree';
+import { SavedQueriesTree } from './components/SavedQueriesTree/SavedQueriesTree';
+import { QueryHistory } from './components/QueryHistory/QueryHistory';
+import { SchemaSidebar } from './components/SchemaSidebar/SchemaSidebar';
+import { SidebarSwitcher, type SidebarView } from './components/SidebarSwitcher/SidebarSwitcher';
+import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
+import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
+import { AIChatSidebar } from './components/AIChatSidebar/AIChatSidebar';
+import { LLMSettingsDialog } from './components/LLMSettingsDialog/LLMSettingsDialog';
+import './themes.css';
+import './App.css';
+
+const App: React.FC = () => {
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showSavedQueries, setShowSavedQueries] = useState(false);
+  const [showHelpDialog, setShowHelpDialog] = useState(false);
+  const [showAboutDialog, setShowAboutDialog] = useState(false);
+  const [showSchemaSearch, setShowSchemaSearch] = useState(false);
+  const [showThemeSettings, setShowThemeSettings] = useState(false);
+  const [showLLMSettings, setShowLLMSettings] = useState(false);
+  const [showAIChatSidebar, setShowAIChatSidebar] = useState(false);
+  
+  // Theme store
+  const { initialize: initializeTheme, activeTheme } = useThemeStore();
+  const theme = activeTheme.type;
+  const [editorHeight, setEditorHeight] = useState(350);
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState(false);
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+  const [isResizingAISidebar, setIsResizingAISidebar] = useState(false);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(268);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [aiSidebarWidth, setAiSidebarWidth] = useState(380);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
+  const savedLeftSidebarWidthRef = useRef(268); // Store the width before collapse
+  const resizeStartXLeftRef = useRef(0);
+  const resizeStartWidthLeftRef = useRef(250);
+  const resizeStartXRightRef = useRef(0);
+  const resizeStartWidthRightRef = useRef(300);
+  const resizeStartXAIRef = useRef(0);
+  const resizeStartWidthAIRef = useRef(380);
+  const editorResultsRef = useRef<HTMLDivElement>(null);
+  const connection = useConnectionStore((state) => state.connection);
+  const { tabs, setActiveTab, activeTabId, isSplitView } = useTabsStore();
+  const { loadSettings: loadLLMSettings } = useLLMStore();
+  const activeTab = tabs.find(t => t.id === activeTabId);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('explorer');
+  const sidebarRefreshFnRef = useRef<(() => void) | null>(null);
+  const [sidebarIsLoading, setSidebarIsLoading] = useState(false);
+
+  // Reset refresh function when switching views
+  useEffect(() => {
+    sidebarRefreshFnRef.current = null;
+    setSidebarIsLoading(false);
+  }, [sidebarView]);
+
+  // Load LLM settings on mount
+  useEffect(() => {
+    loadLLMSettings();
+  }, [loadLLMSettings]);
+
+  // Stable callback that invokes the current refresh function
+  const handleSidebarRefresh = useCallback(() => {
+    if (sidebarRefreshFnRef.current) {
+      sidebarRefreshFnRef.current();
+    }
+  }, []);
+  const [schemaSidebar, setSchemaSidebar] = useState<{
+    projectId: string;
+    datasetId: string;
+    tableId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    // Load saved sidebar widths on mount
+    if (window.electronAPI) {
+      window.electronAPI.uiSettings.getLeftSidebarWidth().then((width) => {
+        // Ensure minimum width of 268px
+        const validWidth = Math.max(268, width);
+        setLeftSidebarWidth(validWidth);
+        resizeStartWidthLeftRef.current = validWidth;
+        savedLeftSidebarWidthRef.current = validWidth;
+      });
+      window.electronAPI.uiSettings.getRightSidebarWidth().then((width) => {
+        setRightSidebarWidth(width);
+        resizeStartWidthRightRef.current = width;
+      });
+    }
+    // Initialize theme store (handles loading saved theme)
+    initializeTheme();
+  }, [initializeTheme]);
+
+  // Handle sidebar collapse/expand
+  const handleLeftSidebarToggle = useCallback(() => {
+    if (leftSidebarCollapsed) {
+      // Expanding - restore saved width, ensuring minimum of 268px
+      setLeftSidebarCollapsed(false);
+      const restoredWidth = Math.max(268, savedLeftSidebarWidthRef.current);
+      setLeftSidebarWidth(restoredWidth);
+      savedLeftSidebarWidthRef.current = restoredWidth;
+    } else {
+      // Collapsing - save current width and set to 0
+      savedLeftSidebarWidthRef.current = Math.max(268, leftSidebarWidth);
+      setLeftSidebarCollapsed(true);
+      setLeftSidebarWidth(0);
+    }
+  }, [leftSidebarCollapsed, leftSidebarWidth]);
+
+  const handleShowSchema = useCallback((projectId: string, datasetId: string, tableId: string) => {
+    setSchemaSidebar({ projectId, datasetId, tableId });
+  }, []);
+
+  useEffect(() => {
+    // Initialize tabs store (load saved tabs)
+    initializeTabsStore();
+  }, []);
+
+  useEffect(() => {
+    // Try to restore saved connection on mount
+    if (window.electronAPI) {
+      // First check if there's an active connection
+      window.electronAPI.connection.getActive().then((activeConnection) => {
+        if (activeConnection) {
+          useConnectionStore.getState().setConnection(activeConnection);
+        } else {
+          // Try to restore saved connection
+          window.electronAPI.connection.restore().then((restoredConnection) => {
+            if (restoredConnection) {
+              useConnectionStore.getState().setConnection(restoredConnection);
+            } else {
+              // No saved connection, show dialog
+              setShowConnectionDialog(true);
+            }
+          }).catch((error) => {
+            // Failed to restore (e.g., invalid credentials), show dialog
+            console.error('Failed to restore saved connection:', error);
+            setShowConnectionDialog(true);
+          });
+        }
+      });
+    } else {
+      setShowConnectionDialog(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Listen for menu events
+    if (window.electronAPI?.menu) {
+      const removeHelpListener = window.electronAPI.menu.onShowHelp(() => {
+        setShowHelpDialog(true);
+      });
+      const removeAboutListener = window.electronAPI.menu.onShowAbout(() => {
+        setShowAboutDialog(true);
+      });
+      const removeNewTabListener = window.electronAPI.menu.onNewTab(() => {
+        useTabsStore.getState().createTab();
+      });
+      const removeSearchSchemaListener = window.electronAPI.menu.onSearchSchema(() => {
+        setShowSchemaSearch(true);
+      });
+      const removeThemeSettingsListener = window.electronAPI.menu.onShowThemeSettings(() => {
+        setShowThemeSettings(true);
+      });
+      const removeToggleAIAssistantListener = window.electronAPI.menu.onToggleAIAssistant?.(() => {
+        setShowAIChatSidebar((prev) => !prev);
+      });
+
+      return () => {
+        removeHelpListener();
+        removeAboutListener();
+        removeNewTabListener();
+        removeSearchSchemaListener();
+        removeThemeSettingsListener();
+        removeToggleAIAssistantListener?.();
+      };
+    }
+  }, []);
+
+  const handleLeftSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingLeftSidebar(true);
+    resizeStartXLeftRef.current = e.clientX;
+    resizeStartWidthLeftRef.current = leftSidebarWidth;
+  }, [leftSidebarWidth]);
+
+  const handleRightSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    resizeStartXRightRef.current = e.clientX;
+    resizeStartWidthRightRef.current = rightSidebarWidth;
+  }, [rightSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingLeftSidebar) return;
+
+    let currentWidth = resizeStartWidthLeftRef.current;
+    let rafId: number | null = null;
+    let pendingWidth: number | null = null;
+
+    const updateWidth = () => {
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+        pendingWidth = null;
+      }
+      rafId = null;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartXLeftRef.current;
+      const newWidth = Math.max(268, Math.min(600, resizeStartWidthLeftRef.current + diff)); // Min 268px, max 600px
+      currentWidth = newWidth;
+      pendingWidth = newWidth;
+      
+      // Throttle updates using requestAnimationFrame
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updateWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
+      // Ensure final width is set
+      if (pendingWidth !== null) {
+        setLeftSidebarWidth(pendingWidth);
+      } else {
+        setLeftSidebarWidth(currentWidth);
+      }
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setLeftSidebarWidth(currentWidth);
+      }
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [isResizingLeftSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return;
+
+    let currentWidth = resizeStartWidthRightRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXRightRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(150, Math.min(600, resizeStartWidthRightRef.current + diff)); // Min 150px, max 600px
+      setRightSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRightSidebar(false);
+      // Save the final width
+      if (window.electronAPI) {
+        window.electronAPI.uiSettings.setRightSidebarWidth(currentWidth);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRightSidebar]);
+
+  // AI Sidebar resize handler
+  const handleAISidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingAISidebar(true);
+    resizeStartXAIRef.current = e.clientX;
+    resizeStartWidthAIRef.current = aiSidebarWidth;
+  }, [aiSidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingAISidebar) return;
+
+    let currentWidth = resizeStartWidthAIRef.current;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = resizeStartXAIRef.current - e.clientX; // Inverted because we're resizing from the right
+      currentWidth = Math.max(300, Math.min(700, resizeStartWidthAIRef.current + diff)); // Min 300px, max 700px
+      setAiSidebarWidth(currentWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingAISidebar(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingAISidebar]);
+
+  // Handle inserting a query from AI chat into the active editor
+  const handleInsertQueryFromAI = useCallback((query: string) => {
+    const { activeTabId, tabs, setTabQuery } = useTabsStore.getState();
+    if (!activeTabId) return;
+    
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (!activeTab) return;
+    
+    // Append the query to the existing content (or replace if empty)
+    const existingQuery = activeTab.queryText || '';
+    const newQuery = existingQuery 
+      ? `${existingQuery}\n\n-- AI Generated Query\n${query}`
+      : query;
+    
+    setTabQuery(activeTabId, newQuery);
+  }, []);
+
+  useEffect(() => {
+    // Handle keyboard shortcuts for tab navigation (CMD/CTRL + 1-9) and schema search (CMD/CTRL + P)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if CMD (Mac) or CTRL (Windows/Linux) is pressed
+      const isModifierPressed = e.metaKey || e.ctrlKey;
+      
+      // Schema search: CMD/CTRL + P
+      if (isModifierPressed && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setShowSchemaSearch(true);
+        return;
+      }
+      
+      // Check if the key is a number between 1-9
+      const keyCode = e.key;
+      const numberMatch = keyCode.match(/^[1-9]$/);
+      
+      if (isModifierPressed && numberMatch) {
+        // Don't trigger if user is typing in an input field
+        const target = e.target as HTMLElement;
+        const isInputField = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' || 
+          target.isContentEditable;
+        
+        if (isInputField) {
+          return;
+        }
+        
+        // Prevent default browser behavior (e.g., browser tab switching)
+        e.preventDefault();
+        
+        // Convert key to index (1-9 -> 0-8)
+        const tabIndex = parseInt(keyCode, 10) - 1;
+        
+        // Only switch to query tabs (filter out Explorer/Saved Queries)
+        const queryTabs = tabs.filter(tab => tab.type === 'query');
+        if (tabIndex >= 0 && tabIndex < queryTabs.length) {
+          setActiveTab(queryTabs[tabIndex].id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [tabs, setActiveTab]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1></h1>
+        <div className="header-actions">
+          {connection && (
+            <div className="connection-status">
+              <span className="status-indicator connected"></span>
+              <span>{connection.projectId}</span>
+            </div>
+          )}
+          <button onClick={() => setShowConnectionDialog(true)}>Configure Connection</button>
+        </div>
+      </header>
+      <main className="app-main">
+        {!isSplitView && <TabBar />}
+        <div className="app-content">
+          <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
+            <SidebarHeader
+              collapsed={leftSidebarCollapsed}
+              onToggleCollapse={handleLeftSidebarToggle}
+              onRefresh={sidebarRefreshFnRef.current ? handleSidebarRefresh : undefined}
+              isLoading={sidebarIsLoading}
+            />
+            <SidebarSwitcher
+              currentView={sidebarView}
+              onViewChange={setSidebarView}
+              collapsed={leftSidebarCollapsed}
+            />
+            {sidebarView === 'saved-queries' ? (
+              <SavedQueriesTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : sidebarView === 'history' ? (
+              <QueryHistory 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            ) : (
+              <DatasetTree 
+                collapsed={leftSidebarCollapsed}
+                onToggleCollapse={handleLeftSidebarToggle}
+                onShowSchema={handleShowSchema}
+                onRefreshReady={(refreshFn, isLoading) => {
+                  sidebarRefreshFnRef.current = refreshFn;
+                  setSidebarIsLoading(isLoading);
+                }}
+              />
+            )}
+          </div>
+          {!leftSidebarCollapsed && (
+            <div
+              className="resize-handle-vertical"
+              onMouseDown={handleLeftSidebarResizeStart}
+            />
+          )}
+          <div className="app-editor-results" ref={editorResultsRef}>
+            <SplitEditorContainer 
+              editorHeight={editorHeight}
+              onEditorResize={setEditorHeight}
+              theme={theme}
+            />
+          </div>
+          {schemaSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleRightSidebarResizeStart}
+              />
+              <div style={{ width: `${rightSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <SchemaSidebar
+                  projectId={schemaSidebar.projectId}
+                  datasetId={schemaSidebar.datasetId}
+                  tableId={schemaSidebar.tableId}
+                  onClose={() => setSchemaSidebar(null)}
+                />
+              </div>
+            </>
+          )}
+          {showAIChatSidebar && (
+            <>
+              <div
+                className="resize-handle-vertical"
+                onMouseDown={handleAISidebarResizeStart}
+              />
+              <div style={{ width: `${aiSidebarWidth}px`, flexShrink: 0, minWidth: 0 }}>
+                <AIChatSidebar
+                  onClose={() => setShowAIChatSidebar(false)}
+                  onOpenSettings={() => setShowLLMSettings(true)}
+                  onInsertQuery={handleInsertQueryFromAI}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+      {showConnectionDialog && (
+        <ConnectionDialog onClose={() => setShowConnectionDialog(false)} />
+      )}
+      {showSavedQueries && (
+        <SavedQueries onClose={() => setShowSavedQueries(false)} />
+      )}
+      {showHelpDialog && (
+        <HelpDialog onClose={() => setShowHelpDialog(false)} />
+      )}
+      {showAboutDialog && (
+        <AboutDialog onClose={() => setShowAboutDialog(false)} />
+      )}
+      {showSchemaSearch && (
+        <SchemaSearchModal
+          onClose={() => setShowSchemaSearch(false)}
+          onShowSchema={handleShowSchema}
+        />
+      )}
+      {showThemeSettings && (
+        <ThemeSettingsDialog onClose={() => setShowThemeSettings(false)} />
+      )}
+      {showLLMSettings && (
+        <LLMSettingsDialog onClose={() => setShowLLMSettings(false)} />
+      )}
+    </div>
+  );
+};
+
+export default App;
+````
+
+## File: src/main/preload.ts
+````typescript
+import { contextBridge, ipcRenderer } from 'electron';
+import type { ConnectionConfig, ConnectionConfiguration } from '../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../shared/types/query';
+import type { Dataset, Table } from '../shared/types/dataset';
+import type { JobDetails } from '../shared/types/bigquery';
+import type { ThemeDefinition, StoredThemeSettings } from '../shared/types/theme';
+import type {
+  LLMProvider,
+  LLMConfig,
+  LLMSettings,
+  ChatMessage,
+  ChatConversation,
+  ChatResponse,
+  SchemaContext,
+  ChatStreamChunk,
+} from '../shared/types/llm';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    getJobInfo(jobId: string): Promise<JobDetails>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+    // Theme settings
+    getThemeSettings(): Promise<StoredThemeSettings>;
+    setActiveTheme(themeId: string): Promise<void>;
+    addCustomTheme(theme: ThemeDefinition): Promise<void>;
+    removeCustomTheme(themeId: string): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+  };
+
+  // Schema cache
+  schemaCache: {
+    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
+    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
+    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
+    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
+    getForProject(projectId: string): Promise<StoredSchema[]>;
+    needsRefresh(projectId: string): Promise<boolean>;
+    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
+    deleteForProject(projectId: string): Promise<void>;
+    deleteExpired(): Promise<number>;
+    clear(): Promise<void>;
+    stats(): Promise<{
+      totalSchemas: number;
+      validSchemas: number;
+      expiredSchemas: number;
+      oldestTimestamp: number | null;
+      newestTimestamp: number | null;
+      databaseSizeBytes: number;
+    }>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onSearchSchema(callback: () => void): () => void;
+    onShowThemeSettings(callback: () => void): () => void;
+    onToggleAIAssistant(callback: () => void): () => void;
+  };
+
+  // App info
+  app: {
+    getVersion(): Promise<string>;
+  };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
+  };
+
+  // LLM / AI Chat operations
+  llm: {
+    // Settings
+    getSettings(): Promise<LLMSettings>;
+    saveSettings(settings: LLMSettings): Promise<void>;
+    configureProvider(config: LLMConfig): Promise<void>;
+    getProviderConfig(provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null>;
+    hasApiKey(provider: LLMProvider): Promise<boolean>;
+    deleteProviderConfig(provider: LLMProvider): Promise<void>;
+    setActiveProvider(provider: LLMProvider | null): Promise<void>;
+    getActiveProvider(): Promise<LLMProvider | null>;
+    saveSystemPrompt(prompt: string): Promise<void>;
+    getSystemPrompt(): Promise<string>;
+    testConnection(provider?: LLMProvider): Promise<{ success: boolean; error?: string }>;
+    isConfigured(): Promise<boolean>;
+    
+    // Chat
+    chat(messages: ChatMessage[], schemaContext?: SchemaContext): Promise<ChatResponse>;
+    chatStream(conversationId: string, messages: ChatMessage[], schemaContext?: SchemaContext): Promise<{ messageId: string }>;
+    onStreamChunk(callback: (data: { conversationId: string; messageId: string; content: string; isComplete: boolean }) => void): () => void;
+    onStreamComplete(callback: (data: { conversationId: string; messageId: string; fullContent: string; containsQuery: boolean; sqlQuery?: string }) => void): () => void;
+    onStreamError(callback: (data: { conversationId: string; error: string }) => void): () => void;
+    
+    // Conversations
+    createConversation(title?: string, tabId?: string): Promise<ChatConversation>;
+    getConversation(id: string): Promise<ChatConversation | null>;
+    listConversations(limit?: number, offset?: number): Promise<ChatConversation[]>;
+    updateConversation(id: string, updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>): Promise<ChatConversation | null>;
+    addMessage(conversationId: string, message: ChatMessage): Promise<ChatConversation | null>;
+    deleteConversation(id: string): Promise<void>;
+    clearConversations(): Promise<void>;
+    searchConversations(query: string, limit?: number): Promise<ChatConversation[]>;
+    getTabConversation(tabId: string): Promise<ChatConversation>;
+  };
+}
+
+// Expose protected methods that allow the renderer process to use
+// the ipcRenderer without exposing the entire object
+contextBridge.exposeInMainWorld('electronAPI', {
+  bigquery: {
+    execute: (queryText: string, projectId: string, tabId?: string) =>
+      ipcRenderer.invoke('bigquery:execute', queryText, projectId, tabId),
+    cancel: (jobId: string) => ipcRenderer.invoke('bigquery:cancel', jobId),
+    dryRun: (queryText: string) => ipcRenderer.invoke('bigquery:dryRun', queryText),
+    listDatasets: () => ipcRenderer.invoke('bigquery:listDatasets'),
+    listTables: (datasetId: string) => ipcRenderer.invoke('bigquery:listTables', datasetId),
+    getTableSchema: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getTableSchema', datasetId, tableId),
+    getViewDefinition: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
+    getJobInfo: (jobId: string) => ipcRenderer.invoke('bigquery:getJobInfo', jobId),
+    onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:progress', handler);
+      return () => ipcRenderer.removeListener('bigquery:progress', handler);
+    },
+    onRowsUpdate: (callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('bigquery:rows-update', handler);
+      return () => ipcRenderer.removeListener('bigquery:rows-update', handler);
+    },
+  },
+  connection: {
+    configure: (config: ConnectionConfig) =>
+      ipcRenderer.invoke('connection:configure', config),
+    getActive: () => ipcRenderer.invoke('connection:getActive'),
+    getSaved: () => ipcRenderer.invoke('connection:getSaved'),
+    restore: () => ipcRenderer.invoke('connection:restore'),
+    test: (config: ConnectionConfig) => ipcRenderer.invoke('connection:test', config),
+    disconnect: () => ipcRenderer.invoke('connection:disconnect'),
+  },
+  queries: {
+    list: () => ipcRenderer.invoke('queries:list'),
+    get: (id: string) => ipcRenderer.invoke('queries:get', id),
+    save: (query: SaveQueryInput) => ipcRenderer.invoke('queries:save', query),
+    update: (id: string, updates: UpdateQueryInput) =>
+      ipcRenderer.invoke('queries:update', id, updates),
+    delete: (id: string) => ipcRenderer.invoke('queries:delete', id),
+    search: (term: string) => ipcRenderer.invoke('queries:search', term),
+  },
+  uiSettings: {
+    getLeftSidebarWidth: () => ipcRenderer.invoke('ui-settings:getLeftSidebarWidth'),
+    setLeftSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setLeftSidebarWidth', width),
+    getRightSidebarWidth: () => ipcRenderer.invoke('ui-settings:getRightSidebarWidth'),
+    setRightSidebarWidth: (width: number) => ipcRenderer.invoke('ui-settings:setRightSidebarWidth', width),
+    getTheme: () => ipcRenderer.invoke('ui-settings:getTheme'),
+    setTheme: (theme: 'dark' | 'light') => ipcRenderer.invoke('ui-settings:setTheme', theme),
+    // Theme settings
+    getThemeSettings: () => ipcRenderer.invoke('ui-settings:getThemeSettings'),
+    setActiveTheme: (themeId: string) => ipcRenderer.invoke('ui-settings:setActiveTheme', themeId),
+    addCustomTheme: (theme: ThemeDefinition) => ipcRenderer.invoke('ui-settings:addCustomTheme', theme),
+    removeCustomTheme: (themeId: string) => ipcRenderer.invoke('ui-settings:removeCustomTheme', themeId),
+  },
+  tabs: {
+    getTabs: () => ipcRenderer.invoke('tabs:getTabs'),
+    getActiveTabId: () => ipcRenderer.invoke('tabs:getActiveTabId'),
+    saveTabs: (tabs: QueryTab[], activeTabId: string | null) =>
+      ipcRenderer.invoke('tabs:saveTabs', tabs, activeTabId),
+    onBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('app:before-close', handler);
+      return () => ipcRenderer.removeListener('app:before-close', handler);
+    },
+  },
+  resultsCache: {
+    save: (tabId: string, results: QueryResult) =>
+      ipcRenderer.invoke('results-cache:save', tabId, results),
+    get: (tabId: string) => ipcRenderer.invoke('results-cache:get', tabId),
+    getMetadata: (tabId: string) => ipcRenderer.invoke('results-cache:getMetadata', tabId),
+    getPage: (tabId: string, pageNumber: number) =>
+      ipcRenderer.invoke('results-cache:getPage', tabId, pageNumber),
+    getRange: (tabId: string, startIndex: number, count: number) =>
+      ipcRenderer.invoke('results-cache:getRange', tabId, startIndex, count),
+    delete: (tabId: string) => ipcRenderer.invoke('results-cache:delete', tabId),
+    clear: () => ipcRenderer.invoke('results-cache:clear'),
+    stats: () => ipcRenderer.invoke('results-cache:stats'),
+  },
+  schemaCache: {
+    save: (projectId: string, datasetId: string, tableId: string, fields: SchemaField[]) =>
+      ipcRenderer.invoke('schema-cache:save', projectId, datasetId, tableId, fields),
+    saveBatch: (schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>) =>
+      ipcRenderer.invoke('schema-cache:saveBatch', schemas),
+    get: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:get', projectId, datasetId, tableId),
+    hasValid: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:hasValid', projectId, datasetId, tableId),
+    getForProject: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:getForProject', projectId),
+    needsRefresh: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:needsRefresh', projectId),
+    delete: (projectId: string, datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('schema-cache:delete', projectId, datasetId, tableId),
+    deleteForProject: (projectId: string) =>
+      ipcRenderer.invoke('schema-cache:deleteForProject', projectId),
+    deleteExpired: () => ipcRenderer.invoke('schema-cache:deleteExpired'),
+    clear: () => ipcRenderer.invoke('schema-cache:clear'),
+    stats: () => ipcRenderer.invoke('schema-cache:stats'),
+  },
+  menu: {
+    onShowHelp: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-help', handler);
+      return () => ipcRenderer.removeListener('menu:show-help', handler);
+    },
+    onNewTab: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:new-tab', handler);
+      return () => ipcRenderer.removeListener('menu:new-tab', handler);
+    },
+    onShowAbout: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-about', handler);
+      return () => ipcRenderer.removeListener('menu:show-about', handler);
+    },
+    onToggleTheme: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-theme', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-theme', handler);
+    },
+    onSaveQuery: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:save-query', handler);
+      return () => ipcRenderer.removeListener('menu:save-query', handler);
+    },
+    onSearchSchema: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:search-schema', handler);
+      return () => ipcRenderer.removeListener('menu:search-schema', handler);
+    },
+    onShowThemeSettings: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-theme-settings', handler);
+      return () => ipcRenderer.removeListener('menu:show-theme-settings', handler);
+    },
+    onToggleAIAssistant: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:toggle-ai-assistant', handler);
+      return () => ipcRenderer.removeListener('menu:toggle-ai-assistant', handler);
+    },
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+  export: {
+    saveFile: (content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }) =>
+      ipcRenderer.invoke('export:saveFile', content, options),
+  },
+  queryHistory: {
+    add: (entry: QueryHistoryEntry) => ipcRenderer.invoke('query-history:add', entry),
+    list: (limit?: number, offset?: number) => ipcRenderer.invoke('query-history:list', limit, offset),
+    search: (searchTerm: string, limit?: number) => ipcRenderer.invoke('query-history:search', searchTerm, limit),
+    get: (id: string) => ipcRenderer.invoke('query-history:get', id),
+    delete: (id: string) => ipcRenderer.invoke('query-history:delete', id),
+    updateByJobId: (jobId: string, totalRows: number) => ipcRenderer.invoke('query-history:updateByJobId', jobId, totalRows),
+    clear: () => ipcRenderer.invoke('query-history:clear'),
+    count: () => ipcRenderer.invoke('query-history:count'),
+  },
+  llm: {
+    // Settings
+    getSettings: () => ipcRenderer.invoke('llm:getSettings'),
+    saveSettings: (settings: LLMSettings) => ipcRenderer.invoke('llm:saveSettings', settings),
+    configureProvider: (config: LLMConfig) => ipcRenderer.invoke('llm:configureProvider', config),
+    getProviderConfig: (provider: LLMProvider) => ipcRenderer.invoke('llm:getProviderConfig', provider),
+    hasApiKey: (provider: LLMProvider) => ipcRenderer.invoke('llm:hasApiKey', provider),
+    deleteProviderConfig: (provider: LLMProvider) => ipcRenderer.invoke('llm:deleteProviderConfig', provider),
+    setActiveProvider: (provider: LLMProvider | null) => ipcRenderer.invoke('llm:setActiveProvider', provider),
+    getActiveProvider: () => ipcRenderer.invoke('llm:getActiveProvider'),
+    saveSystemPrompt: (prompt: string) => ipcRenderer.invoke('llm:saveSystemPrompt', prompt),
+    getSystemPrompt: () => ipcRenderer.invoke('llm:getSystemPrompt'),
+    testConnection: (provider?: LLMProvider) => ipcRenderer.invoke('llm:testConnection', provider),
+    isConfigured: () => ipcRenderer.invoke('llm:isConfigured'),
+    
+    // Chat
+    chat: (messages: ChatMessage[], schemaContext?: SchemaContext) => 
+      ipcRenderer.invoke('llm:chat', messages, schemaContext),
+    chatStream: (conversationId: string, messages: ChatMessage[], schemaContext?: SchemaContext) =>
+      ipcRenderer.invoke('llm:chatStream', conversationId, messages, schemaContext),
+    onStreamChunk: (callback: (data: { conversationId: string; messageId: string; content: string; isComplete: boolean }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('llm:streamChunk', handler);
+      return () => ipcRenderer.removeListener('llm:streamChunk', handler);
+    },
+    onStreamComplete: (callback: (data: { conversationId: string; messageId: string; fullContent: string; containsQuery: boolean; sqlQuery?: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('llm:streamComplete', handler);
+      return () => ipcRenderer.removeListener('llm:streamComplete', handler);
+    },
+    onStreamError: (callback: (data: { conversationId: string; error: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('llm:streamError', handler);
+      return () => ipcRenderer.removeListener('llm:streamError', handler);
+    },
+    
+    // Conversations
+    createConversation: (title?: string, tabId?: string) => 
+      ipcRenderer.invoke('llm:createConversation', title, tabId),
+    getConversation: (id: string) => ipcRenderer.invoke('llm:getConversation', id),
+    listConversations: (limit?: number, offset?: number) => 
+      ipcRenderer.invoke('llm:listConversations', limit, offset),
+    updateConversation: (id: string, updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>) =>
+      ipcRenderer.invoke('llm:updateConversation', id, updates),
+    addMessage: (conversationId: string, message: ChatMessage) =>
+      ipcRenderer.invoke('llm:addMessage', conversationId, message),
+    deleteConversation: (id: string) => ipcRenderer.invoke('llm:deleteConversation', id),
+    clearConversations: () => ipcRenderer.invoke('llm:clearConversations'),
+    searchConversations: (query: string, limit?: number) =>
+      ipcRenderer.invoke('llm:searchConversations', query, limit),
+    getTabConversation: (tabId: string) => ipcRenderer.invoke('llm:getTabConversation', tabId),
+  },
+} as ElectronAPI);
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
 ## File: package.json
 ````json
 {
@@ -38647,7 +44490,8 @@ export const validateGroupByColumns = async (
   "dependencies": {
     "@google-cloud/bigquery": "^7.0.0",
     "better-sqlite3": "^12.5.0",
-    "electron-store": "^10.0.0"
+    "electron-store": "^10.0.0",
+    "monaco-themes": "^0.3.3"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.1",
@@ -38749,6 +44593,213 @@ export const validateGroupByColumns = async (
 }
 ````
 
+## File: src/renderer/types/electron-api.d.ts
+````typescript
+import type { ConnectionConfig, ConnectionConfiguration } from '../../shared/types/connection';
+import type { SavedQuery, SaveQueryInput, UpdateQueryInput, QueryResult, ColumnMetadata, QueryTab, Row, QueryHistoryEntry, SchemaField, StoredSchema } from '../../shared/types/query';
+import type { Dataset, Table } from '../../shared/types/dataset';
+import type { JobDetails } from '../../shared/types/bigquery';
+import type { ThemeDefinition, StoredThemeSettings } from '../../shared/types/theme';
+import type {
+  LLMProvider,
+  LLMConfig,
+  LLMSettings,
+  ChatMessage,
+  ChatConversation,
+  ChatResponse,
+  SchemaContext,
+} from '../../shared/types/llm';
+
+/**
+ * Electron API exposed to renderer process
+ */
+export interface ElectronAPI {
+  // BigQuery operations
+  bigquery: {
+    execute(queryText: string, projectId: string, tabId?: string): Promise<QueryResult>;
+    cancel(jobId: string): Promise<void>;
+    dryRun(queryText: string): Promise<{ totalBytesProcessed: number; cacheHit: boolean; statementType: string | null }>;
+    listDatasets(): Promise<Dataset[]>;
+    listTables(datasetId: string): Promise<Table[]>;
+    getTableSchema(datasetId: string, tableId: string): Promise<{ 
+      fields: ColumnMetadata[];
+      metadata?: {
+        creationTime?: number;
+        lastModifiedTime?: number;
+        numRows?: number;
+        numBytes?: number;
+      };
+    }>;
+    getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
+    getJobInfo(jobId: string): Promise<JobDetails>;
+    onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
+    onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
+  };
+
+  // Connection management
+  connection: {
+    configure(config: ConnectionConfig): Promise<void>;
+    getActive(): Promise<ConnectionConfiguration | null>;
+    getSaved(): Promise<ConnectionConfiguration | null>;
+    restore(): Promise<ConnectionConfiguration | null>;
+    test(config: ConnectionConfig): Promise<boolean>;
+    disconnect(): Promise<void>;
+  };
+
+  // Saved queries
+  queries: {
+    list(): Promise<SavedQuery[]>;
+    get(id: string): Promise<SavedQuery>;
+    save(query: SaveQueryInput): Promise<SavedQuery>;
+    update(id: string, updates: UpdateQueryInput): Promise<SavedQuery>;
+    delete(id: string): Promise<void>;
+    search(term: string): Promise<SavedQuery[]>;
+  };
+
+  // UI settings
+  uiSettings: {
+    getLeftSidebarWidth(): Promise<number>;
+    setLeftSidebarWidth(width: number): Promise<void>;
+    getRightSidebarWidth(): Promise<number>;
+    setRightSidebarWidth(width: number): Promise<void>;
+    getTheme(): Promise<'dark' | 'light'>;
+    setTheme(theme: 'dark' | 'light'): Promise<void>;
+    // Theme settings
+    getThemeSettings(): Promise<StoredThemeSettings>;
+    setActiveTheme(themeId: string): Promise<void>;
+    addCustomTheme(theme: ThemeDefinition): Promise<void>;
+    removeCustomTheme(themeId: string): Promise<void>;
+  };
+
+  // Tabs management
+  tabs: {
+    getTabs(): Promise<QueryTab[]>;
+    getActiveTabId(): Promise<string | null>;
+    saveTabs(tabs: QueryTab[], activeTabId: string | null): Promise<void>;
+    onBeforeClose(callback: () => void): () => void;
+  };
+
+  // Results cache (SQLite-backed for performance with large datasets)
+  resultsCache: {
+    save(tabId: string, results: QueryResult): Promise<void>;
+    get(tabId: string): Promise<QueryResult | null>;
+    getMetadata(tabId: string): Promise<{
+      columns: ColumnMetadata[];
+      totalRows: number;
+      rowsReturned: number;
+      executionTimeMs: number;
+      bytesProcessed?: number;
+      jobId: string;
+      hasMore: boolean;
+    } | null>;
+    getPage(tabId: string, pageNumber: number): Promise<Row[] | null>;
+    /** Get a range of rows for virtual scrolling */
+    getRange(tabId: string, startIndex: number, count: number): Promise<Row[] | null>;
+    delete(tabId: string): Promise<void>;
+    clear(): Promise<void>;
+    /** Get cache statistics */
+    stats(): Promise<{ tabCount: number; totalRows: number; dbSizeBytes: number }>;
+  };
+
+  // Schema cache (SQLite-backed with 12-hour TTL)
+  schemaCache: {
+    save(projectId: string, datasetId: string, tableId: string, fields: SchemaField[]): Promise<void>;
+    saveBatch(schemas: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }>): Promise<void>;
+    get(projectId: string, datasetId: string, tableId: string): Promise<StoredSchema | null>;
+    hasValid(projectId: string, datasetId: string, tableId: string): Promise<boolean>;
+    getForProject(projectId: string): Promise<StoredSchema[]>;
+    needsRefresh(projectId: string): Promise<boolean>;
+    delete(projectId: string, datasetId: string, tableId: string): Promise<void>;
+    deleteForProject(projectId: string): Promise<void>;
+    deleteExpired(): Promise<number>;
+    clear(): Promise<void>;
+    stats(): Promise<{
+      totalSchemas: number;
+      validSchemas: number;
+      expiredSchemas: number;
+      oldestTimestamp: number | null;
+      newestTimestamp: number | null;
+      databaseSizeBytes: number;
+    }>;
+  };
+
+  // Menu events
+  menu: {
+    onShowHelp(callback: () => void): () => void;
+    onNewTab(callback: () => void): () => void;
+    onShowAbout(callback: () => void): () => void;
+    onCloseTab(callback: () => void): () => void;
+    onSaveQuery(callback: () => void): () => void;
+    onFormatQuery(callback: () => void): () => void;
+    onExecuteQuery(callback: () => void): () => void;
+    onShowConnection(callback: () => void): () => void;
+    onDisconnect(callback: () => void): () => void;
+    onToggleTheme(callback: () => void): () => void;
+    onSearchSchema(callback: () => void): () => void;
+    onShowThemeSettings(callback: () => void): () => void;
+    onToggleAIAssistant(callback: () => void): () => void;
+  };
+
+  // Export operations
+  export: {
+    saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
+  };
+
+  // Query history
+  queryHistory: {
+    add(entry: QueryHistoryEntry): Promise<void>;
+    list(limit?: number, offset?: number): Promise<QueryHistoryEntry[]>;
+    search(searchTerm: string, limit?: number): Promise<QueryHistoryEntry[]>;
+    get(id: string): Promise<QueryHistoryEntry | undefined>;
+    delete(id: string): Promise<void>;
+    updateByJobId(jobId: string, totalRows: number): Promise<void>;
+    clear(): Promise<void>;
+    count(): Promise<number>;
+  };
+
+  // LLM / AI Chat operations
+  llm: {
+    // Settings
+    getSettings(): Promise<LLMSettings>;
+    saveSettings(settings: LLMSettings): Promise<void>;
+    configureProvider(config: LLMConfig): Promise<void>;
+    getProviderConfig(provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null>;
+    hasApiKey(provider: LLMProvider): Promise<boolean>;
+    deleteProviderConfig(provider: LLMProvider): Promise<void>;
+    setActiveProvider(provider: LLMProvider | null): Promise<void>;
+    getActiveProvider(): Promise<LLMProvider | null>;
+    saveSystemPrompt(prompt: string): Promise<void>;
+    getSystemPrompt(): Promise<string>;
+    testConnection(provider?: LLMProvider): Promise<{ success: boolean; error?: string }>;
+    isConfigured(): Promise<boolean>;
+    
+    // Chat
+    chat(messages: ChatMessage[], schemaContext?: SchemaContext): Promise<ChatResponse>;
+    chatStream(conversationId: string, messages: ChatMessage[], schemaContext?: SchemaContext): Promise<{ messageId: string }>;
+    onStreamChunk(callback: (data: { conversationId: string; messageId: string; content: string; isComplete: boolean }) => void): () => void;
+    onStreamComplete(callback: (data: { conversationId: string; messageId: string; fullContent: string; containsQuery: boolean; sqlQuery?: string }) => void): () => void;
+    onStreamError(callback: (data: { conversationId: string; error: string }) => void): () => void;
+    
+    // Conversations
+    createConversation(title?: string, tabId?: string): Promise<ChatConversation>;
+    getConversation(id: string): Promise<ChatConversation | null>;
+    listConversations(limit?: number, offset?: number): Promise<ChatConversation[]>;
+    updateConversation(id: string, updates: Partial<Pick<ChatConversation, 'title' | 'messages' | 'tabId'>>): Promise<ChatConversation | null>;
+    addMessage(conversationId: string, message: ChatMessage): Promise<ChatConversation | null>;
+    deleteConversation(id: string): Promise<void>;
+    clearConversations(): Promise<void>;
+    searchConversations(query: string, limit?: number): Promise<ChatConversation[]>;
+    getTabConversation(tabId: string): Promise<ChatConversation>;
+  };
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
+}
+````
+
 ## File: src/renderer/components/QueryEditor/QueryEditor.tsx
 ````typescript
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -38759,6 +44810,8 @@ import { useTabsStore } from '../../stores/tabs-store';
 import { useQueriesStore } from '../../stores/queries-store';
 import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useConnectionStore } from '../../stores/connection-store';
+import { useThemeStore } from '../../stores/theme-store';
+import { getMonacoThemeName, registerAllThemes } from '../../themes/built-in-themes';
 import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import {
@@ -38777,7 +44830,11 @@ interface QueryEditorProps {
   onFocus?: () => void; // Called when editor gains focus (for split mode)
 }
 
-export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId: propTabId, onFocus }) => {
+export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'dark', tabId: propTabId, onFocus }) => {
+  // Get theme from store (overrides prop if store is initialized)
+  const { activeTheme, isInitialized: themeInitialized } = useThemeStore();
+  const theme = themeInitialized ? activeTheme.type : themeProp;
+  const monacoThemeName = themeInitialized ? getMonacoThemeName(activeTheme) : (themeProp === 'light' ? 'vs' : 'vs-dark');
   // ============================================================================
   // State
   // ============================================================================
@@ -39540,7 +45597,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId:
                 key={propTabId || activeTab.id}
                 height={`${editorHeight}px`}
                 defaultLanguage="sql"
-                theme={theme === 'light' ? 'light' : 'vs-dark'}
+                theme={monacoThemeName}
                 value={queryText}
                 onChange={handleQueryChange}
                 beforeMount={(monaco) => {
@@ -39552,6 +45609,19 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme = 'dark', tabId:
                   (window as any).__bigqueryGetProjectId = getProjectId;
                   setMetadataStoreGetter(() => useBigQueryMetadataStore.getState());
                   registerBigQueryLanguage(monaco as typeof import('monaco-editor'), getProjectId);
+                  
+                  // Register all built-in themes from monaco-themes package
+                  registerAllThemes(monaco as typeof import('monaco-editor'));
+                  
+                  // Register custom theme if it has editor configuration (user-imported themes)
+                  if (activeTheme.editor && !activeTheme.isBuiltIn) {
+                    monaco.editor.defineTheme(activeTheme.id, {
+                      base: activeTheme.editor.base,
+                      inherit: activeTheme.editor.inherit,
+                      rules: activeTheme.editor.rules,
+                      colors: activeTheme.editor.colors,
+                    });
+                  }
                 }}
                 onMount={(editor) => {
                   editorRef.current = editor;
