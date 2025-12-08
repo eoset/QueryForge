@@ -8,6 +8,7 @@ import {
   getLLMSettings,
   saveLLMSettings,
   saveProviderConfig,
+  updateProviderConfig,
   getProviderConfig,
   deleteProviderConfig,
   setActiveProvider,
@@ -97,6 +98,16 @@ export function registerLLMHandlers(): void {
     // Remove API key before sending to renderer
     const { apiKey, ...safeConfig } = config as any;
     return safeConfig;
+  });
+
+  // Update provider config without changing API key
+  ipcMain.handle('llm:updateProviderConfig', async (_event, provider: LLMProvider, updates: Partial<Omit<LLMConfig, 'apiKey' | 'provider'>>): Promise<void> => {
+    updateProviderConfig(provider, updates);
+    // Reload the provider config in the service
+    const config = getProviderConfig(provider);
+    if (config) {
+      llmService.configureProvider(config);
+    }
   });
 
   // Check if provider has API key

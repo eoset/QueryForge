@@ -35,6 +35,9 @@ interface CanvasTableProps {
   sortColumn: number | null;
   sortDirection: 'asc' | 'desc' | null;
   onSortColumn: (columnIndex: number, direction: 'asc' | 'desc') => void;
+  searchTerm?: string;
+  searchMatches?: Array<{ rowIndex: number; columnIndex: number }>;
+  currentMatch?: { rowIndex: number; columnIndex: number } | null;
 }
 
 const ROW_HEIGHT = 24;
@@ -58,6 +61,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   sortColumn,
   sortDirection,
   onSortColumn,
+  searchTerm,
+  searchMatches = [],
+  currentMatch,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -469,6 +475,21 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
             ctx.stroke();
           }
 
+          // Check if this cell is a search match
+          const isSearchMatch = searchMatches.some(
+            (match) => match.rowIndex === rowIdx && match.columnIndex === colIdx
+          );
+          const isCurrentMatch =
+            currentMatch && currentMatch.rowIndex === rowIdx && currentMatch.columnIndex === colIdx;
+
+          // Draw search match highlight background
+          if (isSearchMatch) {
+            ctx.fillStyle = isCurrentMatch
+              ? 'rgba(255, 200, 0, 0.4)' // Current match: bright yellow
+              : 'rgba(255, 235, 59, 0.25)'; // Other matches: subtle yellow
+            ctx.fillRect(colX, rowY, colWidth, ROW_HEIGHT);
+          }
+
           // Draw cell content - use pre-formatted value
           const column = results.columns[colIdx];
           const formattedValue = getFormattedValue(rowIdx, colIdx, value, column?.type);
@@ -589,6 +610,21 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
           ctx.stroke();
         }
 
+        // Check if this header is a search match (rowIndex = -1 represents headers)
+        const isHeaderSearchMatch = searchMatches.some(
+          (match) => match.rowIndex === -1 && match.columnIndex === idx
+        );
+        const isCurrentHeaderMatch =
+          currentMatch && currentMatch.rowIndex === -1 && currentMatch.columnIndex === idx;
+
+        // Draw search match highlight background for header
+        if (isHeaderSearchMatch) {
+          ctx.fillStyle = isCurrentHeaderMatch
+            ? 'rgba(255, 200, 0, 0.5)' // Current match: bright yellow
+            : 'rgba(255, 235, 59, 0.3)'; // Other matches: subtle yellow
+          ctx.fillRect(colX, 0, colWidth, HEADER_HEIGHT);
+        }
+
         ctx.fillStyle = headerTextColor;
         ctx.font = '600 0.75rem -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         // Column headers are always left-aligned regardless of data type
@@ -661,6 +697,8 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     themeColors,
     sortColumn,
     sortDirection,
+    searchMatches,
+    currentMatch,
   ]);
 
   // Handle scroll
@@ -1099,6 +1137,47 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  // Auto-scroll to current search match
+  useEffect(() => {
+    if (!currentMatch || !containerRef.current) return;
+
+    const container = containerRef.current;
+    const { rowIndex, columnIndex } = currentMatch;
+
+    // Calculate the horizontal position of the matched cell/header
+    let cellX = getColumnWidth(-1); // Start after row number column
+    for (let i = 0; i < columnIndex; i++) {
+      cellX += getColumnWidth(i);
+    }
+    const cellWidth = getColumnWidth(columnIndex);
+
+    // Check if the cell is visible in the viewport
+    const viewportLeft = container.scrollLeft;
+    const viewportRight = viewportLeft + container.clientWidth;
+
+    // Scroll vertically if needed (only for data cells, not headers)
+    if (rowIndex >= 0) {
+      const cellY = HEADER_HEIGHT + rowIndex * ROW_HEIGHT;
+      const viewportTop = container.scrollTop;
+
+      if (cellY < viewportTop + HEADER_HEIGHT) {
+        container.scrollTop = cellY - HEADER_HEIGHT - ROW_HEIGHT;
+      } else if (cellY + ROW_HEIGHT > viewportTop + container.clientHeight) {
+        container.scrollTop = cellY + ROW_HEIGHT * 2 - container.clientHeight;
+      }
+    } else {
+      // For header matches (rowIndex = -1), scroll to top
+      container.scrollTop = 0;
+    }
+
+    // Scroll horizontally if needed
+    if (cellX < viewportLeft) {
+      container.scrollLeft = cellX - 50;
+    } else if (cellX + cellWidth > viewportRight) {
+      container.scrollLeft = cellX + cellWidth - container.clientWidth + 50;
+    }
+  }, [currentMatch, getColumnWidth]);
 
   // Render on changes (including scroll) with throttling to reduce CPU usage
   const renderTimeoutRef = useRef<number | null>(null);

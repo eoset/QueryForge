@@ -1,13 +1,15 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useTabsStore } from '../../stores/tabs-store';
 import { RowContextMenu } from './RowContextMenu';
 import { ExportMenu, type ExportFormat } from './ExportMenu';
 import { CanvasTable } from './CanvasTable';
+import { ResultsSearch } from './ResultsSearch';
 import type { QueryTab, QueryResult, ColumnMetadata, Row, ExecutionStatus } from '../../../shared/types/query';
 import { formatBigQueryValue } from '../../utils/bigquery-formatter';
 import { resultsToCSV, resultsToJSON } from '../../utils/export-utils';
 import './QueryResults.css';
 import './ExportMenu.css';
+import './ResultsSearch.css';
 
 const ROWS_PER_PAGE = 200;
 
@@ -47,6 +49,11 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
   const [sortColumn, setSortColumn] = useState<number | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | null>(null);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  
+  // Search state
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchColumn, setSearchColumn] = useState<number | null>(null);
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   
   // Store metadata and current page separately for efficient cache access
   const [resultsMetadata, setResultsMetadata] = useState<{
@@ -221,6 +228,9 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
       setCurrentPage(1); // Reset to first page when results change
       setSortColumn(null); // Reset sorting when results change
       setSortDirection(null);
+      setSearchTerm(''); // Reset search when results change
+      setSearchColumn(null);
+      setCurrentMatchIndex(0);
     }
   }, [resultsJobId, activeTab?.id, resultsColumnCount]);
 
@@ -269,6 +279,70 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
 
     return sorted;
   }, [currentPageRows, sortColumn, sortDirection, resultsMetadata?.columns]);
+
+  // Search matching logic - find cells that match the search term (including column headers)
+  const searchMatches = useMemo(() => {
+    if (!searchTerm || !resultsMetadata?.columns) {
+      return [];
+    }
+
+    const matches: Array<{ rowIndex: number; columnIndex: number }> = [];
+    const searchLower = searchTerm.toLowerCase();
+
+    // Search column headers first (rowIndex = -1 represents headers)
+    resultsMetadata.columns.forEach((column, colIdx) => {
+      // If a specific column is selected, only search that column
+      if (searchColumn !== null && searchColumn !== colIdx) {
+        return;
+      }
+
+      if (column.name.toLowerCase().includes(searchLower)) {
+        matches.push({ rowIndex: -1, columnIndex: colIdx });
+      }
+    });
+
+    // Search data rows
+    sortedRows.forEach((row, rowIdx) => {
+      row.values.forEach((value: unknown, colIdx: number) => {
+        // If a specific column is selected, only search that column
+        if (searchColumn !== null && searchColumn !== colIdx) {
+          return;
+        }
+
+        const column = resultsMetadata.columns[colIdx];
+        const formattedValue = formatBigQueryValue(value, column?.type, column?.name);
+        
+        if (formattedValue.toLowerCase().includes(searchLower)) {
+          matches.push({ rowIndex: rowIdx, columnIndex: colIdx });
+        }
+      });
+    });
+
+    return matches;
+  }, [searchTerm, searchColumn, sortedRows, resultsMetadata?.columns]);
+
+  // Handle search changes
+  const handleSearch = useCallback((term: string, columnIndex: number | null) => {
+    setSearchTerm(term);
+    setSearchColumn(columnIndex);
+    setCurrentMatchIndex(0);
+  }, []);
+
+  // Navigate to next/previous match
+  const handleNavigateMatch = useCallback((direction: 'prev' | 'next') => {
+    if (searchMatches.length === 0) return;
+
+    setCurrentMatchIndex((prev) => {
+      if (direction === 'next') {
+        return (prev + 1) % searchMatches.length;
+      } else {
+        return prev === 0 ? searchMatches.length - 1 : prev - 1;
+      }
+    });
+  }, [searchMatches.length]);
+
+  // Get current match for highlighting
+  const currentMatch = searchMatches.length > 0 ? searchMatches[currentMatchIndex] : null;
 
   // Create a QueryResult-like object for compatibility with existing code
   const results: QueryResult | null = resultsMetadata
@@ -577,15 +651,25 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
             <span className="loading-indicator"> • {progressMessage}</span>
           )}
         </div>
-        <button
-          className="export-button"
-          onClick={handleExportClick}
-          disabled={isExporting || !hasRows}
-          title="Export results"
-        >
-          <span className="export-button-icon">⬇</span>
-          <span className="export-button-text">Export</span>
-        </button>
+        <div className="results-header-actions">
+          <ResultsSearch
+            columns={resultsMetadata.columns}
+            onSearch={handleSearch}
+            matchCount={searchMatches.length}
+            currentMatchIndex={currentMatchIndex}
+            onNavigateMatch={handleNavigateMatch}
+            disabled={!hasRows}
+          />
+          <button
+            className="export-button"
+            onClick={handleExportClick}
+            disabled={isExporting || !hasRows}
+            title="Export results"
+          >
+            <span className="export-button-icon">⬇</span>
+            <span className="export-button-text">Export</span>
+          </button>
+        </div>
       </div>
       <div className="results-table-container">
         {hasRows && results ? (
@@ -601,6 +685,9 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
             sortColumn={sortColumn}
             sortDirection={sortDirection}
             onSortColumn={handleSortColumn}
+            searchTerm={searchTerm}
+            searchMatches={searchMatches}
+            currentMatch={currentMatch}
           />
         ) : (
           <div className="no-rows-message">No rows returned</div>

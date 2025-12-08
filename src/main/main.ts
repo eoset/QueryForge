@@ -129,7 +129,7 @@ function createMenu(): void {
         },
         {
           label: 'Toggle AI Assistant',
-          accelerator: 'CmdOrCtrl+Shift+A',
+          accelerator: 'CmdOrCtrl+Shift+I',
           click: () => {
             mainWindow?.webContents.send('menu:toggle-ai-assistant');
           },
