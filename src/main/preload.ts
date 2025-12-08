@@ -164,6 +164,7 @@ export interface ElectronAPI {
     getSettings(): Promise<LLMSettings>;
     saveSettings(settings: LLMSettings): Promise<void>;
     configureProvider(config: LLMConfig): Promise<void>;
+    updateProviderConfig(provider: LLMProvider, updates: Record<string, unknown>): Promise<void>;
     getProviderConfig(provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null>;
     hasApiKey(provider: LLMProvider): Promise<boolean>;
     deleteProviderConfig(provider: LLMProvider): Promise<void>;
@@ -360,6 +361,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSettings: () => ipcRenderer.invoke('llm:getSettings'),
     saveSettings: (settings: LLMSettings) => ipcRenderer.invoke('llm:saveSettings', settings),
     configureProvider: (config: LLMConfig) => ipcRenderer.invoke('llm:configureProvider', config),
+    updateProviderConfig: (provider: LLMProvider, updates: Record<string, unknown>) => 
+      ipcRenderer.invoke('llm:updateProviderConfig', provider, updates),
     getProviderConfig: (provider: LLMProvider) => ipcRenderer.invoke('llm:getProviderConfig', provider),
     hasApiKey: (provider: LLMProvider) => ipcRenderer.invoke('llm:hasApiKey', provider),
     deleteProviderConfig: (provider: LLMProvider) => ipcRenderer.invoke('llm:deleteProviderConfig', provider),

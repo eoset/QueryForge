@@ -106,21 +106,26 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
     setTestResult(null);
     
     try {
-      const config: OpenAIConfig = {
-        provider: 'openai',
-        apiKey: openaiApiKey || '', // Empty string if not changing
-        model: openaiModel,
-        organization: openaiOrg || undefined,
-        baseUrl: openaiBaseUrl || undefined,
-      };
-      
-      // Only save if there's a new API key or we already have one
-      if (openaiApiKey || openaiHasKey) {
-        if (openaiApiKey) {
-          await window.electronAPI.llm.configureProvider(config);
-        }
+      if (openaiApiKey) {
+        // New API key provided - save full config
+        const config: OpenAIConfig = {
+          provider: 'openai',
+          apiKey: openaiApiKey,
+          model: openaiModel,
+          organization: openaiOrg || undefined,
+          baseUrl: openaiBaseUrl || undefined,
+        };
+        await window.electronAPI.llm.configureProvider(config);
         setOpenaiHasKey(true);
-        setOpenaiApiKey(''); // Clear the input after saving
+        setOpenaiApiKey('');
+        setTestResult({ success: true, message: 'OpenAI configuration saved!' });
+      } else if (openaiHasKey) {
+        // No new key but key exists - update config without changing key
+        await window.electronAPI.llm.updateProviderConfig('openai', {
+          model: openaiModel,
+          organization: openaiOrg || undefined,
+          baseUrl: openaiBaseUrl || undefined,
+        });
         setTestResult({ success: true, message: 'OpenAI configuration saved!' });
       } else {
         setTestResult({ success: false, message: 'Please enter an API key' });
@@ -145,21 +150,28 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
         return;
       }
       
-      const config: AzureOpenAIConfig = {
-        provider: 'azure',
-        apiKey: azureApiKey || '',
-        endpoint: azureEndpoint,
-        deploymentName: azureDeployment,
-        model: azureModel,
-        apiVersion: azureApiVersion,
-      };
-      
-      if (azureApiKey || azureHasKey) {
-        if (azureApiKey) {
-          await window.electronAPI.llm.configureProvider(config);
-        }
+      if (azureApiKey) {
+        // New API key provided - save full config
+        const config: AzureOpenAIConfig = {
+          provider: 'azure',
+          apiKey: azureApiKey,
+          endpoint: azureEndpoint,
+          deploymentName: azureDeployment,
+          model: azureModel,
+          apiVersion: azureApiVersion,
+        };
+        await window.electronAPI.llm.configureProvider(config);
         setAzureHasKey(true);
         setAzureApiKey('');
+        setTestResult({ success: true, message: 'Azure OpenAI configuration saved!' });
+      } else if (azureHasKey) {
+        // No new key but key exists - update config without changing key
+        await window.electronAPI.llm.updateProviderConfig('azure', {
+          endpoint: azureEndpoint,
+          deploymentName: azureDeployment,
+          model: azureModel,
+          apiVersion: azureApiVersion,
+        });
         setTestResult({ success: true, message: 'Azure OpenAI configuration saved!' });
       } else {
         setTestResult({ success: false, message: 'Please enter an API key' });
@@ -178,18 +190,20 @@ export const LLMSettingsDialog: React.FC<LLMSettingsDialogProps> = ({ onClose })
     setTestResult(null);
     
     try {
-      const config: GeminiConfig = {
-        provider: 'gemini',
-        apiKey: geminiApiKey || '',
-        model: geminiModel,
-      };
-      
-      if (geminiApiKey || geminiHasKey) {
-        if (geminiApiKey) {
-          await window.electronAPI.llm.configureProvider(config);
-        }
+      if (geminiApiKey) {
+        // New API key provided - save full config
+        const config: GeminiConfig = {
+          provider: 'gemini',
+          apiKey: geminiApiKey,
+          model: geminiModel,
+        };
+        await window.electronAPI.llm.configureProvider(config);
         setGeminiHasKey(true);
         setGeminiApiKey('');
+        setTestResult({ success: true, message: 'Gemini configuration saved!' });
+      } else if (geminiHasKey) {
+        // No new key but key exists - update config without changing key
+        await window.electronAPI.llm.updateProviderConfig('gemini', { model: geminiModel });
         setTestResult({ success: true, message: 'Gemini configuration saved!' });
       } else {
         setTestResult({ success: false, message: 'Please enter an API key' });

@@ -166,6 +166,7 @@ export interface ElectronAPI {
     getSettings(): Promise<LLMSettings>;
     saveSettings(settings: LLMSettings): Promise<void>;
     configureProvider(config: LLMConfig): Promise<void>;
+    updateProviderConfig(provider: LLMProvider, updates: Record<string, unknown>): Promise<void>;
     getProviderConfig(provider: LLMProvider): Promise<Omit<LLMConfig, 'apiKey'> | null>;
     hasApiKey(provider: LLMProvider): Promise<boolean>;
     deleteProviderConfig(provider: LLMProvider): Promise<void>;

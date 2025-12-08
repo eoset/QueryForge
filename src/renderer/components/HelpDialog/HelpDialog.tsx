@@ -19,13 +19,18 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
     // Help
     { keys: `${modifierKey} + ?`, description: 'Show keyboard shortcuts', category: 'Help' },
     
+    // File
+    { keys: `${modifierKey} + T`, description: 'New Tab', category: 'File' },
+    { keys: `${modifierKey} + S`, description: 'Save Query', category: 'File' },
+    { keys: isMac ? '⌘ + Q' : 'Ctrl + Q', description: 'Quit Application', category: 'File' },
+    
     // Tab Navigation
-    { keys: `${modifierKey} + T`, description: 'New Tab', category: 'Tab Navigation' },
     { keys: `${modifierKey} + 1-9`, description: 'Switch to tab by number (1-9)', category: 'Tab Navigation' },
     
     // Query Editor
     { keys: `${modifierKey} + Enter`, description: 'Execute query', category: 'Query Editor' },
     { keys: `${modifierKey} + B`, description: 'Expand SELECT * to column list', category: 'Query Editor' },
+    { keys: `${modifierKey} + P`, description: 'Search Schema', category: 'Query Editor' },
     
     // Edit
     { keys: `${modifierKey} + Z`, description: 'Undo', category: 'Edit' },
@@ -39,9 +44,8 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
     { keys: `${modifierKey} + -`, description: 'Zoom Out', category: 'View' },
     { keys: `${modifierKey} + 0`, description: 'Reset Zoom', category: 'View' },
     { keys: `${modifierKey} + F11`, description: 'Toggle Full Screen', category: 'View' },
-    
-    // Application
-    { keys: isMac ? '⌘ + Q' : 'Ctrl + Q', description: 'Quit Application', category: 'Application' },
+    { keys: `${modifierKey} + Shift + T`, description: 'Theme Settings', category: 'View' },
+    { keys: `${modifierKey} + Shift + I`, description: 'Toggle AI Assistant', category: 'View' },
   ];
 
   const categories = Array.from(new Set(shortcuts.map(s => s.category)));

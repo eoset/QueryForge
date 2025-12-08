@@ -348,6 +348,27 @@ export function getSystemPrompt(): string | undefined {
 }
 
 /**
+ * Update provider configuration without changing the API key
+ * Used when user wants to change model or other settings but keep existing key
+ */
+export function updateProviderConfig(provider: LLMProvider, updates: Partial<Omit<LLMConfig, 'apiKey' | 'provider'>>): void {
+  const settings = getLLMSettings();
+  const existingConfig = settings.providers[provider];
+  
+  if (!existingConfig) {
+    throw new Error(`No existing configuration for provider ${provider}`);
+  }
+  
+  // Merge updates with existing config
+  (settings.providers as any)[provider] = {
+    ...existingConfig,
+    ...updates,
+  };
+  
+  saveLLMSettings(settings);
+}
+
+/**
  * Delete provider configuration
  */
 export function deleteProviderConfig(provider: LLMProvider): void {
