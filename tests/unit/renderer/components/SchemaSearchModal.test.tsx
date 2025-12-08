@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SchemaSearchModal } from '../../../../src/renderer/components/SchemaSearchModal/SchemaSearchModal';
 
 // Get the mocked electronAPI from the global window
@@ -88,6 +88,14 @@ describe('SchemaSearchModal', () => {
   const mockOnClose = jest.fn();
   const mockOnShowSchema = jest.fn();
 
+  // Helper to render and wait for async effects to settle
+  const renderAndWait = async (ui: React.ReactElement) => {
+    const result = render(ui);
+    // Wait for async effects (loadCachedSchemas) to complete
+    await waitFor(() => {});
+    return result;
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     currentSearchResults = [];
@@ -97,24 +105,31 @@ describe('SchemaSearchModal', () => {
     // Setup electronAPI mock
     mockElectronAPI.bigquery.listTables = jest.fn().mockResolvedValue([]);
     mockElectronAPI.bigquery.getTableSchema = jest.fn().mockResolvedValue({ fields: [] });
+    
+    // Suppress console.log for schema cache loading messages
+    jest.spyOn(console, 'log').mockImplementation(() => {});
   });
 
-  it('should render search input and focus it on mount', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('should render search input and focus it on mount', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     expect(input).toBeInTheDocument();
     expect(input).toHaveFocus();
   });
 
-  it('should show empty state when no query is entered', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  it('should show empty state when no query is entered', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     expect(screen.getByText('Type to search across all tables and columns')).toBeInTheDocument();
   });
 
-  it('should show no results message when search returns empty', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  it('should show no results message when search returns empty', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'nonexistent' } });
@@ -122,10 +137,10 @@ describe('SchemaSearchModal', () => {
     expect(screen.getByText('No results found for "nonexistent"')).toBeInTheDocument();
   });
 
-  it('should display search results', () => {
+  it('should display search results', async () => {
     currentSearchResults = mockSearchResultsData;
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user' } });
@@ -135,10 +150,10 @@ describe('SchemaSearchModal', () => {
     expect(screen.getAllByText('Column').length).toBe(2);
   });
 
-  it('should display table and column badges', () => {
+  it('should display table and column badges', async () => {
     currentSearchResults = mockSearchResultsData;
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user' } });
@@ -147,16 +162,16 @@ describe('SchemaSearchModal', () => {
     expect(screen.getAllByText('Column').length).toBe(2);
   });
 
-  it('should call onClose when escape key is pressed', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  it('should call onClose when escape key is pressed', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     fireEvent.keyDown(window, { key: 'Escape' });
 
     expect(mockOnClose).toHaveBeenCalled();
   });
 
-  it('should call onClose when clicking overlay', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  it('should call onClose when clicking overlay', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const overlay = document.querySelector('.schema-search-modal-overlay');
     fireEvent.click(overlay!);
@@ -164,8 +179,8 @@ describe('SchemaSearchModal', () => {
     expect(mockOnClose).toHaveBeenCalled();
   });
 
-  it('should not call onClose when clicking modal content', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  it('should not call onClose when clicking modal content', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const modal = document.querySelector('.schema-search-modal');
     fireEvent.click(modal!);
@@ -173,10 +188,10 @@ describe('SchemaSearchModal', () => {
     expect(mockOnClose).not.toHaveBeenCalled();
   });
 
-  it('should navigate results with arrow keys', () => {
+  it('should navigate results with arrow keys', async () => {
     currentSearchResults = mockSearchResultsData;
 
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user' } });
@@ -195,10 +210,10 @@ describe('SchemaSearchModal', () => {
     expect(getSelectedIndex()).toBe(0);
   });
 
-  it('should select item on mouse enter', () => {
+  it('should select item on mouse enter', async () => {
     currentSearchResults = mockSearchResultsData;
 
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user' } });
@@ -209,10 +224,10 @@ describe('SchemaSearchModal', () => {
     expect(getItems()[0]).toHaveClass('selected');
   });
 
-  it('should call onShowSchema when selecting a table result', () => {
+  it('should call onShowSchema when selecting a table result', async () => {
     currentSearchResults = [mockSearchResultsData[0]]; // Only table result
 
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'users' } });
@@ -224,10 +239,10 @@ describe('SchemaSearchModal', () => {
     expect(mockOnClose).toHaveBeenCalled();
   });
 
-  it('should create a new tab with column query when selecting a column result', () => {
+  it('should create a new tab with column query when selecting a column result', async () => {
     currentSearchResults = [mockSearchResultsData[1]]; // Column result
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user_id' } });
@@ -247,26 +262,26 @@ describe('SchemaSearchModal', () => {
     expect(mockOnClose).toHaveBeenCalled();
   });
 
-  it('should show loading state when fetching schemas', () => {
+  it('should show loading state when fetching schemas', async () => {
     currentLoadingState = { isLoading: true, loaded: 5, total: 10 };
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     expect(screen.getByText('Loading schemas (5/10)')).toBeInTheDocument();
   });
 
-  it('should display keyboard shortcuts in footer', () => {
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+  it('should display keyboard shortcuts in footer', async () => {
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     expect(screen.getByText('↑↓ Navigate')).toBeInTheDocument();
     expect(screen.getByText('↵ Select')).toBeInTheDocument();
     expect(screen.getByText('Esc Close')).toBeInTheDocument();
   });
 
-  it('should display column type for column results', () => {
+  it('should display column type for column results', async () => {
     currentSearchResults = [mockSearchResultsData[1]];
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user_id' } });
@@ -274,10 +289,10 @@ describe('SchemaSearchModal', () => {
     expect(screen.getByText('INT64')).toBeInTheDocument();
   });
 
-  it('should display dataset.table path for results', () => {
+  it('should display dataset.table path for results', async () => {
     currentSearchResults = [mockSearchResultsData[0]];
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'users' } });
@@ -285,10 +300,10 @@ describe('SchemaSearchModal', () => {
     expect(screen.getByText('test_dataset.users')).toBeInTheDocument();
   });
 
-  it('should navigate with Tab key', () => {
+  it('should navigate with Tab key', async () => {
     currentSearchResults = mockSearchResultsData;
 
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user' } });
@@ -301,10 +316,10 @@ describe('SchemaSearchModal', () => {
     expect(getItems()[0]).toHaveClass('selected');
   });
 
-  it('should not go beyond first or last item with arrow keys', () => {
+  it('should not go beyond first or last item with arrow keys', async () => {
     currentSearchResults = mockSearchResultsData;
 
-    const { container } = render(<SchemaSearchModal onClose={mockOnClose} />);
+    const { container } = await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user' } });
@@ -317,11 +332,11 @@ describe('SchemaSearchModal', () => {
     expect(getItems()[0]).toHaveClass('selected');
   });
 
-  it('should not perform any action when no connection', () => {
+  it('should not perform any action when no connection', async () => {
     currentConnectionData = null;
     currentSearchResults = [mockSearchResultsData[0]];
 
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'users' } });
@@ -332,10 +347,10 @@ describe('SchemaSearchModal', () => {
     expect(mockOnShowSchema).not.toHaveBeenCalled();
   });
 
-  it('should show context menu on right-click and view schema option', () => {
+  it('should show context menu on right-click and view schema option', async () => {
     currentSearchResults = [mockSearchResultsData[1]]; // Column result
 
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user_id' } });
@@ -348,10 +363,10 @@ describe('SchemaSearchModal', () => {
     expect(screen.getByText('View Table Schema')).toBeInTheDocument();
   });
 
-  it('should call onShowSchema when clicking View Table Schema in context menu', () => {
+  it('should call onShowSchema when clicking View Table Schema in context menu', async () => {
     currentSearchResults = [mockSearchResultsData[1]]; // Column result
 
-    render(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} onShowSchema={mockOnShowSchema} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'user_id' } });
@@ -369,10 +384,10 @@ describe('SchemaSearchModal', () => {
     expect(mockOnClose).toHaveBeenCalled();
   });
 
-  it('should close context menu when clicking overlay', () => {
+  it('should close context menu when clicking overlay', async () => {
     currentSearchResults = [mockSearchResultsData[0]];
 
-    render(<SchemaSearchModal onClose={mockOnClose} />);
+    await renderAndWait(<SchemaSearchModal onClose={mockOnClose} />);
 
     const input = screen.getByPlaceholderText('Search tables and columns...');
     fireEvent.change(input, { target: { value: 'users' } });

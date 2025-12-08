@@ -1,4 +1,5 @@
 import Store from 'electron-store';
+import type { ThemeDefinition, StoredThemeSettings } from '../../shared/types/theme';
 
 interface WindowBounds {
   width: number;
@@ -14,6 +15,7 @@ interface UISettingsData {
   rightSidebarWidth: number;
   windowBounds?: WindowBounds;
   theme: Theme;
+  themeSettings: StoredThemeSettings;
 }
 
 const store = new Store<UISettingsData>({
@@ -26,6 +28,10 @@ const store = new Store<UISettingsData>({
       height: 800,
     },
     theme: 'dark',
+    themeSettings: {
+      activeThemeId: 'default-dark',
+      customThemes: [],
+    },
   },
 }) as Store<UISettingsData> & {
   get(key: 'leftSidebarWidth'): number;
@@ -36,6 +42,8 @@ const store = new Store<UISettingsData>({
   set(key: 'windowBounds', value: WindowBounds): void;
   get(key: 'theme'): Theme;
   set(key: 'theme', value: Theme): void;
+  get(key: 'themeSettings'): StoredThemeSettings;
+  set(key: 'themeSettings', value: StoredThemeSettings): void;
 };
 
 export function getLeftSidebarWidth(): number {
@@ -70,3 +78,35 @@ export function setTheme(theme: Theme): void {
   store.set('theme', theme);
 }
 
+// Theme settings functions
+export function getThemeSettings(): StoredThemeSettings {
+  return store.get('themeSettings') || { activeThemeId: 'default-dark', customThemes: [] };
+}
+
+export function setThemeSettings(settings: StoredThemeSettings): void {
+  store.set('themeSettings', settings);
+}
+
+export function addCustomTheme(theme: ThemeDefinition): void {
+  const settings = getThemeSettings();
+  // Remove existing theme with same ID if exists
+  const filtered = settings.customThemes.filter(t => t.id !== theme.id);
+  settings.customThemes = [...filtered, theme];
+  setThemeSettings(settings);
+}
+
+export function removeCustomTheme(themeId: string): void {
+  const settings = getThemeSettings();
+  settings.customThemes = settings.customThemes.filter(t => t.id !== themeId);
+  // If active theme was deleted, revert to default
+  if (settings.activeThemeId === themeId) {
+    settings.activeThemeId = 'default-dark';
+  }
+  setThemeSettings(settings);
+}
+
+export function setActiveThemeId(themeId: string): void {
+  const settings = getThemeSettings();
+  settings.activeThemeId = themeId;
+  setThemeSettings(settings);
+}
