@@ -151,21 +151,5 @@
   background-color: var(--accent-primary-hover);
 }
 
-.donation-button {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  transition: background-color 0.15s ease;
-  background-color: #0070f3;
-  color: #ffffff;
-  text-decoration: none;
-  display: inline-block;
-  font-family: inherit;
-}
 
-.donation-button:hover {
-  background-color: #0051cc;
-}
 

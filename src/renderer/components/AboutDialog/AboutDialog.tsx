@@ -53,15 +53,6 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({ onClose }) => {
           </div>
         </div>
         <div className="dialog-actions">
-          <a
-            href="https://www.paypal.com/donate/?business=3MKGEKEWEHWPS&no_recurring=0&item_name=Inspire+development+of+BigQuery+Desktop+app&currency_code=SEK"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="donation-button"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Donate
-          </a>
           <button onClick={onClose}>Close</button>
         </div>
       </div>

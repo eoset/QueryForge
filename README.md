@@ -13,9 +13,14 @@ A powerful desktop application for browsing and querying Google Cloud Platform B
 - **Rich SQL Editor**: Monaco Editor (VS Code's editor) with BigQuery-specific syntax highlighting
 - **Intelligent Autocomplete**: Context-aware suggestions for tables, columns, and BigQuery functions
 - **Query Formatting**: Auto-format SQL with Cmd/Ctrl+Shift+F
-- **Query Validation**: Syntax validation before execution
+- **Query Validation**: Local syntax validation with optional BigQuery dry-run validation
 - **Query Cancellation**: Cancel long-running queries
 - **Progress Indication**: Visual feedback during query execution
+- **Dry-Run Validation**: Get estimated query cost and validate syntax against BigQuery before execution
+
+### Split Editor
+- **Multiple Panes**: Work with multiple queries side-by-side in a split editor view
+- **Flexible Layout**: Split your editor horizontally to compare or reference queries
 
 ### Multi-Tab Workflow
 - **Multiple Tabs**: Work with multiple queries simultaneously in separate tabs
@@ -25,22 +30,32 @@ A powerful desktop application for browsing and querying Google Cloud Platform B
 - **Modified Indicator**: Blue dot shows unsaved changes
 
 ### Query Management
-- **Save Queries**: Save frequently used queries locally with names and descriptions
+- **Save Queries**: Save frequently used queries locally with names and descriptions (Cmd/Ctrl+S)
 - **Saved Queries Tree**: Browse saved queries in the sidebar
 - **Search Queries**: Find saved queries by name or SQL content
 - **Load Queries**: Open saved queries in new tabs with one click
+
+### Query History
+- **Automatic History**: All executed queries are automatically saved to history
+- **History Browser**: Browse and search through your query history
+- **Re-run Queries**: Quickly load and re-execute past queries
+- **Query Job Information**: View detailed job metadata including bytes processed, execution time, and slot usage
 
 ### Dataset Explorer
 - **Tree View Navigation**: Browse datasets and tables in a collapsible tree
 - **Table Types**: Visual indicators for TABLE, VIEW, MATERIALIZED_VIEW, and EXTERNAL tables
 - **Quick Actions**: Right-click context menu for table operations
 - **Search**: Filter datasets and tables
+- **Skeleton Loading**: Smooth loading experience with skeleton screens
+- **Clickable Table Links**: Click on fully-qualified table names in results to view schema
 
 ### Schema Inspection
 - **Schema Sidebar**: View detailed table schemas in a dedicated panel
 - **Column Details**: See column names, types, and modes (NULLABLE, REQUIRED, REPEATED)
 - **Table Metadata**: View row count, table size, and creation time
-- **View Definitions**: Inspect SQL definitions for views
+- **Partition & Clustering Info**: View partitioning and clustering configuration for tables
+- **View Definitions**: Inspect SQL definitions for views with syntax highlighting
+- **Schema Search**: Search across all tables and columns to find specific fields
 
 ### Query Results
 - **High-Performance Table**: Canvas-based rendering for large datasets
@@ -51,16 +66,37 @@ A powerful desktop application for browsing and querying Google Cloud Platform B
 - **Column Sorting**: Sort results by any column
 - **Column Resizing**: Adjust column widths by dragging
 - **Copy Values**: Right-click to copy cell values
+- **Search in Results**: Find specific values within your query results
+- **NULL Value Styling**: Distinct visual styling for NULL values
+
+### Export Results
+- **CSV Export**: Export query results to CSV format
+- **JSON Export**: Export query results to JSON format
 
 ### Sample Data
-- **Quick Preview**: View sample data from any table
+- **Quick Preview**: View sample data from any table with canvas-based rendering
 - **One-Click Access**: Right-click table and select "View Sample Data"
+
+### AI Assistant
+- **Built-in Chat**: Integrated AI chat sidebar for query assistance
+- **Multiple Providers**: Support for OpenAI, Azure OpenAI, Google Gemini, and Anthropic Claude
+- **Query Generation**: Get help writing and optimizing SQL queries
+- **Context-Aware**: AI understands your schema and can provide relevant suggestions
+
+### Theme Support
+- **Light & Dark Modes**: Toggle between light and dark themes
+- **Monaco Theme Integration**: Full support for native Monaco editor themes
+- **Theme Settings**: Customize your visual experience through the settings dialog
+
+### dbt Support
+- **dbt Syntax Conversion**: Convert between standard SQL and dbt ref() syntax
+- **ref() Support**: Work with dbt-style table references
 
 ### UI Customization
 - **Resizable Panels**: Adjust sidebar and editor/results split
 - **Collapsible Sidebar**: Maximize editor space when needed
 - **Persistent Layout**: Window size, position, and panel sizes persist across sessions
-- **Monaco theme support**: The application uses native Monaco themes
+- **Tools Bar**: Quick access toolbar for common actions
 
 ## Prerequisites
 
@@ -242,7 +278,12 @@ npm run dev
 | New Tab | Cmd+T | Ctrl+T |
 | Switch to Tab 1-9 | Cmd+1-9 | Ctrl+1-9 |
 | Execute Query | Cmd+Enter | Ctrl+Enter |
+| Save Query | Cmd+S | Ctrl+S |
 | Format Query | Cmd+Shift+F | Ctrl+Shift+F |
+| Search Schema | Cmd+P | Ctrl+P |
+| Toggle AI Assistant | Cmd+Shift+I | Ctrl+Shift+I |
+| Theme Settings | Cmd+Shift+T | Ctrl+Shift+T |
+| Expand SELECT * | Cmd+B | Ctrl+B |
 | Show Help | Cmd+? | Ctrl+? |
 | Quit | Cmd+Q | Alt+F4 |
 
