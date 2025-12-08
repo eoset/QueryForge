@@ -411,3 +411,11 @@
   color: var(--text-disabled);
 }
 
+/* Table reference link decoration - underline for clickable table paths */
+.monaco-editor .table-reference-link {
+  text-decoration: underline;
+  text-decoration-color: var(--text-secondary);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
