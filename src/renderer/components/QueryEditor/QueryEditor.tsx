@@ -887,8 +887,9 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
                       const tableRefs = findTableReferencesInLine(lineText);
 
                       for (const ref of tableRefs) {
-                        // Only decorate if we have enough parts (at least dataset.table)
-                        if (ref.parsed.datasetId && ref.parsed.tableId) {
+                        // Only decorate fully-qualified 3-part references (project.dataset.table)
+                        // to avoid false positives with table.column or alias.column patterns
+                        if (ref.parsed.projectId && ref.parsed.datasetId && ref.parsed.tableId) {
                           decorations.push({
                             range: new (window as any).monaco.Range(
                               lineNumber,
@@ -945,15 +946,12 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
 
                     // Find if cursor is within any table reference
                     for (const ref of tableRefs) {
+                      // Only handle fully-qualified 3-part references (project.dataset.table)
+                      if (!ref.parsed.projectId) {
+                        continue;
+                      }
+                      
                       if (position.column >= ref.startColumn && position.column <= ref.endColumn) {
-                        // Get the project ID from connection if not in the reference
-                        const currentConnection = useConnectionStore.getState().connection;
-                        const projectId = ref.parsed.projectId || currentConnection?.projectId;
-
-                        if (!projectId) {
-                          return;
-                        }
-
                         // Prevent default Monaco behavior (like go to definition)
                         e.event.preventDefault();
                         e.event.stopPropagation();
@@ -961,7 +959,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
                         // Dispatch custom event to show schema sidebar
                         const event = new CustomEvent('showTableSchema', {
                           detail: {
-                            projectId,
+                            projectId: ref.parsed.projectId,
                             datasetId: ref.parsed.datasetId,
                             tableId: ref.parsed.tableId,
                           },
