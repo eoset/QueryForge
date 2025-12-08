@@ -8,7 +8,7 @@ import { useQueryHistoryStore } from '../../stores/query-history-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { useThemeStore } from '../../stores/theme-store';
 import { getMonacoThemeName, registerAllThemes } from '../../themes/built-in-themes';
-import { registerBigQueryLanguage, setMetadataStoreGetter } from '../../utils/bigquery-completions';
+import { registerBigQueryLanguage, setMetadataStoreGetter, findTableReferencesInLine } from '../../utils/bigquery-completions';
 import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
 import {
   hasDbtSyntax,
@@ -63,6 +63,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
   const expandSelectStarHandlerRef = useRef<(() => void) | null>(null);
   const toggleSplitHandlerRef = useRef<(() => void) | null>(null);
   const errorDecorationsRef = useRef<string[]>([]);
+  const tableRefDecorationsRef = useRef<string[]>([]);
 
   // ============================================================================
   // Store Selectors
@@ -870,6 +871,104 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
                   editor.onDidFocusEditorText(() => {
                     if (onFocus) {
                       onFocus();
+                    }
+                  });
+
+                  // Function to update table reference decorations (underlines)
+                  const updateTableRefDecorations = () => {
+                    const model = editor.getModel();
+                    if (!model) return;
+
+                    const decorations: any[] = [];
+                    const lineCount = model.getLineCount();
+
+                    for (let lineNumber = 1; lineNumber <= lineCount; lineNumber++) {
+                      const lineText = model.getLineContent(lineNumber);
+                      const tableRefs = findTableReferencesInLine(lineText);
+
+                      for (const ref of tableRefs) {
+                        // Only decorate if we have enough parts (at least dataset.table)
+                        if (ref.parsed.datasetId && ref.parsed.tableId) {
+                          decorations.push({
+                            range: new (window as any).monaco.Range(
+                              lineNumber,
+                              ref.startColumn,
+                              lineNumber,
+                              ref.endColumn
+                            ),
+                            options: {
+                              inlineClassName: 'table-reference-link',
+                            },
+                          });
+                        }
+                      }
+                    }
+
+                    tableRefDecorationsRef.current = editor.deltaDecorations(
+                      tableRefDecorationsRef.current,
+                      decorations
+                    );
+                  };
+
+                  // Update decorations on initial load
+                  updateTableRefDecorations();
+
+                  // Update decorations when content changes
+                  editor.onDidChangeModelContent(() => {
+                    updateTableRefDecorations();
+                  });
+
+                  // Handle Cmd+Click on table references to show schema sidebar
+                  editor.onMouseDown((e: any) => {
+                    // Check if Cmd (Mac) or Ctrl (Windows/Linux) is pressed
+                    if (!e.event.metaKey && !e.event.ctrlKey) {
+                      return;
+                    }
+
+                    // Check if it's a left click on text
+                    if (e.target.type !== (window as any).monaco.editor.MouseTargetType.CONTENT_TEXT) {
+                      return;
+                    }
+
+                    const position = e.target.position;
+                    if (!position) {
+                      return;
+                    }
+
+                    const model = editor.getModel();
+                    if (!model) {
+                      return;
+                    }
+
+                    const lineText = model.getLineContent(position.lineNumber);
+                    const tableRefs = findTableReferencesInLine(lineText);
+
+                    // Find if cursor is within any table reference
+                    for (const ref of tableRefs) {
+                      if (position.column >= ref.startColumn && position.column <= ref.endColumn) {
+                        // Get the project ID from connection if not in the reference
+                        const currentConnection = useConnectionStore.getState().connection;
+                        const projectId = ref.parsed.projectId || currentConnection?.projectId;
+
+                        if (!projectId) {
+                          return;
+                        }
+
+                        // Prevent default Monaco behavior (like go to definition)
+                        e.event.preventDefault();
+                        e.event.stopPropagation();
+
+                        // Dispatch custom event to show schema sidebar
+                        const event = new CustomEvent('showTableSchema', {
+                          detail: {
+                            projectId,
+                            datasetId: ref.parsed.datasetId,
+                            tableId: ref.parsed.tableId,
+                          },
+                        });
+                        window.dispatchEvent(event);
+                        return;
+                      }
                     }
                   });
                 }}

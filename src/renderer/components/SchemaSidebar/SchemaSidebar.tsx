@@ -65,7 +65,12 @@ export const SchemaSidebar: React.FC<SchemaSidebarProps> = ({
         setSchema(result.fields as SchemaField[]);
         setMetadata(result.metadata);
       } catch (err: any) {
-        setError(err.message || 'Failed to load table schema');
+        // Clean up error message by removing Electron IPC prefix
+        let errorMessage = err.message || 'Failed to load table schema';
+        errorMessage = errorMessage
+          .replace(/^Error invoking remote method '[^']+': /, '')
+          .replace(/^Error: /, '');
+        setError(errorMessage);
         console.error('Failed to load table schema:', err);
       } finally {
         setIsLoading(false);

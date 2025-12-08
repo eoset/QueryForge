@@ -2609,17 +2609,107 @@ export function createBigQueryCompletionProvider(monaco: Monaco, getProjectId: (
 let completionProviderRegistered = false;
 
 /**
+ * Parses a fully qualified table reference from text
+ * Returns { projectId, datasetId, tableId } or null if not a valid table reference
+ * Handles formats:
+ * - `project.dataset.table` (backticks)
+ * - project.dataset.table (no backticks)
+ * - dataset.table (2-part reference)
+ */
+export function parseFullyQualifiedTableReference(text: string): {
+  projectId: string | null;
+  datasetId: string;
+  tableId: string;
+  fullMatch: string;
+} | null {
+  if (!text) return null;
+  
+  // Remove backticks for parsing
+  const cleanText = text.replace(/`/g, '').trim();
+  const parts = cleanText.split('.');
+  
+  if (parts.length === 2) {
+    // dataset.table format
+    return {
+      projectId: null,
+      datasetId: parts[0],
+      tableId: parts[1],
+      fullMatch: text,
+    };
+  } else if (parts.length === 3) {
+    // project.dataset.table format
+    return {
+      projectId: parts[0],
+      datasetId: parts[1],
+      tableId: parts[2],
+      fullMatch: text,
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * Finds table references in a line of SQL text
+ * Returns array of { text, startColumn, endColumn, parsed } for each table reference found
+ */
+export function findTableReferencesInLine(lineText: string): Array<{
+  text: string;
+  startColumn: number;
+  endColumn: number;
+  parsed: {
+    projectId: string | null;
+    datasetId: string;
+    tableId: string;
+    fullMatch: string;
+  };
+}> {
+  const results: Array<{
+    text: string;
+    startColumn: number;
+    endColumn: number;
+    parsed: {
+      projectId: string | null;
+      datasetId: string;
+      tableId: string;
+      fullMatch: string;
+    };
+  }> = [];
+  
+  // Match patterns:
+  // 1. Backtick-quoted references: `project.dataset.table` or `dataset.table`
+  // 2. Unquoted references: project.dataset.table or dataset.table
+  // Pattern allows alphanumeric, underscores, and hyphens in identifiers
+  const tableRefPattern = /`([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+){1,2})`|(?<![a-zA-Z0-9_`])([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+){1,2})(?![a-zA-Z0-9_`])/g;
+  
+  let match;
+  while ((match = tableRefPattern.exec(lineText)) !== null) {
+    const text = match[1] || match[2]; // match[1] for backtick version, match[2] for non-backtick
+    const parsed = parseFullyQualifiedTableReference(text);
+    
+    if (parsed) {
+      const startColumn = match.index + 1; // Monaco columns are 1-based
+      const endColumn = startColumn + match[0].length;
+      
+      results.push({
+        text: match[0],
+        startColumn,
+        endColumn,
+        parsed,
+      });
+    }
+  }
+  
+  return results;
+}
+
+/**
  * Registers BigQuery language support with Monaco Editor
  */
 export function registerBigQueryLanguage(
   monaco?: typeof import('monaco-editor'),
   getProjectId?: () => string | null
 ): void {
-  // Avoid registering multiple completion providers (which causes duplicate suggestions)
-  if (completionProviderRegistered) {
-    return;
-  }
-  
   // Use provided monaco instance or try to get from window
   const monacoInstance = monaco || (typeof window !== 'undefined' ? (window as any).monaco : null);
   
@@ -2648,8 +2738,11 @@ export function registerBigQueryLanguage(
   const sqlLanguage = providers.find((lang: { id: string }) => lang.id === 'sql');
   
   if (sqlLanguage) {
-    monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
-    completionProviderRegistered = true;
+    // Register completion provider (avoid duplicates)
+    if (!completionProviderRegistered) {
+      monacoInstance.languages.registerCompletionItemProvider('sql', createBigQueryCompletionProvider(monacoInstance, defaultGetProjectId));
+      completionProviderRegistered = true;
+    }
   }
 }
 

@@ -121,6 +121,20 @@ const App: React.FC = () => {
     setSchemaSidebar({ projectId, datasetId, tableId });
   }, []);
 
+  // Listen for showTableSchema events from the editor (Cmd+Click on table references)
+  useEffect(() => {
+    const handleShowTableSchemaEvent = (event: CustomEvent<{ projectId: string; datasetId: string; tableId: string }>) => {
+      const { projectId, datasetId, tableId } = event.detail;
+      handleShowSchema(projectId, datasetId, tableId);
+    };
+
+    window.addEventListener('showTableSchema', handleShowTableSchemaEvent as EventListener);
+    
+    return () => {
+      window.removeEventListener('showTableSchema', handleShowTableSchemaEvent as EventListener);
+    };
+  }, [handleShowSchema]);
+
   useEffect(() => {
     // Initialize tabs store (load saved tabs)
     initializeTabsStore();
