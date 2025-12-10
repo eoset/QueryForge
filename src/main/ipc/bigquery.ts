@@ -1337,4 +1337,174 @@ export function registerBigQueryHandlers(): void {
       };
     }
   });
+
+  /**
+   * Check if a table or view with the given name already exists in the dataset.
+   * Used to validate view names before creating to avoid collisions.
+   */
+  ipcMain.handle('bigquery:checkTableExists', async (_event, datasetId: string, tableId: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const table = client.dataset(datasetId).table(tableId);
+      const [exists] = await table.exists();
+      return { exists };
+    } catch (error: any) {
+      // If we get a 404 or similar, the table doesn't exist
+      if (error.code === 404) {
+        return { exists: false };
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to check if table exists',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  /**
+   * Create a view in BigQuery from the provided SQL query.
+   * The view will be created in the specified dataset with the given name.
+   */
+  ipcMain.handle('bigquery:createView', async (_event, datasetId: string, viewName: string, queryText: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const dataset = client.dataset(datasetId);
+      const table = dataset.table(viewName);
+
+      // Create the view with the provided query
+      const [view] = await table.create({
+        view: queryText,
+      });
+
+      // Get metadata to return details about the created view
+      const [metadata] = await view.getMetadata();
+
+      return {
+        success: true,
+        viewId: viewName,
+        datasetId: datasetId,
+        projectId: metadata.tableReference?.projectId || '',
+        creationTime: metadata.creationTime 
+          ? new Date(parseInt(String(metadata.creationTime), 10)).toISOString()
+          : new Date().toISOString(),
+      };
+    } catch (error: any) {
+      // Handle specific error cases
+      if (error.code === 409 || error.message?.includes('Already Exists')) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: `A table or view named '${viewName}' already exists in dataset '${datasetId}'`,
+          details: error.message,
+        };
+      }
+      if (error.code === 400 || error.message?.includes('Syntax error')) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'Invalid SQL syntax in view definition',
+          details: error.errors || error.message,
+        };
+      }
+      if (error.code === 403) {
+        throw {
+          code: BigQueryErrorCode.AUTH_ERROR,
+          message: 'Permission denied. You may not have access to create views in this dataset.',
+          details: error.message,
+        };
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to create view',
+        details: error.errors || error,
+      };
+    }
+  });
+
+  /**
+   * Update an existing view's definition in BigQuery.
+   * This replaces the view's SQL query while keeping the same name.
+   */
+  ipcMain.handle('bigquery:updateView', async (_event, datasetId: string, viewName: string, queryText: string) => {
+    const client = getBigQueryClient();
+    if (!client) {
+      throw {
+        code: BigQueryErrorCode.CONNECTION_FAILED,
+        message: 'No active BigQuery connection',
+      };
+    }
+
+    try {
+      const dataset = client.dataset(datasetId);
+      const table = dataset.table(viewName);
+
+      // Get current metadata to verify it's a view
+      const [currentMetadata] = await table.getMetadata();
+      
+      if (currentMetadata.type !== 'VIEW' && currentMetadata.type !== 'MATERIALIZED_VIEW') {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: `'${viewName}' is not a view. It is a ${currentMetadata.type}.`,
+        };
+      }
+
+      // Update the view definition by setting the new metadata
+      const [updatedMetadata] = await table.setMetadata({
+        view: queryText,
+      });
+
+      return {
+        success: true,
+        viewId: viewName,
+        datasetId: datasetId,
+        projectId: updatedMetadata.tableReference?.projectId || '',
+        lastModifiedTime: updatedMetadata.lastModifiedTime 
+          ? new Date(parseInt(String(updatedMetadata.lastModifiedTime), 10)).toISOString()
+          : new Date().toISOString(),
+      };
+    } catch (error: any) {
+      // Handle specific error cases
+      if (error.code === 404) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: `View '${viewName}' not found in dataset '${datasetId}'`,
+          details: error.message,
+        };
+      }
+      if (error.code === 400 || error.message?.includes('Syntax error')) {
+        throw {
+          code: BigQueryErrorCode.BIGQUERY_ERROR,
+          message: 'Invalid SQL syntax in view definition',
+          details: error.errors || error.message,
+        };
+      }
+      if (error.code === 403) {
+        throw {
+          code: BigQueryErrorCode.AUTH_ERROR,
+          message: 'Permission denied. You may not have access to update views in this dataset.',
+          details: error.message,
+        };
+      }
+      if (error.code) {
+        throw error;
+      }
+      throw {
+        code: BigQueryErrorCode.BIGQUERY_ERROR,
+        message: error.message || 'Failed to update view',
+        details: error.errors || error,
+      };
+    }
+  });
 }

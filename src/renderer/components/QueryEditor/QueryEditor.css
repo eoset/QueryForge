@@ -419,3 +419,76 @@
   cursor: pointer;
 }
 
+/* Save as View Dialog specific styles */
+.save-view-dialog {
+  min-width: 450px;
+}
+
+.save-dialog .form-group select {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  font-size: 0.8125rem;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.save-dialog .form-group select:focus {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+.save-dialog .form-group select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.save-dialog .field-hint {
+  display: block;
+  margin-top: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.save-dialog .field-hint.error {
+  color: var(--text-error);
+}
+
+.save-dialog .field-hint.success {
+  color: var(--text-success);
+}
+
+.save-dialog .dialog-error {
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  padding: 0.75rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+  margin-bottom: 1rem;
+  font-size: 0.8125rem;
+}
+
+.save-dialog .form-info {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background-color: var(--bg-tertiary, var(--bg-primary));
+  border-radius: 3px;
+  border: 1px solid var(--border-primary);
+}
+
+.save-dialog .form-info p {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+/* Tools menu separator */
+.tools-menu .tools-menu-separator {
+  height: 1px;
+  background-color: var(--border-primary);
+  margin: 0.25rem 0;
+}
+
+

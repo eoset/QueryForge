@@ -18,10 +18,12 @@
   padding: 0 0.5rem;
   height: 26px;
   min-width: 180px;
+  outline: none;
 }
 
 .search-input-container:focus-within {
   border-color: var(--accent-primary);
+  outline: none;
 }
 
 .search-icon {
@@ -39,6 +41,12 @@
   outline: none;
   padding: 0;
   min-width: 100px;
+}
+
+.search-input:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
 }
 
 .search-input::placeholder {

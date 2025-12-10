@@ -185,6 +185,7 @@ export const TabBar: React.FC<TabBarProps> = ({ side }) => {
               draggedTabIndex === index ? 'dragging' : ''
             } ${dragOverIndex === index ? 'drag-over' : ''}`}
             onClick={() => handleTabClick(tab.id)}
+            title={tab.title}
           >
             <span className="tab-title">{tab.title}</span>
             {tab.isModified && <span className="modified-indicator">●</span>}

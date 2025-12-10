@@ -8,6 +8,7 @@ interface EditorToolbarProps {
   onExpandSelectStar: () => void;
   onDbtify: () => void;
   onOpenSaveDialog: () => void;
+  onOpenSaveAsViewDialog: () => void;
   onToggleSplit: () => void;
   isExecuting: boolean;
   isConnected: boolean;
@@ -27,6 +28,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   onExpandSelectStar,
   onDbtify,
   onOpenSaveDialog,
+  onOpenSaveAsViewDialog,
   onToggleSplit,
   isExecuting,
   isConnected,
@@ -134,6 +136,21 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
                 {isSplit ? 'Close Split' : 'Split Editor'}
               </button>
             )}
+            <div className="tools-menu-separator" />
+            <button
+              onClick={() => handleToolAction(onOpenSaveAsViewDialog)}
+              disabled={!hasQuery || !isConnected || isQueryValid !== true}
+              className="tools-menu-item"
+              title={
+                !isConnected
+                  ? 'Connect to BigQuery first'
+                  : isQueryValid !== true
+                  ? 'Query must be valid to save as view'
+                  : 'Save the current query as a view in BigQuery'
+              }
+            >
+              Save as View
+            </button>
           </div>
         )}
       </div>

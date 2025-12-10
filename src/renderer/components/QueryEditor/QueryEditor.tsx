@@ -18,6 +18,7 @@ import {
 import { EditorToolbar } from './EditorToolbar';
 import { EditorStatusBar } from './EditorStatusBar';
 import { SaveQueryDialog } from './SaveQueryDialog';
+import { SaveAsViewDialog } from './SaveAsViewDialog';
 import './QueryEditor.css';
 
 interface QueryEditorProps {
@@ -36,6 +37,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
   // ============================================================================
 
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [showSaveAsViewDialog, setShowSaveAsViewDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDescription, setSaveDescription] = useState('');
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
@@ -591,6 +593,22 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
     }
   };
 
+  const handleOpenSaveAsViewDialog = () => {
+    if (activeTab && queryText.trim() && sqlValidationStatus.isValid === true) {
+      setShowSaveAsViewDialog(true);
+    }
+  };
+
+  const handleSaveAsView = async (datasetId: string, viewName: string) => {
+    if (!queryText.trim() || !window.electronAPI) {
+      throw new Error('No query to save');
+    }
+
+    await window.electronAPI.bigquery.createView(datasetId, viewName, queryText);
+    setSaveSuccessMessage(`View '${viewName}' created successfully in ${datasetId}`);
+    setTimeout(() => setSaveSuccessMessage(null), 5000);
+  };
+
   const handleFormat = () => {
     if (!activeTab || !queryText.trim()) {
       return;
@@ -762,6 +780,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
         onExpandSelectStar={handleExpandSelectStar}
         onDbtify={handleDbtify}
         onOpenSaveDialog={handleOpenSaveDialog}
+        onOpenSaveAsViewDialog={handleOpenSaveAsViewDialog}
         onToggleSplit={handleToggleSplit}
         isExecuting={isExecuting}
         isConnected={isConnected}
@@ -784,6 +803,12 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
         onDescriptionChange={setSaveDescription}
         isUpdate={!!activeTab?.savedQueryId}
         isSaveDisabled={!saveName.trim()}
+      />
+
+      <SaveAsViewDialog
+        isOpen={showSaveAsViewDialog}
+        onClose={() => setShowSaveAsViewDialog(false)}
+        onSave={handleSaveAsView}
       />
 
       <div className="editor-container">

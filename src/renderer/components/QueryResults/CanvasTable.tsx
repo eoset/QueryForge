@@ -82,6 +82,9 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   const [selectionEnd, setSelectionEnd] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const selectionOverlayRef = useRef<HTMLDivElement>(null);
+  // Use refs to track selection state during drag to avoid stale closure issues
+  const selectionStartRef = useRef<{ row: number; col: number; x: number; y: number } | null>(null);
+  const isSelectingRef = useRef(false);
   
   // Sort menu state
   const [sortMenu, setSortMenu] = useState<{
@@ -814,16 +817,22 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         // Check if this is a data cell click (not a scrollbar click)
         const cell = getCellFromCoordinates(x, y);
         if (cell) {
-          setIsSelecting(true);
+          // Start fresh selection - store in both state and ref
           const cellPos = { ...cell, x, y };
+          selectionStartRef.current = cellPos;
+          isSelectingRef.current = true;
           setSelectionStart(cellPos);
           setSelectionEnd(cellPos);
+          setIsSelecting(true);
           // Don't prevent default - allow normal behavior
           return;
         } else {
-          // Click outside cells - clear selection
+          // Click outside cells - clear selection completely
+          selectionStartRef.current = null;
+          isSelectingRef.current = false;
           setSelectionStart(null);
           setSelectionEnd(null);
+          setIsSelecting(false);
           return;
         }
       }
@@ -926,7 +935,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
         setIsSelecting(false);
       }
     },
-    [scrollLeft, getColumnWidth, results.columns, getCellFromCoordinates]
+    [scrollLeft, scrollTop, getColumnWidth, results.columns, getCellFromCoordinates]
   );
 
   // Handle context menu
@@ -1047,7 +1056,10 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
   // Handle selection mouse move
   const handleSelectionMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isSelecting || resizingColumn !== null) return;
+      // Use refs to avoid stale closure issues
+      if (!isSelectingRef.current || resizingColumn !== null) return;
+      const currentStart = selectionStartRef.current;
+      if (!currentStart) return;
 
       const container = containerRef.current;
       if (!container) return;
@@ -1058,29 +1070,22 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
       const x = viewportX + scrollLeft;
       const y = viewportY + scrollTop;
 
-      // Allow scrolling when near edges (but don't prevent default to allow native scrolling)
-      const edgeThreshold = 20;
-      const isNearTop = viewportY < edgeThreshold;
-      const isNearBottom = viewportY > rect.height - edgeThreshold;
-      const isNearLeft = viewportX < edgeThreshold;
-      const isNearRight = viewportX > rect.width - edgeThreshold;
-
       // Update selection if we can determine a cell
       const cell = getCellFromCoordinates(x, y);
-      if (cell && selectionStart) {
+      if (cell) {
         setSelectionEnd({ ...cell, x, y });
-      } else if (selectionStart) {
+      } else {
         // If outside cells but still selecting, extend selection to edge
         // This allows selection to continue when dragging outside viewport
-        const lastCell = selectionEnd || selectionStart;
-        setSelectionEnd(lastCell);
+        setSelectionEnd((prev) => prev || currentStart);
       }
     },
-    [isSelecting, resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates, selectionStart, selectionEnd]
+    [resizingColumn, scrollLeft, scrollTop, getCellFromCoordinates]
   );
 
   // Handle selection mouse up
   const handleSelectionMouseUp = useCallback(() => {
+    isSelectingRef.current = false;
     setIsSelecting(false);
   }, []);
 
@@ -1089,6 +1094,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
     if (!isSelecting) return;
 
     const handleDocumentMouseUp = () => {
+      isSelectingRef.current = false;
       setIsSelecting(false);
     };
 
@@ -1098,6 +1104,7 @@ export const CanvasTable: React.FC<CanvasTableProps> = ({
 
   // Handle selection mouse leave
   const handleSelectionMouseLeave = useCallback(() => {
+    isSelectingRef.current = false;
     setIsSelecting(false);
   }, []);
 
