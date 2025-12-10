@@ -35,6 +35,21 @@ export interface ElectronAPI {
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
     getJobInfo(jobId: string): Promise<JobDetails>;
+    checkTableExists(datasetId: string, tableId: string): Promise<{ exists: boolean }>;
+    createView(datasetId: string, viewName: string, queryText: string): Promise<{
+      success: boolean;
+      viewId: string;
+      datasetId: string;
+      projectId: string;
+      creationTime: string;
+    }>;
+    updateView(datasetId: string, viewName: string, queryText: string): Promise<{
+      success: boolean;
+      viewId: string;
+      datasetId: string;
+      projectId: string;
+      lastModifiedTime: string;
+    }>;
     onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
     onRowsUpdate(callback: (data: { jobId: string; columns: ColumnMetadata[]; rows: Row[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };

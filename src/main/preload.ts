@@ -37,6 +37,21 @@ export interface ElectronAPI {
     }>;
     getViewDefinition(datasetId: string, tableId: string): Promise<{ definition: string }>;
     getJobInfo(jobId: string): Promise<JobDetails>;
+    checkTableExists(datasetId: string, tableId: string): Promise<{ exists: boolean }>;
+    createView(datasetId: string, viewName: string, queryText: string): Promise<{
+      success: boolean;
+      viewId: string;
+      datasetId: string;
+      projectId: string;
+      creationTime: string;
+    }>;
+    updateView(datasetId: string, viewName: string, queryText: string): Promise<{
+      success: boolean;
+      viewId: string;
+      datasetId: string;
+      projectId: string;
+      lastModifiedTime: string;
+    }>;
     onProgress(callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void): () => void;
     onRowsUpdate(callback: (data: { jobId: string; columns: any[]; rows: any[]; totalRows: number; rowsReturned: number; executionTimeMs: number; bytesProcessed: number; hasMore: boolean; message: string }) => void): () => void;
   };
@@ -210,6 +225,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getViewDefinition: (datasetId: string, tableId: string) =>
       ipcRenderer.invoke('bigquery:getViewDefinition', datasetId, tableId),
     getJobInfo: (jobId: string) => ipcRenderer.invoke('bigquery:getJobInfo', jobId),
+    checkTableExists: (datasetId: string, tableId: string) =>
+      ipcRenderer.invoke('bigquery:checkTableExists', datasetId, tableId),
+    createView: (datasetId: string, viewName: string, queryText: string) =>
+      ipcRenderer.invoke('bigquery:createView', datasetId, viewName, queryText),
+    updateView: (datasetId: string, viewName: string, queryText: string) =>
+      ipcRenderer.invoke('bigquery:updateView', datasetId, viewName, queryText),
     onProgress: (callback: (data: { jobId: string; rowsFetched: number; isComplete: boolean; message: string }) => void) => {
       const handler = (_event: any, data: any) => callback(data);
       ipcRenderer.on('bigquery:progress', handler);

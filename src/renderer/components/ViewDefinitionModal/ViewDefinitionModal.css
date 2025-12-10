@@ -37,6 +37,27 @@
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.edit-mode-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.2rem 0.5rem;
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+  border-radius: 3px;
+}
+
+.modified-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.2rem 0.5rem;
+  background-color: var(--accent-warning, #f0ad4e);
+  color: var(--text-white);
+  border-radius: 3px;
 }
 
 .view-definition-modal-close {
@@ -72,6 +93,44 @@
   margin-bottom: 1rem;
   display: flex;
   justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.view-definition-button {
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
+}
+
+.view-definition-button.primary {
+  background-color: var(--accent-primary);
+  color: var(--text-white);
+}
+
+.view-definition-button.primary:hover:not(:disabled) {
+  background-color: var(--accent-primary-hover);
+}
+
+.view-definition-button.primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.view-definition-button.secondary {
+  background-color: var(--button-secondary);
+  color: var(--text-primary);
+}
+
+.view-definition-button.secondary:hover:not(:disabled) {
+  background-color: var(--button-secondary-hover);
+}
+
+.view-definition-button.secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .view-definition-copy-button {
@@ -87,6 +146,26 @@
 
 .view-definition-copy-button:hover {
   background-color: var(--accent-primary-hover);
+}
+
+.view-definition-save-error {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background-color: var(--bg-error);
+  color: var(--text-error);
+  border-radius: 3px;
+  border: 1px solid var(--border-error);
+  font-size: 0.8125rem;
+}
+
+.view-definition-save-success {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background-color: var(--bg-success, rgba(40, 167, 69, 0.1));
+  color: var(--text-success);
+  border-radius: 3px;
+  border: 1px solid var(--accent-success, #28a745);
+  font-size: 0.8125rem;
 }
 
 .view-definition-editor {
