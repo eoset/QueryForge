@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useSchemaCacheStore, type SchemaSearchResult, type SchemaField } from '../../stores/schema-cache-store';
-import { useBigQueryMetadataStore } from '../../stores/bigquery-metadata-store';
+import { useSchemaCacheStore, type SchemaSearchResult } from '../../stores/schema-cache-store';
 import { useConnectionStore } from '../../stores/connection-store';
 import { useTabsStore } from '../../stores/tabs-store';
+import { indexSchemasInBackground, isSchemaIndexingInProgress } from '../../utils/schema-indexer';
 import './SchemaSearchModal.css';
 
-// Datasets to exclude from schema search
-const FILTERED_DATASETS = ['airbyte_internal', 'Auditlogs'];
+// Datasets to exclude from schema search - kept for reference but no longer used in this file
+// const FILTERED_DATASETS = ['airbyte_internal', 'Auditlogs'];
 
 interface SchemaSearchModalProps {
   onClose: () => void;
@@ -17,14 +17,12 @@ export const SchemaSearchModal: React.FC<SchemaSearchModalProps> = ({ onClose, o
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [results, setResults] = useState<SchemaSearchResult[]>([]);
-  const [cacheLoaded, setCacheLoaded] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SchemaSearchResult } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   
   const connection = useConnectionStore((state) => state.connection);
-  const { datasets } = useBigQueryMetadataStore();
-  const { search, setSchema, hasSchema, isLoading, loadingProgress, setIsLoading, setLoadingProgress } = useSchemaCacheStore();
+  const { search, isLoading, loadingProgress } = useSchemaCacheStore();
   const { createTab, setTabQuery, updateTab } = useTabsStore();
 
   // Focus input on mount
@@ -32,114 +30,17 @@ export const SchemaSearchModal: React.FC<SchemaSearchModalProps> = ({ onClose, o
     inputRef.current?.focus();
   }, []);
 
-  // Load cached schemas from SQLite on mount
+  // Trigger background indexing if not already running and no schemas loaded
   useEffect(() => {
-    const loadCachedSchemas = async () => {
-      if (!window.electronAPI?.schemaCache || !connection || cacheLoaded) return;
-
-      try {
-        // Load all cached schemas for this project
-        const cachedSchemas = await window.electronAPI.schemaCache.getForProject(connection.projectId);
-        
-        // Populate in-memory store with cached schemas
-        for (const schema of cachedSchemas) {
-          // Skip filtered datasets
-          if (FILTERED_DATASETS.includes(schema.datasetId)) continue;
-          setSchema(schema.datasetId, schema.tableId, schema.fields);
-        }
-        
-        console.log(`Loaded ${cachedSchemas.length} schemas from SQLite cache`);
-      } catch (err) {
-        console.warn('Failed to load cached schemas:', err);
-      }
-      
-      setCacheLoaded(true);
-    };
-
-    loadCachedSchemas();
-  }, [connection, cacheLoaded, setSchema]);
-
-  // Load schemas for all tables - either missing from cache or needs refresh
-  useEffect(() => {
-    const loadAllSchemas = async () => {
-      if (!window.electronAPI || !connection || !cacheLoaded) return;
-
-      // Check if cache needs refresh (older than 12 hours)
-      let needsRefresh = false;
-      try {
-        needsRefresh = await window.electronAPI.schemaCache?.needsRefresh(connection.projectId) ?? true;
-      } catch (err) {
-        console.warn('Failed to check cache refresh status:', err);
-        needsRefresh = true;
-      }
-
-      // Get all tables from metadata store
-      const allTables: Array<{ datasetId: string; tableId: string }> = [];
-      for (const dataset of datasets) {
-        // Skip internal datasets that shouldn't be searched
-        if (FILTERED_DATASETS.includes(dataset.id)) continue;
-        
-        const tables = await window.electronAPI.bigquery.listTables(dataset.id).catch(() => []);
-        for (const table of tables) {
-          // If cache needs refresh, load all tables
-          // Otherwise, only load tables not in memory cache
-          if (needsRefresh || !hasSchema(dataset.id, table.id)) {
-            allTables.push({ datasetId: dataset.id, tableId: table.id });
-          }
-        }
-      }
-
-      if (allTables.length === 0) return;
-
-      setIsLoading(true);
-      setLoadingProgress(0, allTables.length);
-
-      // Load schemas in batches to avoid overwhelming the API
-      const batchSize = 5;
-      const schemasToSave: Array<{ projectId: string; datasetId: string; tableId: string; fields: SchemaField[] }> = [];
-
-      for (let i = 0; i < allTables.length; i += batchSize) {
-        const batch = allTables.slice(i, i + batchSize);
-        
-        await Promise.all(
-          batch.map(async ({ datasetId, tableId }) => {
-            try {
-              const result = await window.electronAPI!.bigquery.getTableSchema(datasetId, tableId);
-              setSchema(datasetId, tableId, result.fields);
-              
-              // Queue for batch save to SQLite
-              schemasToSave.push({
-                projectId: connection.projectId,
-                datasetId,
-                tableId,
-                fields: result.fields as SchemaField[],
-              });
-            } catch (err) {
-              // Silently skip tables that fail to load (e.g., deleted tables)
-              console.warn(`Failed to load schema for ${datasetId}.${tableId}:`, err);
-            }
-          })
-        );
-        
-        // Update progress after each batch completes (not per-item)
-        setLoadingProgress(Math.min(i + batchSize, allTables.length), allTables.length);
-      }
-
-      // Save all loaded schemas to SQLite cache in a single batch
-      if (schemasToSave.length > 0 && window.electronAPI.schemaCache) {
-        try {
-          await window.electronAPI.schemaCache.saveBatch(schemasToSave);
-          console.log(`Saved ${schemasToSave.length} schemas to SQLite cache`);
-        } catch (err) {
-          console.warn('Failed to save schemas to cache:', err);
-        }
-      }
-
-      setIsLoading(false);
-    };
-
-    loadAllSchemas();
-  }, [connection, datasets, hasSchema, setSchema, setIsLoading, setLoadingProgress, cacheLoaded]);
+    if (!connection) return;
+    
+    // Check if schemas need to be loaded
+    const { schemas } = useSchemaCacheStore.getState();
+    if (schemas.size === 0 && !isSchemaIndexingInProgress()) {
+      // No schemas in memory, trigger background indexing
+      indexSchemasInBackground(connection.projectId);
+    }
+  }, [connection]);
 
   // Search when query changes
   useEffect(() => {

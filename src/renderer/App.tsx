@@ -3,6 +3,7 @@ import { useConnectionStore } from './stores/connection-store';
 import { useTabsStore, initializeTabsStore } from './stores/tabs-store';
 import { useThemeStore } from './stores/theme-store';
 import { useLLMStore } from './stores/llm-store';
+import { useBigQueryMetadataStore } from './stores/bigquery-metadata-store';
 import { ConnectionDialog } from './components/ConnectionDialog/ConnectionDialog';
 import { SavedQueries } from './components/SavedQueries/SavedQueries';
 import { HelpDialog } from './components/HelpDialog/HelpDialog';
@@ -19,6 +20,7 @@ import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
 import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
 import { AIChatSidebar } from './components/AIChatSidebar/AIChatSidebar';
 import { LLMSettingsDialog } from './components/LLMSettingsDialog/LLMSettingsDialog';
+import { indexSchemasInBackground } from './utils/schema-indexer';
 import './themes.css';
 import './App.css';
 
@@ -167,6 +169,18 @@ const App: React.FC = () => {
       setShowConnectionDialog(true);
     }
   }, []);
+
+  // Background schema indexing - runs when connection is established and datasets are loaded
+  const { datasets } = useBigQueryMetadataStore();
+  useEffect(() => {
+    if (connection && datasets.length > 0) {
+      // Small delay to let the UI settle before starting background indexing
+      const timer = setTimeout(() => {
+        indexSchemasInBackground(connection.projectId);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [connection, datasets.length]);
 
   useEffect(() => {
     // Listen for menu events

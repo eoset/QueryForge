@@ -50,18 +50,32 @@ const mockCreateTab = jest.fn().mockReturnValue('new-tab-id');
 const mockSetTabQuery = jest.fn();
 const mockUpdateTab = jest.fn();
 
+// Mock schema indexer
+jest.mock('../../../../src/renderer/utils/schema-indexer', () => ({
+  indexSchemasInBackground: jest.fn(),
+  isSchemaIndexingInProgress: jest.fn().mockReturnValue(false),
+}));
+
 // Mock the stores with factory functions
-jest.mock('../../../../src/renderer/stores/schema-cache-store', () => ({
-  useSchemaCacheStore: () => ({
+jest.mock('../../../../src/renderer/stores/schema-cache-store', () => {
+  const mockStore = {
     search: () => currentSearchResults,
     setSchema: jest.fn(),
     hasSchema: jest.fn().mockReturnValue(true),
+    schemas: new Map(),
     get isLoading() { return currentLoadingState.isLoading; },
     get loadingProgress() { return { loaded: currentLoadingState.loaded, total: currentLoadingState.total }; },
     setIsLoading: jest.fn(),
     setLoadingProgress: jest.fn(),
-  }),
-}));
+  };
+  
+  return {
+    useSchemaCacheStore: Object.assign(
+      () => mockStore,
+      { getState: () => mockStore }
+    ),
+  };
+});
 
 jest.mock('../../../../src/renderer/stores/connection-store', () => ({
   useConnectionStore: (selector?: (state: any) => any) => {
