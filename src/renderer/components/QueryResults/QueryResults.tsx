@@ -518,6 +518,12 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
   const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
   const endIndex = Math.min(startIndex + currentPageRows.length, totalRows);
 
+  const handleFirstPage = () => {
+    if (currentPage !== 1) {
+      setCurrentPage(1);
+    }
+  };
+
   const handlePreviousPage = () => {
     if (currentPage > 1) {
       setCurrentPage(currentPage - 1);
@@ -527,6 +533,12 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
   const handleNextPage = () => {
     if (currentPage < totalPages) {
       setCurrentPage(currentPage + 1);
+    }
+  };
+
+  const handleLastPage = () => {
+    if (currentPage !== totalPages) {
+      setCurrentPage(totalPages);
     }
   };
 
@@ -697,6 +709,14 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
         <div className="results-pagination">
           <button
             className="pagination-button"
+            onClick={handleFirstPage}
+            disabled={currentPage === 1}
+            title="First page"
+          >
+            ‹‹
+          </button>
+          <button
+            className="pagination-button"
             onClick={handlePreviousPage}
             disabled={currentPage === 1}
             title="Previous page"
@@ -713,6 +733,14 @@ export const QueryResults: React.FC<QueryResultsProps> = ({ tabId: propTabId }) 
             title="Next page"
           >
             ›
+          </button>
+          <button
+            className="pagination-button"
+            onClick={handleLastPage}
+            disabled={currentPage === totalPages}
+            title="Last page"
+          >
+            ››
           </button>
         </div>
       )}
