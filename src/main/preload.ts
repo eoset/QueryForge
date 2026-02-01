@@ -149,6 +149,7 @@ export interface ElectronAPI {
     onSearchSchema(callback: () => void): () => void;
     onShowThemeSettings(callback: () => void): () => void;
     onToggleAIAssistant(callback: () => void): () => void;
+    onShowQueryDiff(callback: () => void): () => void;
   };
 
   // App info
@@ -358,6 +359,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = () => callback();
       ipcRenderer.on('menu:toggle-ai-assistant', handler);
       return () => ipcRenderer.removeListener('menu:toggle-ai-assistant', handler);
+    },
+    onShowQueryDiff: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('menu:show-query-diff', handler);
+      return () => ipcRenderer.removeListener('menu:show-query-diff', handler);
     },
   },
   app: {

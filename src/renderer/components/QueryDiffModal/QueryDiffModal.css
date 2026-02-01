@@ -1,0 +1,135 @@
+.query-diff-modal {
+  max-width: 95vw;
+  width: 1400px;
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.query-diff-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+}
+
+.query-diff-sources {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.query-diff-source {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.query-diff-source label {
+  font-weight: 500;
+  min-width: 40px;
+}
+
+.query-diff-source select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  min-width: 120px;
+}
+
+.query-diff-source select:focus {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.btn-icon {
+  padding: 8px 12px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 16px;
+  transition: background-color 0.15s;
+}
+
+.btn-icon:hover {
+  background-color: var(--bg-hover);
+}
+
+.btn-icon:active {
+  background-color: var(--bg-active);
+}
+
+.btn-secondary {
+  padding: 6px 12px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color 0.15s;
+}
+
+.btn-secondary:hover {
+  background-color: var(--bg-hover);
+}
+
+.btn-secondary:active {
+  background-color: var(--bg-active);
+}
+
+.query-diff-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.query-diff-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.query-diff-toggles {
+  display: flex;
+  gap: 16px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type='checkbox'] {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+.query-diff-editor-container {
+  flex: 1;
+  overflow: hidden;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Dark theme adjustments */
+[data-theme='dark'] .query-diff-modal {
+  background-color: var(--bg-primary);
+}
+
+/* Light theme adjustments */
+[data-theme='light'] .query-diff-modal {
+  background-color: var(--bg-primary);
+}

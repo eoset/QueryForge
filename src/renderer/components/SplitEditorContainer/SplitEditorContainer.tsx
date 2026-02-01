@@ -9,12 +9,14 @@ interface SplitEditorContainerProps {
   editorHeight: number;
   onEditorResize: (height: number) => void;
   theme: 'dark' | 'light';
+  onCompareTab?: (tabId: string) => void;
 }
 
 export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
   editorHeight,
   onEditorResize,
   theme,
+  onCompareTab,
 }) => {
   const { 
     tabs,
@@ -121,7 +123,7 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
           className="split-pane-wrapper" 
           style={{ width: `calc(${splitRatio * 100}% - 2px)` }}
         >
-          <TabBar side="left" />
+          <TabBar side="left" onCompareTab={onCompareTab} />
           <div className="split-pane-content">
             {leftTab ? (
               <>
@@ -161,7 +163,7 @@ export const SplitEditorContainer: React.FC<SplitEditorContainerProps> = ({
           className="split-pane-wrapper" 
           style={{ width: `calc(${(1 - splitRatio) * 100}% - 2px)` }}
         >
-          <TabBar side="right" />
+          <TabBar side="right" onCompareTab={onCompareTab} />
           <div className="split-pane-content">
             {rightTab ? (
               <>

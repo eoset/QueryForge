@@ -5,9 +5,10 @@ import './TabBar.css';
 
 interface TabBarProps {
   side?: SplitSide; // If provided, only show tabs for this side
+  onCompareTab?: (tabId: string) => void;
 }
 
-export const TabBar: React.FC<TabBarProps> = ({ side }) => {
+export const TabBar: React.FC<TabBarProps> = ({ side, onCompareTab }) => {
   const { 
     tabs, 
     activeTabId, 
@@ -115,6 +116,15 @@ export const TabBar: React.FC<TabBarProps> = ({ side }) => {
     splitTabToRight(tabId);
   };
 
+  const handleCompareTab = (e: React.MouseEvent, tabId: string) => {
+    e.stopPropagation();
+    setDropdownTabId(null);
+    setDropdownPosition(null);
+    if (onCompareTab) {
+      onCompareTab(tabId);
+    }
+  };
+
   const handleDragStart = (e: React.DragEvent, index: number) => {
     // Don't start drag if clicking on the close button or dropdown
     const target = e.target as HTMLElement;
@@ -212,6 +222,14 @@ export const TabBar: React.FC<TabBarProps> = ({ side }) => {
                     >
                       Split to Right
                     </button>
+                    {onCompareTab && (
+                      <button 
+                        className="tab-dropdown-item"
+                        onClick={(e) => handleCompareTab(e, tab.id)}
+                      >
+                        Compare with Another Tab
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

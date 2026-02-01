@@ -8,9 +8,10 @@ interface SavedQueriesTreeProps {
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   onRefreshReady?: (refreshFn: () => void, isLoading: boolean) => void;
+  onCompare?: (queryId: string) => void;
 }
 
-const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady }) => {
+const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed = false, onToggleCollapse, onRefreshReady, onCompare }) => {
   const { queries, isLoading, loadQueries, getFilteredQueries, setSearchTerm: setStoreSearchTerm } = useQueriesStore();
   const { createTab, setTabQuery, updateTab, tabs, activeTabId, setActiveTab } = useTabsStore();
   const [searchTerm, setSearchTerm] = useState('');
@@ -115,6 +116,14 @@ const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed 
       isModified: false,
     });
     
+    setContextMenu(null);
+  };
+
+  const handleCompare = () => {
+    if (!contextMenu || !onCompare) return;
+    
+    const { query } = contextMenu;
+    onCompare(query.id);
     setContextMenu(null);
   };
 
@@ -225,6 +234,11 @@ const SavedQueriesTreeComponent: React.FC<SavedQueriesTreeProps> = ({ collapsed 
           <div className="context-menu-item" onClick={handleLoadToNewTab}>
             Open in new tab
           </div>
+          {onCompare && (
+            <div className="context-menu-item" onClick={handleCompare}>
+              Compare with...
+            </div>
+          )}
         </div>
       )}
       {hoveredQuery && (

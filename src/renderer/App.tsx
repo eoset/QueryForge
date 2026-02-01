@@ -20,6 +20,7 @@ import { SidebarHeader } from './components/SidebarHeader/SidebarHeader';
 import { SchemaSearchModal } from './components/SchemaSearchModal/SchemaSearchModal';
 import { AIChatSidebar } from './components/AIChatSidebar/AIChatSidebar';
 import { LLMSettingsDialog } from './components/LLMSettingsDialog/LLMSettingsDialog';
+import { QueryDiffModal } from './components/QueryDiffModal/QueryDiffModal';
 import { indexSchemasInBackground } from './utils/schema-indexer';
 import './themes.css';
 import './App.css';
@@ -33,6 +34,11 @@ const App: React.FC = () => {
   const [showThemeSettings, setShowThemeSettings] = useState(false);
   const [showLLMSettings, setShowLLMSettings] = useState(false);
   const [showAIChatSidebar, setShowAIChatSidebar] = useState(false);
+  const [showQueryDiff, setShowQueryDiff] = useState(false);
+  const [queryDiffInitial, setQueryDiffInitial] = useState<{
+    left?: { type: 'tab' | 'saved' | 'clipboard'; id?: string; content?: string };
+    right?: { type: 'tab' | 'saved' | 'clipboard'; id?: string; content?: string };
+  }>({});
   
   // Theme store
   const { initialize: initializeTheme, activeTheme } = useThemeStore();
@@ -123,6 +129,22 @@ const App: React.FC = () => {
     setSchemaSidebar({ projectId, datasetId, tableId });
   }, []);
 
+  const handleCompareFromSavedQuery = useCallback((queryId: string) => {
+    setQueryDiffInitial({
+      left: { type: 'saved', id: queryId },
+      right: { type: 'tab' },
+    });
+    setShowQueryDiff(true);
+  }, []);
+
+  const handleCompareTab = useCallback((tabId: string) => {
+    setQueryDiffInitial({
+      left: { type: 'tab', id: tabId },
+      right: { type: 'tab' },
+    });
+    setShowQueryDiff(true);
+  }, []);
+
   // Listen for showTableSchema events from the editor (Cmd+Click on table references)
   useEffect(() => {
     const handleShowTableSchemaEvent = (event: CustomEvent<{ projectId: string; datasetId: string; tableId: string }>) => {
@@ -203,6 +225,9 @@ const App: React.FC = () => {
       const removeToggleAIAssistantListener = window.electronAPI.menu.onToggleAIAssistant?.(() => {
         setShowAIChatSidebar((prev) => !prev);
       });
+      const removeShowQueryDiffListener = window.electronAPI.menu.onShowQueryDiff?.(() => {
+        setShowQueryDiff(true);
+      });
 
       return () => {
         removeHelpListener();
@@ -211,6 +236,7 @@ const App: React.FC = () => {
         removeSearchSchemaListener();
         removeThemeSettingsListener();
         removeToggleAIAssistantListener?.();
+        removeShowQueryDiffListener?.();
       };
     }
   }, []);
@@ -443,7 +469,7 @@ const App: React.FC = () => {
         </div>
       </header>
       <main className="app-main">
-        {!isSplitView && <TabBar />}
+        {!isSplitView && <TabBar onCompareTab={handleCompareTab} />}
         <div className="app-content">
           <div style={{ width: leftSidebarCollapsed ? '30px' : `${leftSidebarWidth}px`, flexShrink: 0, minWidth: 0, transition: isResizingLeftSidebar ? 'none' : 'width 0.2s ease', display: 'flex', flexDirection: 'column' }}>
             <SidebarHeader
@@ -465,6 +491,7 @@ const App: React.FC = () => {
                   sidebarRefreshFnRef.current = refreshFn;
                   setSidebarIsLoading(isLoading);
                 }}
+                onCompare={handleCompareFromSavedQuery}
               />
             ) : sidebarView === 'history' ? (
               <QueryHistory 
@@ -498,6 +525,7 @@ const App: React.FC = () => {
               editorHeight={editorHeight}
               onEditorResize={setEditorHeight}
               theme={theme}
+              onCompareTab={handleCompareTab}
             />
           </div>
           {schemaSidebar && (
@@ -556,6 +584,16 @@ const App: React.FC = () => {
       )}
       {showLLMSettings && (
         <LLMSettingsDialog onClose={() => setShowLLMSettings(false)} />
+      )}
+      {showQueryDiff && (
+        <QueryDiffModal
+          onClose={() => {
+            setShowQueryDiff(false);
+            setQueryDiffInitial({});
+          }}
+          initialLeft={queryDiffInitial.left}
+          initialRight={queryDiffInitial.right}
+        />
       )}
     </div>
   );

@@ -105,6 +105,14 @@ function createMenu(): void {
             mainWindow?.webContents.send('menu:search-schema');
           },
         },
+        { type: 'separator' },
+        {
+          label: 'Compare Queries...',
+          accelerator: 'CmdOrCtrl+Shift+D',
+          click: () => {
+            mainWindow?.webContents.send('menu:show-query-diff');
+          },
+        },
       ],
     },
     {
