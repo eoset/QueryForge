@@ -1,9 +1,65 @@
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  max-height: 95vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-modal);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-primary);
+  background-color: var(--bg-secondary);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+
+.modal-close:hover {
+  color: var(--text-white);
+}
+
 .query-diff-modal {
   max-width: 95vw;
   width: 1400px;
-  height: 90vh;
-  display: flex;
-  flex-direction: column;
 }
 
 .query-diff-controls {
@@ -11,7 +67,7 @@
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-primary);
   background-color: var(--bg-secondary);
 }
 
@@ -31,36 +87,38 @@
 .query-diff-source label {
   font-weight: 500;
   min-width: 40px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
 }
 
 .query-diff-source select {
   padding: 6px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
   background-color: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 0.8125rem;
   min-width: 120px;
 }
 
 .query-diff-source select:focus {
-  outline: 2px solid var(--accent-color);
+  outline: 2px solid var(--accent-primary);
   outline-offset: 1px;
 }
 
 .btn-icon {
   padding: 8px 12px;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
+  background-color: var(--button-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
   color: var(--text-primary);
   cursor: pointer;
   font-size: 16px;
-  transition: background-color 0.15s;
+  transition: background-color 0.15s ease;
 }
 
 .btn-icon:hover {
-  background-color: var(--bg-hover);
+  background-color: var(--button-secondary-hover);
 }
 
 .btn-icon:active {
@@ -68,18 +126,18 @@
 }
 
 .btn-secondary {
-  padding: 6px 12px;
-  background-color: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  background-color: var(--button-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
   color: var(--text-primary);
   cursor: pointer;
-  font-size: 13px;
-  transition: background-color 0.15s;
+  font-size: 0.8125rem;
+  transition: background-color 0.15s ease;
 }
 
 .btn-secondary:hover {
-  background-color: var(--bg-hover);
+  background-color: var(--button-secondary-hover);
 }
 
 .btn-secondary:active {
@@ -107,7 +165,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
   cursor: pointer;
   user-select: none;
 }
@@ -121,15 +180,6 @@
 .query-diff-editor-container {
   flex: 1;
   overflow: hidden;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--border-primary);
 }
 
-/* Dark theme adjustments */
-[data-theme='dark'] .query-diff-modal {
-  background-color: var(--bg-primary);
-}
-
-/* Light theme adjustments */
-[data-theme='light'] .query-diff-modal {
-  background-color: var(--bg-primary);
-}
