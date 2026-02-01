@@ -127,7 +127,7 @@ export const QueryDiffModal: React.FC<QueryDiffModalProps> = ({
         setRightSource({ type: 'clipboard', content: text });
       }
     } catch (error) {
-      console.error('Failed to read clipboard:', error);
+      console.error('Failed to paste query from clipboard:', error);
     }
   };
 

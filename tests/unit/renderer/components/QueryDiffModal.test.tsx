@@ -64,6 +64,8 @@ describe('QueryDiffModal', () => {
 
   it('closes when Escape key is pressed', () => {
     render(<QueryDiffModal onClose={mockOnClose} />);
+    // Ensure modal is rendered before firing key event
+    expect(screen.getByText('Compare Queries')).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
