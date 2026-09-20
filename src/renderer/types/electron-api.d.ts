@@ -163,6 +163,11 @@ export interface ElectronAPI {
     saveFile(content: string, options: { format: 'csv' | 'json'; defaultFilename?: string }): Promise<{ success: boolean; filePath?: string; error?: string }>;
   };
 
+  // App operations
+  app: {
+    getVersion(): Promise<string>;
+  };
+
   // Query history
   queryHistory: {
     add(entry: QueryHistoryEntry): Promise<void>;

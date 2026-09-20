@@ -1010,7 +1010,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ theme: themeProp = 'da
                   suggestSelection: 'first',
                   tabCompletion: 'on',
                   hover: {
-                    enabled: true,
+                    enabled: 'on',
                     delay: 300,
                     sticky: true,
                   },
